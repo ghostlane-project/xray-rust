@@ -1,3 +1,14 @@
+# This fork: ghostlane-project/xray-rust
+
+This repository is Ghostlane's fork of `aimalygin/xray-rust`. In this fork,
+write to `ghostlane-project/xray-rust` only: topic branches `gl/*`, and the
+`ghostlane` branch the Ghostlane app pins, which moves by merges and
+fast-forwards alone (never a rebase or a force push). Never push to `main`,
+which mirrors upstream, and open no pull request or issue on
+`aimalygin/xray-rust` without a new explicit instruction from the user.
+The upstream scope below is kept as upstream wrote it, for upstream's own
+checkouts.
+
 # Repository write scope
 
 Write access is restricted to these repositories:
