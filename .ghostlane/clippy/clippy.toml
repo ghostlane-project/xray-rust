@@ -1,0 +1,15 @@
+# Size lints for the app's code, fork only (read through CLIPPY_CONF_DIR by the
+# "Size lints" step of .github/workflows/ci.yml; upstream's own Lint step does
+# not see this file). Each number is a share of the iOS packet tunnel's budget:
+# the extension is killed at about 50 MB, and the worst case is 256 flows.
+#
+# future-size-threshold: tokio's release box threshold. Above it a spawned
+# future is a second heap block, page-rounded on iOS. 16,384 B x 256 flows = 4 MiB.
+future-size-threshold = 16384
+# array-size-threshold: a stack array this big in an async fn is part of the
+# task's heap block, in a sync fn it is touched worker stack (32-64 KiB each).
+array-size-threshold = 16384
+# pass-by-value-size-limit: 512 B, eight cache lines, for a value moved by copy.
+pass-by-value-size-limit = 512
+# enum-variant-size-threshold is not set: upstream's `-W clippy::perf` run holds
+# `large_enum_variant` at clippy's default of 200 B.
