@@ -900,6 +900,99 @@ async fn h2_packet_up_ends_the_fixed_post_on_its_final_data_frame() {
     assert_eq!(dials.load(Ordering::Acquire), 1);
 }
 
+/// A bulk upload still fills every POST to `scMaxEachPostBytes` (the last one
+/// takes what is left), numbers them in order, and loses or reorders nothing:
+/// the uplink's buffers follow the bytes waiting, the POSTs do not change.
+#[tokio::test]
+async fn h2_packet_up_bulk_upload_fills_each_post_to_the_limit_in_order() {
+    const MAX_PACKET: usize = 200_000;
+    const TAIL: usize = 12_345;
+    const UPLOAD: usize = 5 * MAX_PACKET + TAIL;
+
+    let posts = Arc::new(Mutex::new(Vec::<(u64, Option<usize>, Vec<u8>)>::new()));
+    let uploaded = Arc::new(AtomicUsize::new(0));
+    let dials = Arc::new(AtomicUsize::new(0));
+    let dial = {
+        let posts = Arc::clone(&posts);
+        let uploaded = Arc::clone(&uploaded);
+        h2_dial(Arc::clone(&dials), move |request, mut respond| {
+            let posts = Arc::clone(&posts);
+            let uploaded = Arc::clone(&uploaded);
+            async move {
+                if request.method() == Method::GET {
+                    if let Ok(downlink) = respond.send_response(ok_response(), false) {
+                        // The download stays open for the whole upload.
+                        tokio::spawn(async move {
+                            let _downlink = downlink;
+                            std::future::pending::<()>().await;
+                        });
+                    }
+                    return;
+                }
+                let sequence = request
+                    .uri()
+                    .path()
+                    .rsplit('/')
+                    .next()
+                    .and_then(|sequence| sequence.parse::<u64>().ok())
+                    .expect("packet POST path ends with its sequence");
+                let content_length = request
+                    .headers()
+                    .get(header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<usize>().ok());
+                let body = drain_h2_request(request.into_body()).await;
+                let length = body.len();
+                posts.lock().unwrap().push((sequence, content_length, body));
+                uploaded.fetch_add(length, Ordering::AcqRel);
+                let _ = respond.send_response(ok_response(), true);
+            }
+        })
+    };
+    let transport = transport(
+        XhttpModeSelection::PacketUp,
+        XhttpHttpVersion::Http2,
+        unlimited_xmux(),
+        MAX_PACKET as i32,
+    );
+    let mut stream = transport.open_stream_with_dial(dial).await.unwrap();
+
+    let payload: Vec<u8> = (0..UPLOAD)
+        .map(|index| ((index % 251) as u8) ^ ((index / 251) as u8))
+        .collect();
+    timeout(DEADLINE, stream.write_all(&payload))
+        .await
+        .expect("bulk packet upload stalled")
+        .unwrap();
+    timeout(DEADLINE, async {
+        while uploaded.load(Ordering::Acquire) < UPLOAD {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the server did not receive the whole upload");
+
+    let mut posts = std::mem::take(&mut *posts.lock().unwrap());
+    posts.sort_by_key(|(sequence, _, _)| *sequence);
+    let sequences: Vec<u64> = posts.iter().map(|(sequence, _, _)| *sequence).collect();
+    assert_eq!(sequences, (0..posts.len() as u64).collect::<Vec<_>>());
+    let sizes: Vec<usize> = posts.iter().map(|(_, _, body)| body.len()).collect();
+    assert_eq!(
+        sizes,
+        [MAX_PACKET, MAX_PACKET, MAX_PACKET, MAX_PACKET, MAX_PACKET, TAIL],
+        "each POST carries scMaxEachPostBytes until the upload runs out"
+    );
+    for (_, content_length, body) in &posts {
+        assert_eq!(*content_length, Some(body.len()));
+    }
+    let received: Vec<u8> = posts.into_iter().flat_map(|(_, _, body)| body).collect();
+    assert!(
+        received == payload,
+        "the upload arrived corrupted or reordered"
+    );
+    assert_eq!(dials.load(Ordering::Acquire), 1);
+}
+
 #[tokio::test]
 async fn h2_packet_up_retries_once_when_goaway_refuses_uncommitted_pooled_request() {
     let stale_post_count = Arc::new(AtomicUsize::new(0));
