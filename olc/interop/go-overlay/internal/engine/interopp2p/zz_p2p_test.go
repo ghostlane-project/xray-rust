@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -25,6 +26,38 @@ import (
 )
 
 const testBudget = 30 * time.Second
+
+// TestOffersRTXForVP8: the engine's offer names VP8's retransmissions (rtx,
+// apt=96), as the mtslink engine registers them, so a sender that resends
+// only on an RTX stream (str0m) answers the NACKs pion sends.
+func TestOffersRTXForVP8(t *testing.T) {
+	api, err := newAPI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc, err := api.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = pc.Close() }()
+	if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
+		webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv}); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range []string{
+		fmt.Sprintf("a=rtpmap:%d VP8/90000", VP8PayloadType),
+		fmt.Sprintf("a=rtpmap:%d rtx/90000", RTXPayloadType),
+		fmt.Sprintf("a=fmtp:%d apt=%d", RTXPayloadType, VP8PayloadType),
+	} {
+		if !strings.Contains(offer.SDP, line+"\r\n") {
+			t.Errorf("the offer has no %q:\n%s", line, offer.SDP)
+		}
+	}
+}
 
 func TestParseURL(t *testing.T) {
 	raw := "tcp://127.0.0.1:9/room-1?turn=" + "turn%3A127.0.0.1%3A3478%3Ftransport%3Dudp" +
