@@ -4,6 +4,7 @@ use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex as AsyncMutex;
 use xray_transport::hysteria::{
     GeckoPacketSize, HysteriaClient, HysteriaConfig, HysteriaError, HysteriaUdpSession,
+    HysteriaWindows,
 };
 
 #[derive(Clone, Debug)]
@@ -129,8 +130,14 @@ impl HysteriaOutbound {
                 .map(super::carrier::xicmp_config),
             ..Default::default()
         };
+        // The class of the core's profile: the core builds the outbounds it
+        // runs at a flow's first use, after `Core::new` set the class. The
+        // build `Core::new` makes only to validate the config comes before
+        // that, reads the class set earlier, and is thrown away. Every
+        // connection of this outbound keeps these windows.
+        let windows = HysteriaWindows::for_class(xray_transport::memory_class());
         let (quic, receive_bytes_per_second) =
-            hysteria_quic_config(config.stream.quic_params.as_ref())?;
+            hysteria_quic_config(config.stream.quic_params.as_ref(), windows)?;
         if let Some(quic) = &config.stream.quic_params {
             let hop = &quic.udp_hop;
             let interval = |value: i32| -> Result<Duration, CoreError> {
@@ -177,7 +184,10 @@ impl HysteriaOutbound {
                 socket_options: socket_options::compile(&config.stream),
                 address_port: super::carrier::address_port_strategy(&config.stream),
                 socket_dialer: Mutex::new(None),
-                limits: limits.transport_limits(),
+                limits: xray_transport::hysteria::HysteriaLimits {
+                    max_send_window: windows.max_send,
+                    ..limits.transport_limits()
+                },
                 carrier,
                 quic,
                 receive_bytes_per_second,
@@ -409,9 +419,14 @@ impl HysteriaOutbound {
 /// announced rate once both are nonzero, otherwise BBR. quic-go grows a
 /// connection's receive windows from the initial value to the maximum, while
 /// quinn keeps a Hysteria connection's windows fixed, so the larger of the two
-/// is the window. UDP hop travels in the Hysteria carrier instead.
+/// is the window. A window whose initial value `quicParams` leaves unset starts
+/// at the host's `windows` ([`HysteriaWindows::for_class`]), and a maximum only
+/// raises it. ChromeParrot, on unless `disableChromeParrot` is set, replaces
+/// both with Chrome's at connect. UDP hop travels in the Hysteria carrier
+/// instead.
 pub(super) fn hysteria_quic_config(
     settings: Option<&QuicParamsSettings>,
+    windows: HysteriaWindows,
 ) -> Result<(H3QuicConfig, u64), CoreError> {
     let mut quic = super::xhttp::xhttp_h3_quic_config(settings)
         .map_err(|_| CoreError::UnsupportedOutboundNetwork)?;
@@ -421,6 +436,15 @@ pub(super) fn hysteria_quic_config(
         quic.max_idle_timeout = Duration::from_secs(30);
     }
     quic.max_incoming_bidirectional_streams = defaults.max_incoming_bidirectional_streams;
+    // The host's windows replace xray-rust's defaults as the start before a
+    // maximum is applied, so a maximum below a constrained host's start
+    // leaves that start, not the larger default.
+    if settings.is_none_or(|s| s.init_stream_receive_window == 0) {
+        quic.initial_stream_receive_window = windows.stream_receive;
+    }
+    if settings.is_none_or(|s| s.init_connection_receive_window == 0) {
+        quic.initial_connection_receive_window = windows.connection_receive;
+    }
     quic.initial_stream_receive_window = quic
         .initial_stream_receive_window
         .max(quic.max_stream_receive_window.take().unwrap_or(0));

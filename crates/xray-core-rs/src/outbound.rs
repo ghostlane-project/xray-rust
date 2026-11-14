@@ -9160,10 +9160,15 @@ mod tests {
             let outbound = &parsed.config.outbounds[0];
             let chrome_parrot = match &outbound.stream.transport {
                 xray_config::StreamTransport::Hysteria(_) => {
-                    hysteria::hysteria_quic_config(outbound.stream.quic_params.as_ref())
-                        .unwrap()
-                        .0
-                        .chrome_parrot
+                    hysteria::hysteria_quic_config(
+                        outbound.stream.quic_params.as_ref(),
+                        xray_transport::hysteria::HysteriaWindows::for_class(
+                            xray_transport::MemoryClass::Standard,
+                        ),
+                    )
+                    .unwrap()
+                    .0
+                    .chrome_parrot
                 }
                 xray_config::StreamTransport::Xhttp(_) => {
                     built_xhttp_transport(outbound)
