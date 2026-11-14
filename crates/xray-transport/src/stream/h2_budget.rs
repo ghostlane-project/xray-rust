@@ -33,10 +33,7 @@ use crate::memory_budget::{ByteBudget, ReceiveGate, WithheldCredit};
 
 /// Settles `gate` against what the stream holds now and hands back the
 /// credit it grants; returns how much that was.
-fn hand_back(
-    gate: &mut ReceiveGate<'_>,
-    flow: &mut FlowControl,
-) -> Result<usize, h2::Error> {
+fn hand_back(gate: &mut ReceiveGate<'_>, flow: &mut FlowControl) -> Result<usize, h2::Error> {
     // h2 counts as used what was received and not released: the queue, and
     // what readers took and the gate still owes.
     let queued = flow.used_capacity().saturating_sub(gate.owed());
