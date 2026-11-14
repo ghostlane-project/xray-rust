@@ -16,7 +16,10 @@
 //!   `bye`; every participant names itself by 16 random hex characters at
 //!   each join;
 //! - the newcomer offers: a directed hello from X makes the offer to X; an
-//!   offer from X is always answered (a server that rejoined);
+//!   offer from X is answered (a server that rejoined), unless it crosses
+//!   our own unanswered offer to X (both hellos crossed, so each took the
+//!   other for the newcomer): then the greater id's offer stands and the
+//!   lower id answers it;
 //! - no trickle: the offer and the answer carry every candidate;
 //! - one video line, `sendrecv`, VP8: what the remote sends goes to the
 //!   frame handler through [`olc_vp8channel::rtp_reader::TrackReader`];
@@ -130,6 +133,14 @@ pub fn video_mid(sdp: &str) -> Option<&str> {
         }
     }
     None
+}
+
+/// Whether our unanswered offer (to `pending`) stands against an offer from
+/// `remote`: only when the two cross and our id is the greater (the
+/// overlay's `answer` keeps the same rule).
+#[must_use]
+pub fn crossed_offer_stands(pending: Option<&str>, me: &str, remote: &str) -> bool {
+    pending == Some(remote) && me > remote
 }
 
 /// What a frame the track reader completes is handed to.
@@ -461,6 +472,10 @@ impl P2pLink {
             return;
         };
         let mut st = self.st.lock().await;
+        if crossed_offer_stands(st.pending.as_ref().map(|(to, _)| to.as_str()), me, remote) {
+            crate::debug!("interop-p2p: the offer from {remote} crossed ours; ours stands");
+            return;
+        }
         st.pending = None;
         let Some(peer) = self.start_peer(&mut st, remote) else {
             return;
@@ -702,6 +717,14 @@ mod tests {
     }
 
     #[test]
+    fn of_two_crossed_offers_the_greater_ids_stands() {
+        assert!(crossed_offer_stands(Some("b"), "c", "b"));
+        assert!(!crossed_offer_stands(Some("c"), "b", "c"));
+        assert!(!crossed_offer_stands(None, "c", "b"));
+        assert!(!crossed_offer_stands(Some("a"), "c", "b"));
+    }
+
+    #[test]
     fn an_id_is_sixteen_hex() {
         let id = new_id();
         assert_eq!(id.len(), ID_LEN);
@@ -710,13 +733,43 @@ mod tests {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
     }
 
+    /// One relayed room: its members and the frames held for them.
+    #[derive(Default)]
+    struct Room {
+        members: Vec<(usize, OwnedWriteHalf)>,
+        held: Vec<(usize, Vec<u8>)>,
+        hold_until: usize,
+    }
+
+    impl Room {
+        /// Writes the held frames, in order, to every member but each
+        /// frame's sender.
+        async fn flush(&mut self) {
+            for (from, frame) in std::mem::take(&mut self.held) {
+                for (other, w) in &mut self.members {
+                    if *other != from {
+                        let _ = w.write_all(&frame).await;
+                    }
+                }
+            }
+        }
+    }
+
     /// A hub room that relays DATA frames to the other members, as the
-    /// overlay's interoppipe hub does (no PEERS, no END).
-    async fn relay_hub() -> (String, tokio::task::JoinHandle<()>) {
+    /// overlay's interoppipe hub does (no PEERS, no END), and counts the
+    /// frames it read. With `hold_until` members it holds every frame until
+    /// that many have joined, so each one's broadcast hello reaches the
+    /// others (participants that joined at once).
+    async fn relay_hub(hold_until: usize) -> (String, tokio::task::JoinHandle<()>, Arc<AtomicU64>) {
         use tokio::io::AsyncReadExt;
         let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = ln.local_addr().unwrap();
-        let members: Arc<tokio::sync::Mutex<Vec<(usize, OwnedWriteHalf)>>> = Arc::default();
+        let room = Arc::new(tokio::sync::Mutex::new(Room {
+            hold_until,
+            ..Room::default()
+        }));
+        let read_frames = Arc::new(AtomicU64::new(0));
+        let counted = read_frames.clone();
         let task = tokio::spawn(async move {
             let mut next = 0usize;
             loop {
@@ -726,8 +779,15 @@ mod tests {
                 let (mut read, write) = conn.into_split();
                 let id = next;
                 next += 1;
-                members.lock().await.push((id, write));
-                let members = members.clone();
+                {
+                    let mut r = room.lock().await;
+                    r.members.push((id, write));
+                    if r.members.len() >= r.hold_until {
+                        r.flush().await;
+                    }
+                }
+                let room = room.clone();
+                let counted = counted.clone();
                 tokio::spawn(async move {
                     let mut hdr = [0u8; 5];
                     loop {
@@ -744,62 +804,84 @@ mod tests {
                         }
                         let mut frame = hdr.to_vec();
                         frame.extend_from_slice(&body);
-                        for (other, w) in members.lock().await.iter_mut() {
-                            if *other != id {
-                                let _ = w.write_all(&frame).await;
-                            }
+                        let mut r = room.lock().await;
+                        r.held.push((id, frame));
+                        if r.members.len() >= r.hold_until {
+                            r.flush().await;
                         }
+                        counted.fetch_add(1, Ordering::Release);
                     }
                 });
             }
         });
-        (format!("tcp://{addr}/room?turn=ignored&policy=relay"), task)
+        (
+            format!("tcp://{addr}/room?turn=ignored&policy=relay"),
+            task,
+            read_frames,
+        )
     }
 
-    /// Two participants: the second is the newcomer and offers, the first
-    /// answers; a sample written on either side arrives whole on the other.
+    /// Two participants meet in a room of `hub` (both joined first when
+    /// `at_once`) and a sample written on either side arrives whole on the
+    /// other.
+    async fn meet_and_move_samples(at_once: bool) {
+        let (url, hub, read_frames) = relay_hub(if at_once { 2 } else { 0 }).await;
+        let lo = IpAddr::from([127, 0, 0, 1]);
+        let tick = Duration::from_millis(16);
+        let (a_tx, _a_rx) = mpsc::channel(4);
+        let (b_tx, _b_rx) = mpsc::channel(4);
+        let (got_a, mut at_a) = mpsc::unbounded_channel::<Vec<u8>>();
+        let (got_b, mut at_b) = mpsc::unbounded_channel::<Vec<u8>>();
+        let a = P2pLink::connect(&url, lo, tick, a_tx).await.unwrap();
+        a.set_frame_handler(Some(Arc::new(move |f: &[u8]| {
+            let _ = got_a.send(f.to_vec());
+        })));
+        if !at_once {
+            // The first one's hello went to an empty room: the second is
+            // the newcomer.
+            while read_frames.load(Ordering::Acquire) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+        let b = P2pLink::connect(&url, lo, tick, b_tx).await.unwrap();
+        b.set_frame_handler(Some(Arc::new(move |f: &[u8]| {
+            let _ = got_b.send(f.to_vec());
+        })));
+        // Larger than one packet's payload, so the frame spans several
+        // packets and the marker closes it.
+        let sample = |tag: u8| -> Vec<u8> {
+            (0..3000u32)
+                .map(|i| tag ^ u8::try_from(i % 251).unwrap())
+                .collect()
+        };
+        let (to_b, to_a) = (sample(0x11), sample(0x22));
+        let (mut b_has, mut a_has) = (false, false);
+        while !(a_has && b_has) {
+            assert!(a.write_sample(&to_b) && b.write_sample(&to_a));
+            tokio::select! {
+                Some(f) = at_b.recv() => { assert_eq!(f, to_b); b_has = true; }
+                Some(f) = at_a.recv() => { assert_eq!(f, to_a); a_has = true; }
+                () = tokio::time::sleep(tick) => {}
+            }
+        }
+        assert!(a.peer_seen() && b.peer_seen());
+        assert!(a.rtp_out.load(Ordering::Relaxed) > 0 && b.rtp_in.load(Ordering::Relaxed) > 0);
+        a.close().await;
+        b.close().await;
+        hub.abort();
+    }
+
+    /// The second is the newcomer and offers, the first answers.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_participants_meet_and_move_samples_both_ways() {
-        crate::testing::bounded_for(Duration::from_secs(20), async {
-            let (url, hub) = relay_hub().await;
-            let lo = IpAddr::from([127, 0, 0, 1]);
-            let tick = Duration::from_millis(16);
-            let (a_tx, _a_rx) = mpsc::channel(4);
-            let (b_tx, _b_rx) = mpsc::channel(4);
-            let (got_a, mut at_a) = mpsc::unbounded_channel::<Vec<u8>>();
-            let (got_b, mut at_b) = mpsc::unbounded_channel::<Vec<u8>>();
-            let a = P2pLink::connect(&url, lo, tick, a_tx).await.unwrap();
-            a.set_frame_handler(Some(Arc::new(move |f: &[u8]| {
-                let _ = got_a.send(f.to_vec());
-            })));
-            let b = P2pLink::connect(&url, lo, tick, b_tx).await.unwrap();
-            b.set_frame_handler(Some(Arc::new(move |f: &[u8]| {
-                let _ = got_b.send(f.to_vec());
-            })));
-            // Larger than one packet's payload, so the frame spans several
-            // packets and the marker closes it.
-            let sample = |tag: u8| -> Vec<u8> {
-                (0..3000u32)
-                    .map(|i| tag ^ u8::try_from(i % 251).unwrap())
-                    .collect()
-            };
-            let (to_b, to_a) = (sample(0x11), sample(0x22));
-            let (mut b_has, mut a_has) = (false, false);
-            while !(a_has && b_has) {
-                assert!(a.write_sample(&to_b) && b.write_sample(&to_a));
-                tokio::select! {
-                    Some(f) = at_b.recv() => { assert_eq!(f, to_b); b_has = true; }
-                    Some(f) = at_a.recv() => { assert_eq!(f, to_a); a_has = true; }
-                    () = tokio::time::sleep(tick) => {}
-                }
-            }
-            assert!(a.peer_seen() && b.peer_seen());
-            assert!(a.rtp_out.load(Ordering::Relaxed) > 0 && b.rtp_in.load(Ordering::Relaxed) > 0);
-            a.close().await;
-            b.close().await;
-            hub.abort();
-        })
-        .await;
+        crate::testing::bounded_for(Duration::from_secs(20), meet_and_move_samples(false)).await;
+    }
+
+    /// Both hellos cross, so each takes the other for the newcomer and both
+    /// offer: the greater id's offer stands and the lower id answers it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn participants_that_join_at_once_still_meet() {
+        crate::testing::bounded_for(Duration::from_secs(20), meet_and_move_samples(true)).await;
     }
 
     #[test]

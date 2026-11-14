@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -107,6 +108,40 @@ func newParty(t *testing.T, rawURL string) *party {
 	return p
 }
 
+// observe joins room as a bare participant that says nothing, once the hub
+// holds it.
+func observe(t *testing.T, hub *interoppipe.Hub, room string) net.Conn {
+	t.Helper()
+	before := hub.Members(room)
+	conn, err := net.Dial("tcp", strings.TrimPrefix(strings.TrimSuffix(hub.URL(room), "/"+room), "tcp://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := interoppipe.WriteFrame(conn, interoppipe.KindJoin, []byte(room)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the observer in the room", func() bool { return hub.Members(room) > before })
+	return conn
+}
+
+// awaitHello reads conn until from's broadcast hello.
+func awaitHello(t *testing.T, conn net.Conn, from string) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(testBudget))
+	for {
+		kind, payload, err := interoppipe.ReadFrame(conn)
+		if err != nil {
+			t.Fatalf("waiting for %s's hello: %v", from, err)
+		}
+		var m map[string]string
+		if kind == interoppipe.KindData && json.Unmarshal(payload, &m) == nil &&
+			m["t"] == "hello" && m["from"] == from && m["to"] == "" {
+			return
+		}
+	}
+}
+
 // pump writes a sample on every party's track until stop.
 func pump(stop <-chan struct{}, parties ...*party) {
 	sample := media.Sample{Data: make([]byte, 3000), Duration: time.Second / 60}
@@ -147,6 +182,10 @@ func TestTwoSessionsTradeVideoBothRoles(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testBudget)
 	defer cancel()
 
+	// A bare observer in the room sees a's broadcast hello once the hub has
+	// relayed it; only then does b join, so b is the newcomer and the two
+	// hellos cannot cross.
+	obs := observe(t, hub, "both-roles")
 	a := newParty(t, hub.URL("both-roles"))
 	if err := a.s.Connect(ctx); err != nil {
 		t.Fatal(err)
@@ -154,6 +193,11 @@ func TestTwoSessionsTradeVideoBothRoles(t *testing.T) {
 	if !a.s.CanSend() || !a.s.SubscriberCanSend() {
 		t.Fatal("a joined but cannot send")
 	}
+	awaitHello(t, obs, a.s.LocalID())
+	go func() { // the rest of the room's talk
+		_ = obs.SetReadDeadline(time.Time{})
+		_, _ = io.Copy(io.Discard, obs)
+	}()
 	// An unknown query key is ignored; policy=all is the default.
 	b := newParty(t, hub.URL("both-roles")+"?policy=all&unknown=1")
 	if err := b.s.Connect(ctx); err != nil {
@@ -251,5 +295,100 @@ func TestSignallingIgnoresOthers(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := a.s.peerCount(); n != 0 || a.s.offers.Load() != 0 || a.s.answers.Load() != 0 {
 		t.Fatalf("a made %d peer connections, %d offers, %d answers", n, a.s.offers.Load(), a.s.answers.Load())
+	}
+}
+
+// TestCrossedOffersTheGreaterIDStands: both ends took the other for the
+// newcomer (their hellos crossed) and both offered. The lower id answers the
+// other's offer and gives its own up; the greater id keeps its offer and
+// ignores the other's, so exactly one connection is made either way.
+func TestCrossedOffersTheGreaterIDStands(t *testing.T) {
+	for _, tc := range []struct {
+		name, stranger string
+		answers        bool
+	}{
+		{"the stranger is lower, a's offer stands", "0000000000000000", false},
+		{"the stranger is greater, a answers it", "ffffffffffffffff", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hub, err := interoppipe.StartHub("127.0.0.1:0", interoppipe.Chaos{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(hub.Close)
+			ctx, cancel := context.WithTimeout(context.Background(), testBudget)
+			defer cancel()
+			a := newParty(t, hub.URL("crossed"))
+			if err := a.s.Connect(ctx); err != nil {
+				t.Fatal(err)
+			}
+			conn, err := net.Dial("tcp", strings.TrimPrefix(strings.TrimSuffix(hub.URL("crossed"), "/crossed"), "tcp://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if err := interoppipe.WriteFrame(conn, interoppipe.KindJoin, []byte("crossed")); err != nil {
+				t.Fatal(err)
+			}
+			send := func(m any) {
+				raw, _ := json.Marshal(m)
+				if err := interoppipe.WriteFrame(conn, interoppipe.KindData, raw); err != nil {
+					t.Fatal(err)
+				}
+			}
+			awaitFromA := func(kind string) {
+				_ = conn.SetReadDeadline(time.Now().Add(testBudget))
+				for {
+					k, payload, err := interoppipe.ReadFrame(conn)
+					if err != nil {
+						t.Fatalf("waiting for a's %s: %v", kind, err)
+					}
+					var m map[string]string
+					if k != interoppipe.KindData || json.Unmarshal(payload, &m) != nil {
+						continue
+					}
+					if m["t"] == kind && m["from"] == a.s.LocalID() && m["to"] == tc.stranger {
+						return
+					}
+				}
+			}
+			// The stranger's directed hello: a is the newcomer and offers.
+			send(map[string]string{"t": "hello", "from": tc.stranger, "to": a.s.LocalID()})
+			awaitFromA("offer")
+			// The stranger's own offer crosses a's.
+			pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = pc.Close() }()
+			if _, err := pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo,
+				webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendrecv}); err != nil {
+				t.Fatal(err)
+			}
+			offer, err := pc.CreateOffer(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			gathered := webrtc.GatheringCompletePromise(pc)
+			if err := pc.SetLocalDescription(offer); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-gathered:
+			case <-ctx.Done():
+				t.Fatal("the stranger's gathering did not end")
+			}
+			send(map[string]string{"t": "offer", "from": tc.stranger, "to": a.s.LocalID(), "sdp": pc.LocalDescription().SDP})
+			if tc.answers {
+				awaitFromA("answer")
+				waitFor(t, "a's one answer", func() bool { return a.s.answers.Load() == 1 })
+				return
+			}
+			time.Sleep(2 * time.Second)
+			if a.s.answers.Load() != 0 || a.s.offers.Load() != 1 || a.s.peerCount() != 1 {
+				t.Fatalf("a answered %d, offered %d, holds %d connections: its offer should stand alone",
+					a.s.answers.Load(), a.s.offers.Load(), a.s.peerCount())
+			}
+		})
 	}
 }

@@ -19,7 +19,10 @@
 //
 // The newcomer offers: a directed hello makes it open a connection to the
 // sender and offer; an offer (re)opens the connection for its sender and is
-// answered. No trickle: each SDP carries every candidate gathered.
+// answered, unless it crosses our own unanswered offer to the sender (both
+// hellos crossed, so each end took the other for the newcomer): then the
+// greater id's offer stands and the lower id answers it. No trickle: each
+// SDP carries every candidate gathered.
 //
 // The Rust client (olc-client's p2p module) speaks the same.
 
@@ -440,6 +443,13 @@ func (s *Session) offer(conn net.Conn, id, remote string) {
 }
 
 func (s *Session) answer(conn net.Conn, id, remote, sdp string) {
+	// Crossed offers (the hellos crossed, so each end took the other for
+	// the newcomer): the greater id's offer stands and the lower id answers
+	// it. olc-client's p2p.rs keeps the same rule.
+	if id > remote && s.offering(remote) {
+		logger.Infof("interop-p2p: the offer from %s crossed ours; ours stands", remote)
+		return
+	}
 	p, err := s.newPeer(remote)
 	if err != nil {
 		logger.Infof("%v", err)
@@ -465,11 +475,21 @@ func (s *Session) answer(conn net.Conn, id, remote, sdp string) {
 	s.drop(remote, p)
 }
 
+// offering reports whether remote's connection holds our unanswered offer.
+func (s *Session) offering(remote string) bool {
+	s.mu.Lock()
+	p := s.peers[remote]
+	s.mu.Unlock()
+	return p != nil && p.pc.SignalingState() == webrtc.SignalingStateHaveLocalOffer
+}
+
 func (s *Session) accept(remote, sdp string) {
 	s.mu.Lock()
 	p := s.peers[remote]
 	s.mu.Unlock()
-	if p == nil {
+	// An answer to no offer of ours (one we gave up for a crossing offer)
+	// is dropped; it must not close the connection that replaced it.
+	if p == nil || p.pc.SignalingState() != webrtc.SignalingStateHaveLocalOffer {
 		return
 	}
 	if err := p.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: sdp}); err != nil {
