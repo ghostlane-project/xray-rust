@@ -101,8 +101,10 @@ strip = "symbols"
 panic = "unwind"
 
 [patch.crates-io]
-# str0m's ICE crate with Chrome's STUN attribute order (olc/vendor/is-0.12.0/src/stun.rs, `StunProfile`):
-# the olcRTC engine's connectivity checks must read as a browser's (port plan section 8).
+# str0m's ICE crate with Chrome's STUN attribute order (olc/vendor/is-0.12.0/src/stun.rs, `StunProfile`)
+# and libwebrtc's rank for a relayed candidate by its path to the TURN server (candidate.rs,
+# `Candidate::relayed_via`): the olcRTC engine's connectivity checks must read as a browser's
+# (port plan section 8).
 is = { path = "olc/vendor/is-0.12.0" }
 quinn = { path = "vendor/quinn" }
 smoltcp = { path = "vendor/smoltcp" }

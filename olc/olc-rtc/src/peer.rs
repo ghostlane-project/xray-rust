@@ -35,7 +35,7 @@ use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
 
 pub use str0m::IceConnectionState;
 
-use crate::turn::{Arrival, RelayEvent, Relays, Resolved, StreamChunk, TurnServer};
+use crate::turn::{Arrival, RelayEvent, Relays, Resolved, StreamChunk, TurnServer, TurnTransport};
 use crate::{CryptoProvider, DtlsVersion};
 
 /// The driver's one receive buffer: the largest datagram it reads. An SFU
@@ -503,8 +503,8 @@ fn run_relays(
         return wake;
     }
     let mut rtc = lock(&sh.rtc);
-    for RelayEvent::Allocated(relayed) in up {
-        match Candidate::relayed(relayed, sh.local, "udp") {
+    for RelayEvent::Allocated(relayed, via) in up {
+        match relayed_candidate(relayed, sh.local, via) {
             Ok(c) => {
                 if let Some(c) = rtc.add_local_candidate(c) {
                     lines.push(c.to_sdp_string());
@@ -514,6 +514,21 @@ fn run_relays(
         }
     }
     wake
+}
+
+/// A relayed candidate as libwebrtc makes one: its address is UDP either way,
+/// its type preference follows how the allocation reaches its server (2 over
+/// UDP, 1 over TCP), so ICE prefers a relay over UDP, as Chrome does.
+fn relayed_candidate(
+    relayed: SocketAddr,
+    base: SocketAddr,
+    via: TurnTransport,
+) -> Result<Candidate, String> {
+    let via = match via {
+        TurnTransport::Udp => "udp",
+        TurnTransport::Tcp => "tcp",
+    };
+    Candidate::relayed_via(relayed, base, "udp", via).map_err(|e| e.to_string())
 }
 
 async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
@@ -663,6 +678,27 @@ mod tests {
     use str0m::channel::{ChannelConfig, Reliability};
 
     use super::*;
+
+    /// A relayed candidate ranks by its path to the TURN server, as
+    /// libwebrtc's do (`ICE_TYPE_PREFERENCE_RELAY_UDP` 2, `_TCP` 1): with a
+    /// relay over UDP and one over TCP both up, ICE nominates the UDP one.
+    /// Both are UDP candidates in the SDP.
+    #[test]
+    fn a_relayed_candidate_ranks_by_its_path_to_the_turn_server() {
+        let relayed: SocketAddr = "192.0.2.7:40000".parse().unwrap();
+        let base: SocketAddr = "192.0.2.1:5000".parse().unwrap();
+        let udp = relayed_candidate(relayed, base, TurnTransport::Udp).unwrap();
+        let tcp = relayed_candidate(relayed, base, TurnTransport::Tcp).unwrap();
+        assert_eq!(udp.prio() >> 24, 2, "{}", udp.to_sdp_string());
+        assert_eq!(tcp.prio() >> 24, 1, "{}", tcp.to_sdp_string());
+        for c in [&udp, &tcp] {
+            let line = c.to_sdp_string();
+            assert!(
+                line.contains(" udp ") && line.contains(" typ relay"),
+                "{line}"
+            );
+        }
+    }
 
     /// A send on a channel that is not open says pion's `io.ErrClosedPipe`
     /// (`DataChannel.Send`'s `ensureOpen`), so the session's

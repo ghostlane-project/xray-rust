@@ -96,6 +96,10 @@ pub struct Candidate {
     /// that are the same type.
     local_preference: Option<u32>,
 
+    // olcRTC fork: how a relayed candidate's allocation reaches its TURN server
+    // (`Candidate::relayed_via`), which its type preference follows, as libwebrtc's does.
+    relay_proto: Option<Protocol>,
+
     /// If we discarded this candidate (for example due to being redundant
     /// against another candidate).
     discarded: bool,
@@ -189,6 +193,7 @@ impl Candidate {
             ufrag,
             local,
             local_preference: None,
+            relay_proto: None,
             discarded: false,
         }
     }
@@ -315,6 +320,22 @@ impl Candidate {
             None,
             local,
         ))
+    }
+
+    /// olcRTC fork: [`Candidate::relayed`] for an allocation made over `via`, the client's
+    /// transport to the TURN server. Its type preference is libwebrtc's for that relay
+    /// protocol (p2p/base/port.h: `ICE_TYPE_PREFERENCE_RELAY_UDP` 2, `_TCP` 1, `_TLS` 0), not
+    /// the relayed address's protocol, which is UDP whatever the path to the server; upstream
+    /// keys it on the latter, so a relay over TCP would rank with one over UDP.
+    pub fn relayed_via(
+        addr: SocketAddr,
+        local: SocketAddr,
+        proto: impl TryInto<Protocol>,
+        via: impl TryInto<Protocol>,
+    ) -> Result<Self, IceError> {
+        let mut c = Self::relayed(addr, local, proto)?;
+        c.relay_proto = Some(parse_proto(via)?);
+        Ok(c)
     }
 
     /// Creates a new ICE candidate from a candidate attribute string.
@@ -456,7 +477,12 @@ impl Candidate {
         // server-reflexive candidates, and 0 for relayed candidates. The variations
         // for non-UDP protocols are taken from libwebrtc:
         // <https://webrtc.googlesource.com/src/+/refs/heads/main/p2p/base/port.h#68>
-        let type_preference = match (kind, self.proto) {
+        // olcRTC fork: a relayed candidate ranks by its relay protocol when it has one.
+        let proto = match kind {
+            CandidateKind::Relayed => self.relay_proto.unwrap_or(self.proto),
+            _ => self.proto,
+        };
+        let type_preference = match (kind, proto) {
             (CandidateKind::Host, Protocol::Udp) => 126,
             (CandidateKind::PeerReflexive, Protocol::Udp) => 110,
             (CandidateKind::ServerReflexive, _) => 100,

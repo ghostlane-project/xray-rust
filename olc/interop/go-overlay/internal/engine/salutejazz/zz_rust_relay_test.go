@@ -62,6 +62,8 @@ var candidateRe = regexp.MustCompile(`candidate:[^"]+`)
 type turnRelay struct {
 	// url is the connector URL a client dials instead of the fake's.
 	url string
+	// transport is how the client reaches the TURN server.
+	transport string
 	// allocations, relayedIn and relayedOut count what the TURN server
 	// allocated and moved through its relayed sockets.
 	allocations, relayedIn, relayedOut atomic.Int64
@@ -103,7 +105,7 @@ func startTurnRelay(t testing.TB, upstream string) *turnRelay {
 func startTurnRelayOver(t testing.TB, upstream, transport string) *turnRelay {
 	t.Helper()
 	ip := hostIPv4(t)
-	x := &turnRelay{}
+	x := &turnRelay{transport: transport}
 	gen := countingRelay{
 		RelayAddressGeneratorStatic: &turn.RelayAddressGeneratorStatic{RelayAddress: ip, Address: ip.String()},
 		x:                           x,
@@ -241,6 +243,19 @@ func (x *turnRelay) check(t *testing.T, moved int64) {
 		}
 	}
 	t.Logf("candidates: %q", lines)
+	// libwebrtc's type preference for a relayed candidate is its path to
+	// the TURN server's: 2 over UDP, 1 over TCP (p2p/base/port.h).
+	want := map[string]uint64{"udp": 2, "tcp": 1}[x.transport]
+	for _, l := range lines {
+		f := strings.Fields(l)
+		if len(f) < 4 {
+			t.Fatalf("a candidate without a priority: %q", l)
+		}
+		prio, err := strconv.ParseUint(f[3], 10, 32)
+		if err != nil || prio>>24 != want {
+			t.Fatalf("a relayed candidate over %s has type preference %d, want %d: %q", x.transport, prio>>24, want, l)
+		}
+	}
 	in, out := x.relayedIn.Load(), x.relayedOut.Load()
 	t.Logf("TURN: %d allocations, relayed %d bytes in and %d out", x.allocations.Load(), in, out)
 	if x.allocations.Load() == 0 || in < moved || out < moved {

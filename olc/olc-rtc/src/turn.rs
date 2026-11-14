@@ -276,8 +276,9 @@ pub(crate) struct StreamChunk {
 /// What the relays tell the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelayEvent {
-    /// An allocation is up: its relayed address, the local candidate's.
-    Allocated(SocketAddr),
+    /// An allocation is up: its relayed address, the local candidate's, and
+    /// how it reaches its server.
+    Allocated(SocketAddr, TurnTransport),
 }
 
 /// What one datagram from the socket turned out to be.
@@ -655,7 +656,11 @@ impl Relays {
                     TurnEvent::AllocationCreated(TransportType::Udp, relayed) => {
                         olc_net::debug!("webrtc: {name} TURN allocation {relayed} on {}", r.server);
                         r.relayed = Some(relayed);
-                        events.push(RelayEvent::Allocated(relayed));
+                        let via = match r.path {
+                            Path::Udp => TurnTransport::Udp,
+                            Path::Stream(_) => TurnTransport::Tcp,
+                        };
+                        events.push(RelayEvent::Allocated(relayed, via));
                     }
                     TurnEvent::AllocationCreateFailed(family) => {
                         olc_net::debug!(
@@ -918,7 +923,7 @@ mod tests {
             let mut buf = vec![0u8; crate::peer::RECV_BUF];
             let relayed = loop {
                 relays.poll(&sock, "t", Instant::now(), &mut up);
-                if let Some(RelayEvent::Allocated(a)) = up.first() {
+                if let Some(RelayEvent::Allocated(a, _)) = up.first() {
                     break *a;
                 }
                 let got =
