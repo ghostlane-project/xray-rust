@@ -177,6 +177,9 @@ type rustConfig struct {
 	Channel  string `json:"channel,omitempty"`
 	VP8FPS   int    `json:"vp8_fps,omitempty"`
 	VP8Batch int    `json:"vp8_batch,omitempty"`
+	// IceLocalIP is the address the client's ICE gathers its host candidate
+	// on (the p2p target: loopback, where the Go side gathers too).
+	IceLocalIP string `json:"ice_local_ip,omitempty"`
 	// Liveness and LivenessFallbackMS shorten the client's liveness for the
 	// e2e scenarios (zz_rust_e2e_test.go).
 	Liveness           *rustLiveness `json:"liveness,omitempty"`

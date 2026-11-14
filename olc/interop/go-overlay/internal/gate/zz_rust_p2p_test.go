@@ -346,7 +346,10 @@ func TestGateP2P(t *testing.T) {
 		switch name {
 		case rustFlavour:
 			clients = append(clients, rustClient{bin: *gateRustBin, start: startBudget, stop: stopBudget, logf: t.Logf,
-				extra: func(cfg *rustConfig) { cfg.Engine = interopp2p.Name }})
+				extra: func(cfg *rustConfig) {
+					cfg.Engine = interopp2p.Name
+					cfg.IceLocalIP = "127.0.0.1"
+				}})
 		case cliFlavour:
 			clients = append(clients, goP2PClient{cli: cliClient{start: startBudget, stop: stopBudget}})
 		default:
