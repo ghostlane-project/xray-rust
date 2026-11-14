@@ -13,6 +13,12 @@
 //! which this replaces, kept its buffer at its high-water mark (up to the
 //! bound) for the flow's lifetime, and the worker read it into a scratch
 //! buffer of the bound that every flow held, idle or not.
+//!
+//! A take hands over the chunks themselves ([`PacketPayload`]), as Xray hands
+//! its `MultiBuffer` to the POST: the HTTP/2 and HTTP/3 uploads send from
+//! them, and each chunk is freed once its last byte is sent. Joining them
+//! into one allocation held every byte twice while the copy was made, and
+//! the copy whole until the POST's last DATA frame was written.
 
 use std::collections::VecDeque;
 use std::future::poll_fn;
@@ -22,6 +28,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 
+use bytes::{Buf, Bytes};
 use tokio::io::AsyncWrite;
 
 /// Go's `buf.Size`: the unit small writes are gathered in.
@@ -180,11 +187,17 @@ impl PacketPipeReader {
     /// Takes everything waiting as one payload, or `None` once the writer is
     /// closed and nothing is left. Waits while the pipe is empty. Cancel-safe:
     /// bytes leave the pipe only in the poll that returns them.
-    pub(super) async fn take(&mut self) -> Option<Vec<u8>> {
+    pub(super) async fn take_payload(&mut self) -> Option<PacketPayload> {
         poll_fn(|cx| self.poll_take(cx)).await
     }
 
-    fn poll_take(&mut self, cx: &mut Context<'_>) -> Poll<Option<Vec<u8>>> {
+    /// [`Self::take_payload`], joined into one exactly sized payload.
+    #[cfg(test)]
+    async fn take(&mut self) -> Option<Vec<u8>> {
+        self.take_payload().await.map(PacketPayload::into_vec)
+    }
+
+    fn poll_take(&mut self, cx: &mut Context<'_>) -> Poll<Option<PacketPayload>> {
         let (chunks, buffered, writer) = {
             let mut state = self.shared.lock();
             if state.buffered == 0 {
@@ -201,7 +214,11 @@ impl PacketPipeReader {
         if let Some(writer) = writer {
             writer.wake();
         }
-        Poll::Ready(Some(join_chunks(chunks, buffered)))
+        Poll::Ready(Some(PacketPayload {
+            front: Bytes::new(),
+            chunks,
+            len: buffered,
+        }))
     }
 }
 
@@ -217,6 +234,138 @@ impl Drop for PacketPipeReader {
         if let Some(writer) = writer {
             writer.wake();
         }
+    }
+}
+
+/// The bytes one take handed over, in the chunks they were written into.
+///
+/// As a [`Buf`], [`Buf::copy_to_bytes`] hands out the next bytes as a share
+/// of their chunk when they lie in one, and copies exactly them when they
+/// span two or more, so an upload cuts its DATA frames where it always did
+/// and copies only the frames that cross a chunk's end. A chunk is freed
+/// once every byte of it is handed out and the shares of it are dropped.
+#[derive(Default)]
+pub(super) struct PacketPayload {
+    /// The chunk being handed out, once a part of it has been; empty
+    /// otherwise. As `Bytes`, a part of it can be shared rather than copied.
+    front: Bytes,
+    /// The chunks after `front`, untouched.
+    chunks: VecDeque<Vec<u8>>,
+    /// Bytes not yet handed out, in `front` and `chunks`.
+    len: usize,
+}
+
+impl PacketPayload {
+    /// One exactly sized payload, for the uploads that send one slice (the
+    /// HTTP/1 POST) and the placements that encode it into headers.
+    pub(super) fn into_vec(self) -> Vec<u8> {
+        if self.front.is_empty() {
+            return join_chunks(self.chunks, self.len);
+        }
+        if self.chunks.is_empty() {
+            return Vec::from(self.front);
+        }
+        let mut payload = Vec::with_capacity(self.len);
+        payload.extend_from_slice(&self.front);
+        for chunk in self.chunks {
+            payload.extend_from_slice(&chunk);
+        }
+        payload
+    }
+
+    /// Moves the next chunk into `front` once `front` is used up. Only the
+    /// last chunk can have spare room; it is trimmed as a lone chunk always
+    /// was, so a share of it does not keep the room alive.
+    fn load_front(&mut self) {
+        if self.front.is_empty() {
+            if let Some(mut chunk) = self.chunks.pop_front() {
+                chunk.shrink_to_fit();
+                self.front = Bytes::from(chunk);
+            }
+        }
+    }
+
+    /// Lets go of `front`'s chunk once every byte of it is handed out.
+    fn release_front(&mut self) {
+        if self.front.is_empty() {
+            self.front = Bytes::new();
+        }
+    }
+}
+
+impl From<Vec<u8>> for PacketPayload {
+    fn from(payload: Vec<u8>) -> Self {
+        Self {
+            len: payload.len(),
+            front: Bytes::from(payload),
+            chunks: VecDeque::new(),
+        }
+    }
+}
+
+impl std::fmt::Debug for PacketPayload {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PacketPayload")
+            .field("len", &self.len)
+            .field(
+                "chunks",
+                &(usize::from(!self.front.is_empty()) + self.chunks.len()),
+            )
+            .finish()
+    }
+}
+
+impl Buf for PacketPayload {
+    fn remaining(&self) -> usize {
+        self.len
+    }
+
+    fn chunk(&self) -> &[u8] {
+        if self.front.is_empty() {
+            self.chunks.front().map_or(&[], Vec::as_slice)
+        } else {
+            &self.front
+        }
+    }
+
+    fn advance(&mut self, mut count: usize) {
+        assert!(
+            count <= self.len,
+            "advanced {count} bytes past a payload of {}",
+            self.len
+        );
+        self.len -= count;
+        while count > 0 {
+            self.load_front();
+            let step = count.min(self.front.len());
+            self.front.advance(step);
+            self.release_front();
+            count -= step;
+        }
+    }
+
+    fn copy_to_bytes(&mut self, len: usize) -> Bytes {
+        assert!(
+            len <= self.len,
+            "asked for {len} bytes of a payload of {}",
+            self.len
+        );
+        self.load_front();
+        if len <= self.front.len() {
+            self.len -= len;
+            let shared = self.front.split_to(len);
+            self.release_front();
+            return shared;
+        }
+        let mut copy = Vec::with_capacity(len);
+        while copy.len() < len {
+            self.load_front();
+            let step = (len - copy.len()).min(self.front.len());
+            copy.extend_from_slice(&self.front[..step]);
+            self.advance(step);
+        }
+        Bytes::from(copy)
     }
 }
 
@@ -385,6 +534,106 @@ mod tests {
             Pin::new(&mut writer).poll_write(&mut cx, &input[POST..]),
             Poll::Ready(Err(error)) if error.kind() == io::ErrorKind::BrokenPipe
         ));
+    }
+
+    /// The DATA frames the HTTP/2 upload cuts from `payload`: each as large
+    /// as the next grant allows, at most 16 KiB (`h2::MAX_UPLOAD_DATA_BYTES`).
+    fn frames(payload: &mut impl Buf, grants: &[usize]) -> Vec<Bytes> {
+        let mut frames = Vec::new();
+        for grant in grants.iter().cycle() {
+            if !payload.has_remaining() {
+                break;
+            }
+            let wanted = payload.remaining().min(16 * 1024);
+            frames.push(payload.copy_to_bytes(wanted.min(*grant)));
+        }
+        frames
+    }
+
+    #[tokio::test]
+    async fn frames_are_cut_where_the_joined_payload_cut_them() {
+        let writes = [64, 1_000, 32 * 1024, 7, 16 * 1024, 20_000, 1, 8 * 1024];
+        let grants = [16 * 1024, 4_096, 16 * 1024, 1, 16 * 1024, 9_000];
+        let (mut writer, mut reader) = packet_pipe(POST);
+        let mut input = Vec::new();
+        for (index, len) in writes.into_iter().enumerate() {
+            let bytes: Vec<u8> = (0..len).map(|byte| (byte * 7 + index) as u8).collect();
+            writer.write_all(&bytes).await.unwrap();
+            input.extend_from_slice(&bytes);
+        }
+        let mut payload = reader.take_payload().await.unwrap();
+        assert_eq!(payload.remaining(), input.len());
+
+        let mut joined = Bytes::from(input);
+        assert_eq!(frames(&mut payload, &grants), frames(&mut joined, &grants));
+        assert!(!payload.has_remaining());
+        assert!(payload.chunks.is_empty() && payload.front.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_frame_inside_a_chunk_shares_it_and_one_across_chunks_is_a_copy() {
+        let (mut writer, mut reader) = packet_pipe(POST);
+        // The header takes an 8 KiB chunk; the large write fills its room
+        // and puts the rest, 51 872 bytes, into one chunk of its own.
+        writer.write_all(&[0x42; 64]).await.unwrap();
+        let large: Vec<u8> = (0..60_000_usize).map(|index| index as u8).collect();
+        writer.write_all(&large).await.unwrap();
+        let (first, second) = {
+            let state = writer.shared.lock();
+            assert_eq!(state.chunks.len(), 2);
+            (state.chunks[0].as_ptr(), state.chunks[1].as_ptr())
+        };
+
+        let mut payload = reader.take_payload().await.unwrap();
+        let frames = frames(&mut payload, &[16 * 1024]);
+        let lens: Vec<usize> = frames.iter().map(Bytes::len).collect();
+        assert_eq!(lens, [16_384, 16_384, 16_384, 10_912]);
+        // The first frame spans both chunks: a copy of its own.
+        assert_ne!(frames[0].as_ptr(), first);
+        assert_ne!(frames[0].as_ptr(), second);
+        // The rest lie inside the second chunk: shares of it, not copies.
+        for (index, frame) in frames.iter().enumerate().skip(1) {
+            let offset = 16_384 * index - CHUNK_BYTES;
+            assert_eq!(frame.as_ptr(), second.wrapping_add(offset), "frame {index}");
+        }
+        let mut expected = vec![0x42; 64];
+        expected.extend_from_slice(&large);
+        assert!(
+            frames.concat() == expected,
+            "the frames lost or reordered bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_payload_read_as_a_buf_frees_each_chunk_once_it_is_read() {
+        let (mut writer, mut reader) = packet_pipe(POST);
+        let input: Vec<u8> = (0..150_000_usize)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        for piece in input.chunks(1_000) {
+            writer.write_all(piece).await.unwrap();
+        }
+        let mut payload = reader.take_payload().await.unwrap();
+        let chunks = payload.chunks.len();
+        assert_eq!(chunks, 150_000_usize.div_ceil(CHUNK_BYTES));
+
+        let ends: Vec<usize> = (1..=chunks)
+            .map(|chunk| (chunk * CHUNK_BYTES).min(input.len()))
+            .collect();
+        let mut output = Vec::new();
+        while payload.has_remaining() {
+            let step = payload.chunk().len().min(3_000);
+            output.extend_from_slice(&payload.chunk()[..step]);
+            payload.advance(step);
+            let read = output.len();
+            let held = usize::from(!payload.front.is_empty()) + payload.chunks.len();
+            let unread = ends.iter().filter(|&&end| end > read).count();
+            assert_eq!(
+                held, unread,
+                "after {read} bytes the payload holds {held} chunks"
+            );
+        }
+        assert!(output == input, "the payload lost or reordered bytes");
     }
 
     #[tokio::test]

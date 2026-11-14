@@ -22,7 +22,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_compression::tokio::bufread::GzipDecoder;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use futures_util::task::AtomicWaker;
 use http::{header, HeaderName, HeaderValue, Method, Request, Version};
 use rand::{rngs::OsRng, RngCore};
@@ -34,13 +34,13 @@ use tokio::time::Instant;
 use xray_routing::Target;
 
 use super::super::http_headers::HeaderMap as XhttpHeaderMap;
-use super::config::{XhttpConfig, XhttpEndpoint, XhttpMode, XhttpRange};
+use super::config::{XhttpConfig, XhttpEndpoint, XhttpMode, XhttpRange, XhttpUplinkDataPlacement};
 use super::h1::{start_chunked_request, start_fixed_request, H1Error, H1Request, H1ResponseBody};
 use super::h2::{connect_h2_with_window, H2Client, H2Error, H2ReceiveWindow, H2ResponseBody};
 use super::h3::{
     connect_h3_candidates, H3Client, H3ConnectConfig, H3Error, H3QuicConfig, H3ResponseBody,
 };
-use super::packet_pipe::{packet_pipe, PacketPipeReader};
+use super::packet_pipe::{packet_pipe, PacketPayload, PacketPipeReader};
 use super::padding::draw_range;
 use super::request::{
     compose_packet_request_from, compose_stream_request_from, XhttpRequest, XhttpRequestBase,
@@ -88,6 +88,18 @@ struct PreparedRequest {
     /// relevant: an explicit non-empty caller header must never trigger
     /// transparent response decoding.
     auto_gzip: bool,
+}
+
+/// A packet POST ready to send. Its chunks are kept beside the request
+/// rather than in [`PreparedRequest`], which the opening futures hold across
+/// awaits (`future_layout_tests` in xray-core-rs bound their size).
+#[derive(Debug)]
+struct PreparedPacket {
+    prepared: PreparedRequest,
+    /// The payload when it is sent from the pipe's chunks as they are
+    /// (HTTP/2 and HTTP/3, in the body); `prepared.request.body` is then
+    /// empty.
+    chunks: Option<PacketPayload>,
 }
 
 struct PacketWorkerContext {
@@ -395,9 +407,10 @@ impl XhttpTransport {
         sequence: i64,
         payload: Vec<u8>,
     ) -> Result<Request<()>, XhttpTransportError> {
-        let mut prepared = self.compose_packet(session, &sequence.to_string(), payload)?;
-        let body = take_packet_body(&mut prepared.request)?;
-        self.h2_request(&prepared.request, Some(body.len()))
+        let mut packet =
+            self.compose_packet(session, &sequence.to_string(), PacketPayload::from(payload))?;
+        let body = take_packet_payload(&mut packet)?;
+        self.h2_request(&packet.prepared.request, Some(body.remaining()))
     }
 
     #[doc(hidden)]
@@ -961,8 +974,8 @@ impl XhttpTransport {
         } = context;
 
         // Each POST's payload is taken from the pipe as it stands: everything
-        // waiting, at most one POST, in one allocation of its own size that
-        // the request owns until it is sent. Nothing between POSTs stays
+        // waiting, at most one POST, in the chunks it was written into, which
+        // the request owns until each is sent. Nothing between POSTs stays
         // allocated, so an idle flow holds no buffer at all.
         let mut sequence = 0_i64;
         let mut last_request = None;
@@ -973,19 +986,20 @@ impl XhttpTransport {
         let mut rotated_upload_usage = None;
         match self.http_version {
             XhttpHttpVersion::Http1 => loop {
-                let Some(payload) = input.take().await else {
+                let Some(payload) = input.take_payload().await else {
                     return Ok(());
                 };
                 self.wait_packet_interval(&mut last_request).await?;
                 self.rotate_packet_client_if_needed(&mut upload_client, &mut rotated_upload_usage)
                     .await?;
-                let request = self.compose_packet(&session, &sequence.to_string(), payload)?;
+                let packet = self.compose_packet(&session, &sequence.to_string(), payload)?;
                 sequence = sequence.wrapping_add(1);
                 // The upstream H1 raw pool writes one request, then consumes
                 // its response before that same connection can be checked out
                 // again. Waiting here preserves that ordering and is what
-                // makes returning a socket to our safe pool possible.
-                self.send_h1_packet(&upload_client, dial.stream()?, request)
+                // makes returning a socket to our safe pool possible. HTTP/1
+                // gets the payload joined, in the request's body.
+                self.send_h1_packet(&upload_client, dial.stream()?, packet.prepared)
                     .await?;
             },
             XhttpHttpVersion::Http2 | XhttpHttpVersion::Http3 => {
@@ -1156,7 +1170,7 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpModeDial,
-        request: PreparedRequest,
+        request: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), StoredFailure> {
         match self.http_version {
@@ -1182,7 +1196,7 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpDial,
-        request: PreparedRequest,
+        request: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), StoredFailure> {
         let result = self
@@ -1201,10 +1215,11 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpDial,
-        mut prepared: PreparedRequest,
+        mut packet: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), XhttpTransportError> {
-        let body = Bytes::from(take_packet_body(&mut prepared.request)?);
+        let body = take_packet_payload(&mut packet)?;
+        let prepared = packet.prepared;
         let auto_gzip = prepared.auto_gzip;
         let exchange = async {
             let mut force_fresh = false;
@@ -1214,7 +1229,7 @@ impl XhttpTransport {
                 } else {
                     client.h2_client(Arc::clone(&dial)).await?
                 };
-                let request = self.h2_request(&prepared.request, Some(body.len()))?;
+                let request = self.h2_request(&prepared.request, Some(body.remaining()))?;
                 match checkout.client.start_streaming(request).await {
                     Ok((upload, pending)) => return Ok((checkout, upload, pending)),
                     Err(error)
@@ -1296,7 +1311,7 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpH3Dial,
-        request: PreparedRequest,
+        request: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), StoredFailure> {
         let result = self
@@ -1315,10 +1330,11 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpH3Dial,
-        mut prepared: PreparedRequest,
+        mut packet: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), XhttpTransportError> {
-        let body = take_packet_body(&mut prepared.request)?;
+        let mut body = take_packet_payload(&mut packet)?;
+        let prepared = packet.prepared;
         let auto_gzip = prepared.auto_gzip;
         let checkout = match client.h3_client(dial).await {
             Ok(checkout) => checkout,
@@ -1327,7 +1343,7 @@ impl XhttpTransport {
                 return Err(error);
             }
         };
-        let request = match self.h3_request(&prepared.request, Some(body.len())) {
+        let request = match self.h3_request(&prepared.request, Some(body.remaining())) {
             Ok(request) => request,
             Err(error) => {
                 let _ = uploaded.send(Err(StoredFailure::from_error(&error)));
@@ -1345,8 +1361,9 @@ impl XhttpTransport {
 
         let mut uploaded = Some(uploaded);
         let mut upload_future = Box::pin(async move {
+            // Chunk by chunk, each freed once it is written.
             upload
-                .write_all(&body)
+                .write_all_buf(&mut body)
                 .await
                 .map_err(XhttpTransportError::Io)?;
             upload.shutdown().await.map_err(XhttpTransportError::Io)
@@ -1421,15 +1438,30 @@ impl XhttpTransport {
         &self,
         session: &str,
         sequence: &str,
-        payload: Vec<u8>,
-    ) -> Result<PreparedRequest, XhttpTransportError> {
+        payload: PacketPayload,
+    ) -> Result<PreparedPacket, XhttpTransportError> {
+        // HTTP/2 and HTTP/3 send a payload that goes in the body from the
+        // pipe's chunks as they are, and the request is composed around an
+        // empty body: that placement draws nothing and reads none of its
+        // bytes. HTTP/1 writes the body as one slice, and the header and
+        // cookie placements encode one, so they get the chunks joined.
+        let from_chunks = self.http_version != XhttpHttpVersion::Http1
+            && matches!(
+                self.config.uplink_data.placement,
+                XhttpUplinkDataPlacement::Auto | XhttpUplinkDataPlacement::Body
+            );
+        let (composed, chunks) = if from_chunks {
+            (Vec::new(), Some(payload))
+        } else {
+            (payload.into_vec(), None)
+        };
         let mut rng = self.rng_guard()?;
         let mut request = compose_packet_request_from(
             &self.template.base,
             &self.config,
             session,
             sequence,
-            payload,
+            composed,
             &mut **rng,
         )?;
         // Xray's H1 packet uploader calls Request.Write directly, bypassing
@@ -1437,7 +1469,10 @@ impl XhttpTransport {
         // pass through their transports and therefore receive auto-gzip.
         let auto_gzip =
             prepare_auto_gzip(&mut request, self.http_version != XhttpHttpVersion::Http1);
-        Ok(PreparedRequest { request, auto_gzip })
+        Ok(PreparedPacket {
+            prepared: PreparedRequest { request, auto_gzip },
+            chunks,
+        })
     }
 
     /// `request` as an HTTP/2 request, its base's headers converted once.
@@ -1555,8 +1590,18 @@ fn fixed_packet_body(request: &XhttpRequest) -> Result<&[u8], XhttpTransportErro
 }
 
 /// Moves a packet POST's payload out of its request, which keeps its target
-/// and headers for a retry. The payload is not copied, and it is freed once
+/// and headers for a retry: the pipe's chunks when it is sent from them,
+/// else the composed body. Nothing is copied, and each chunk is freed once
 /// its last byte is handed to the connection, not when the response ends.
+fn take_packet_payload(packet: &mut PreparedPacket) -> Result<PacketPayload, XhttpTransportError> {
+    let composed = take_packet_body(&mut packet.prepared.request)?;
+    Ok(match packet.chunks.take() {
+        Some(chunks) => chunks,
+        None => PacketPayload::from(composed),
+    })
+}
+
+/// Moves a composed packet body out of its request.
 fn take_packet_body(request: &mut XhttpRequest) -> Result<Vec<u8>, XhttpTransportError> {
     match std::mem::replace(&mut request.body, XhttpRequestBody::None) {
         XhttpRequestBody::None => Ok(Vec::new()),
@@ -1999,10 +2044,10 @@ async fn join_packet_response(
 async fn take_packet_input(
     input: &mut PacketPipeReader,
     responses: &mut JoinSet<Result<(), StoredFailure>>,
-) -> Result<Option<Vec<u8>>, XhttpTransportError> {
+) -> Result<Option<PacketPayload>, XhttpTransportError> {
     loop {
         if responses.is_empty() {
-            return Ok(input.take().await);
+            return Ok(input.take_payload().await);
         }
         tokio::select! {
             response = responses.join_next() => {
@@ -2013,7 +2058,7 @@ async fn take_packet_input(
                 })?;
                 packet_response_result(response)?;
             }
-            payload = input.take() => {
+            payload = input.take_payload() => {
                 return Ok(payload);
             }
         }
