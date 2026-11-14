@@ -21,7 +21,11 @@ long-term supported release series.
   dropped, DNS-outbound answers are truncated to fit, and a reply that would
   name a domain, or an address of the other family than the one the client
   sent to, names the address the client sent to. Xray-core answers the
-  command `REP = 0x07`.
+  command `REP = 0x07`. In `xray-proxy`, the exhaustive enums
+  `SocksCommand` and `SocksParseError` gain the variants `UdpInTcp` and
+  `InvalidUdpFrame`, so a downstream exhaustive `match` on either must handle
+  them; the frame codec is `encode_socks5_udp_in_tcp_frame`,
+  `decode_socks5_udp_in_tcp_frame` and `socks5_udp_in_tcp_max_reply`.
 
 ## 0.10.0 - 2026-11-13
 
