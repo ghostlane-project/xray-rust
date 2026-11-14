@@ -21,6 +21,7 @@
 //! goes to it, as Chrome's `TurnEntry` does. turn-client-proto refreshes the
 //! allocation, the permissions and the channels itself.
 
+use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
@@ -230,6 +231,9 @@ pub(crate) struct Relays {
     list: Vec<Relay>,
     out: Box<[u8]>,
     dropped: u64,
+    /// The last datagram to a TURN server the host refused (not for a full
+    /// buffer), for the driver's pion line ([`Relays::take_refused`]).
+    refused: Option<(SocketAddr, io::Error)>,
 }
 
 struct Relay {
@@ -292,6 +296,7 @@ impl Relays {
             list,
             out,
             dropped: 0,
+            refused: None,
         }
     }
 
@@ -389,14 +394,23 @@ impl Relays {
             Ok(Some(wrapped)) if wrapped.data.len() <= self.out.len() => {
                 let server = wrapped.to;
                 let w = wrapped.write_into(&mut self.out);
-                if sock.try_send_to(w.data, server).is_err() {
+                if let Err(e) = sock.try_send_to(w.data, server) {
                     self.dropped += 1;
+                    if e.kind() != io::ErrorKind::WouldBlock {
+                        self.refused = Some((server, e));
+                    }
                 }
             }
             Ok(None) => {}
             Ok(Some(_)) | Err(_) => self.dropped += 1,
         }
         true
+    }
+
+    /// The TURN server and the error of the last datagram the host refused
+    /// to send to it since the last call.
+    pub(crate) fn take_refused(&mut self) -> Option<(SocketAddr, io::Error)> {
+        self.refused.take()
     }
 
     /// Runs the relays' timers, sends what their clients queued and

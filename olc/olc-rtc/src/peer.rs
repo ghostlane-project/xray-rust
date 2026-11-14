@@ -141,11 +141,14 @@ pub enum PeerError {
     /// str0m refused.
     #[error("{0}")]
     Rtc(String),
-    /// No such channel (yet, or any more).
-    #[error("data channel not open")]
+    /// No such channel (yet, or any more). Worded as pion's
+    /// `io.ErrClosedPipe`, which `DataChannel.Send` returns for a channel
+    /// that is not open: the apps read `read/write on closed pipe` in the
+    /// engine's log as a lost transport.
+    #[error("io: read/write on closed pipe")]
     NoChannel,
-    /// The driver has ended.
-    #[error("peer connection closed")]
+    /// The driver has ended (pion's `io.ErrClosedPipe` too).
+    #[error("io: read/write on closed pipe")]
     Closed,
 }
 
@@ -187,6 +190,8 @@ struct Shared {
     turn_ready: Mutex<Option<Vec<Resolved>>>,
     /// Datagrams that could not go through a relay ([`Relays::dropped`]).
     relay_dropped: AtomicU64,
+    /// When pion's refused-send line was written last ([`note_refused`]).
+    refused_said: Mutex<Option<Instant>>,
 }
 
 /// The str0m settings every peer uses: RTP mode (media would pass through
@@ -232,6 +237,7 @@ impl Peer {
             turn: Mutex::new(cfg.turn.clone()),
             turn_ready: Mutex::new(None),
             relay_dropped: AtomicU64::new(0),
+            refused_said: Mutex::new(None),
         });
         let (tx, rx) = mpsc::channel(EVENT_QUEUE);
         tokio::spawn(drive(sh.clone(), sock, tx));
@@ -400,6 +406,59 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// The most often pion's refused-send line is written for one peer
+/// connection. pion writes one for every datagram the host refuses
+/// (`candidateBase.writeTo`); a path that is down refuses hundreds a second,
+/// and the apps need three lines in six seconds (Android's
+/// `RTC_IO_ERROR_RECOVERY_THRESHOLD`, `RTC_FAILURE_WINDOW_MS`).
+pub const REFUSED_LINE_EVERY: Duration = Duration::from_millis(100);
+
+/// pion's words for a datagram the host refused: `Failed to send packet:`
+/// and Go's `net.OpError` for a UDP write, whose error is the syscall's in
+/// Go's words (lower case, no `os error` suffix). The apps read `network is
+/// unreachable` in it as a path that went away.
+#[must_use]
+pub fn refused_line(local: SocketAddr, to: SocketAddr, e: &io::Error) -> String {
+    let net = if local.is_ipv4() { "udp4" } else { "udp6" };
+    format!(
+        "Failed to send packet: write {net} {local}->{to}: sendto: {}",
+        go_errno_text(e)
+    )
+}
+
+/// An OS error as Go's `syscall.Errno` says it: the C library's message,
+/// first letter in lower case, without Rust's ` (os error N)`.
+fn go_errno_text(e: &io::Error) -> String {
+    let Some(code) = e.raw_os_error() else {
+        return e.to_string();
+    };
+    let text = io::Error::from_raw_os_error(code).to_string();
+    let text = text.split(" (os error").next().unwrap_or(&text);
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// Counts a datagram the host refused and, for a refusal pion would have
+/// seen (not a full socket buffer: Go's write blocks there), writes pion's
+/// line at most once per [`REFUSED_LINE_EVERY`].
+fn note_refused(sh: &Shared, local: SocketAddr, to: SocketAddr, e: &io::Error) {
+    sh.send_refused.fetch_add(1, Ordering::Relaxed);
+    if e.kind() == io::ErrorKind::WouldBlock {
+        return;
+    }
+    let now = Instant::now();
+    let mut last = lock(&sh.refused_said);
+    if last.is_some_and(|t| now.duration_since(t) < REFUSED_LINE_EVERY) {
+        return;
+    }
+    *last = Some(now);
+    drop(last);
+    olc_net::info!("[ice] INFO: {}", refused_line(local, to, e));
+}
+
 /// Polls str0m until it asks to be woken: sends what it transmits (from a
 /// relayed address, through its relay), keeps its events. Returns when to
 /// wake it.
@@ -415,10 +474,12 @@ fn pump(
         match rtc.poll_output().map_err(|e| format!("poll: {e}"))? {
             Output::Timeout(t) => return Ok(t),
             Output::Transmit(t) => {
-                if !relays.send(sock, t.source, t.destination, &t.contents, now)
-                    && sock.try_send_to(&t.contents, t.destination).is_err()
-                {
-                    sh.send_refused.fetch_add(1, Ordering::Relaxed);
+                if relays.send(sock, t.source, t.destination, &t.contents, now) {
+                    if let Some((server, e)) = relays.take_refused() {
+                        note_refused(sh, sh.local, server, &e);
+                    }
+                } else if let Err(e) = sock.try_send_to(&t.contents, t.destination) {
+                    note_refused(sh, sh.local, t.destination, &e);
                 }
             }
             Output::Event(e) => events.push(e),
@@ -587,6 +648,74 @@ mod tests {
     use str0m::channel::{ChannelConfig, Reliability};
 
     use super::*;
+
+    /// A send on a channel that is not open says pion's `io.ErrClosedPipe`
+    /// (`DataChannel.Send`'s `ensureOpen`), so the session's
+    /// `salutejazz data channel send: ...` reads as Go's, which the apps
+    /// take for a lost transport.
+    #[test]
+    fn a_send_without_a_channel_says_pions_closed_pipe() {
+        assert_eq!(
+            PeerError::NoChannel.to_string(),
+            "io: read/write on closed pipe"
+        );
+        assert_eq!(
+            PeerError::Closed.to_string(),
+            "io: read/write on closed pipe"
+        );
+    }
+    /// pion's line for a refused datagram, in Go's words, as the apps
+    /// match it (lower case `network is unreachable`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_refused_send_reads_as_pions_line() {
+        let local: SocketAddr = "192.0.2.1:5000".parse().unwrap();
+        let to: SocketAddr = "198.51.100.2:3478".parse().unwrap();
+        assert_eq!(
+            refused_line(local, to, &io::Error::from_raw_os_error(101)),
+            "Failed to send packet: write udp4 192.0.2.1:5000->198.51.100.2:3478: sendto: network is unreachable"
+        );
+        let v6: SocketAddr = "[2001:db8::1]:5000".parse().unwrap();
+        let to6: SocketAddr = "[2001:db8::2]:3478".parse().unwrap();
+        assert_eq!(
+            refused_line(v6, to6, &io::Error::from_raw_os_error(113)),
+            "Failed to send packet: write udp6 [2001:db8::1]:5000->[2001:db8::2]:3478: sendto: no route to host"
+        );
+    }
+
+    /// A refusal is counted every time; the line is written at most once
+    /// per [`REFUSED_LINE_EVERY`], and never for a full socket buffer.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn refused_sends_are_counted_and_said_sparingly() {
+        crate::testing::bounded(async {
+            let (a, _rx) = Peer::start(&config("a", 1 << 20)).unwrap();
+            let to: SocketAddr = "198.51.100.2:3478".parse().unwrap();
+            let local = a.sh.local;
+            let unreachable = io::Error::from_raw_os_error(101);
+            note_refused(
+                &a.sh,
+                local,
+                to,
+                &io::Error::from(io::ErrorKind::WouldBlock),
+            );
+            assert!(
+                lock(&a.sh.refused_said).is_none(),
+                "a full buffer is not pion's refusal"
+            );
+            note_refused(&a.sh, local, to, &unreachable);
+            let first = lock(&a.sh.refused_said).expect("said once");
+            note_refused(&a.sh, local, to, &unreachable);
+            assert_eq!(
+                *lock(&a.sh.refused_said),
+                Some(first),
+                "not again within the interval"
+            );
+            assert_eq!(a.send_refused(), 3);
+            a.close();
+        })
+        .await;
+    }
     use crate::testing::bounded;
 
     /// The event queue holds [`EVENT_QUEUE`] of these per peer connection,
