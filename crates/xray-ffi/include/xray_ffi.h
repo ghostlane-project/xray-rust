@@ -213,7 +213,7 @@ XrayStatus xray_core_set_tun_admission(
     XrayTunAdmissionRelease release, void *user_data, uint32_t timeout_ms,
     int32_t fail_open, XrayError **error);
 
-/* ABI 1.18. Kind of a line handed to the log callback: Xray-core's log
+/* ABI 1.19. Kind of a line handed to the log callback: Xray-core's log
  * severities, numbered as its Severity, and ACCESS for an access-log line. */
 typedef enum XrayLogLevel {
   XRAY_LOG_LEVEL_ERROR = 1,
@@ -460,7 +460,7 @@ XrayStatus xray_core_set_socket_protect_callback(
     XraySocketProtectCallback callback,
     void *user_data,
     XrayError **error);
-/* Set before config load. Since ABI 1.18 the files hold what the config's
+/* Set before config load. Since ABI 1.19 the files hold what the config's
  * `log` object asks for: error-log lines from its loglevel (default warning)
  * up, and access lines only when its access names a log, whose path is not
  * opened; a file that would get no line is not created. Each file is capped
@@ -470,7 +470,7 @@ XrayStatus xray_core_set_file_logging(
     const char *log_dir,
     int32_t enabled,
     XrayError **error);
-/* ABI 1.18, no capability bit: check the minor. Register before config load;
+/* ABI 1.19, no capability bit: check the minor. Register before config load;
  * lines then go to callback and no log file is opened. The config's `log`
  * object filters them as it filters the files. callback runs on the core's
  * log thread, one line at a time and in order, never on a data-path thread;

@@ -1396,7 +1396,7 @@ lines are written, and differs in where they go and in what they say:
   has no one reading its standard output, and an access line is the record of
   a connection.
 - The `access` and `error` paths are never opened. Lines go to the files or
-  the callback the embedding chose (see [the C ABI](ffi.md#runtime-log-abi-118));
+  the callback the embedding chose (see [the C ABI](ffi.md#runtime-log-abi-119));
   a path other than `none` only turns its log on.
 - `dnsLog` and `maskAddress` are checked and ignored. Xray-core writes DNS
   queries to its access log when `dnsLog` is true and masks addresses in its

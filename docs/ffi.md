@@ -8,7 +8,7 @@ source of truth for declarations and enum values.
 ## ABI version
 
 Call `xray_ffi_version_major()` and `xray_ffi_version_minor()` before creating a
-handle. The current ABI version is `1.18`. The checked-in Swift and JNI adapters
+handle. The current ABI version is `1.19`. The checked-in Swift and JNI adapters
 reject any major other than `1` and require minor `1` or newer. Their selector
 and health methods require the corresponding ABI 1.2 capability bits; their
 connection-management methods require the ABI 1.3 capability bit, and routing
@@ -30,7 +30,7 @@ Startup-probe preflight requires minor >=12 and `STARTUP_PROBE_PREFLIGHT` (bit 2
 A TUN MTU other than 1500 requires minor >=16 and `TUN_MTU` (bit 29).
 VLESS link import requires minor >=17, `PROFILE_IMPORT` and
 `VLESS_PROFILE_IMPORT` (bit 30); see the [format contract](vless-profile-import.md).
-The [log callback](#runtime-log-abi-118) requires minor >=18; it has no
+The [log callback](#runtime-log-abi-119) requires minor >=19; it has no
 capability bit.
 
 An incompatible function signature, enum representation, ownership rule, or
@@ -683,7 +683,7 @@ TCP does not call the policy again; enabled UDP uses a bounded tuple lookup.
 There are no per-packet host/JNI calls. `XrayTunAdmissionOptions` exposes the same
 optional policy in Kotlin and Swift.
 
-## Runtime log (ABI 1.18)
+## Runtime log (ABI 1.19)
 
 The runtime log is off until the host asks for it before config load, with
 `xray_core_set_file_logging` (files in a directory) or
@@ -722,4 +722,4 @@ Both callbacks must return promptly, never unwind across C and never call core
 lifecycle methods.
 
 A capability bit would be bit 31, which a C `int` enumerator cannot hold
-portably, so a host checks `xray_ffi_version_minor() >= 18` instead.
+portably, so a host checks `xray_ffi_version_minor() >= 19` instead.

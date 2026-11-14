@@ -1,7 +1,7 @@
 use super::*;
 use xray_core_rs::RuntimeLogKind;
 
-/// Kind of a line handed to the log callback (ABI 1.18): Xray-core's log
+/// Kind of a line handed to the log callback (ABI 1.19): Xray-core's log
 /// severities, numbered as its `Severity`, and `Access` for an access-log
 /// line. The C ABI transports it as `int32_t`.
 #[repr(C)]
@@ -70,7 +70,7 @@ impl Drop for FfiLogCallback {
     }
 }
 
-/// Sends the runtime log to a host callback instead of files (ABI 1.18).
+/// Sends the runtime log to a host callback instead of files (ABI 1.19).
 ///
 /// Register before config load. Once set, `xray_core_set_file_logging` opens
 /// no file. The config's `log` object decides which lines are delivered, as it

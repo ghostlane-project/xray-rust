@@ -32,7 +32,7 @@ use xray_tun::TunTcpSlowFlowKind;
 use zeroize::Zeroize;
 
 pub const XRAY_FFI_ABI_MAJOR: u32 = 1;
-pub const XRAY_FFI_ABI_MINOR: u32 = 18;
+pub const XRAY_FFI_ABI_MINOR: u32 = 19;
 
 pub const XRAY_FFI_CAPABILITY_CONFIG_WARNINGS: u64 = 1 << 0;
 pub const XRAY_FFI_CAPABILITY_GEODATA_SEARCH: u64 = 1 << 1;
@@ -788,7 +788,7 @@ unsafe fn xray_core_set_geodata_search_dir_inner(
 ///
 /// When enabled, `log_dir` is used to create `xray-access.log` and
 /// `xray-error.log` during config load. Set this before loading config.
-/// Since ABI 1.18 the files hold what the config's `log` object asks for:
+/// Since ABI 1.19 the files hold what the config's `log` object asks for:
 /// error-log lines from its `loglevel` (default `warning`) up, and access
 /// lines only when its `access` names a log; a file that would get no line is
 /// not created. Each file is capped at 1 MiB, then moved to `<name>.1`,

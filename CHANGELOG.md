@@ -23,7 +23,7 @@ long-term supported release series.
 - Each runtime log file is capped at 1 MiB: the line that would pass the cap
   moves the file to `<name>.1`, replacing the previous one. A file the config
   gives no line is no longer created.
-- ABI 1.18 adds `xray_core_set_log_callback`: set before config load, it hands
+- ABI 1.19 adds `xray_core_set_log_callback`: set before config load, it hands
   each runtime log line and its `XrayLogLevel` to the host on the log thread,
   instead of files, and releases the host's context exactly once. There is no
   capability bit; hosts check the minor. The Swift and Kotlin adapters do not
