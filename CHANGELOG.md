@@ -10,6 +10,23 @@ long-term supported release series.
 
 ## Unreleased
 
+- A DNS outbound rule can forward a query through the tunnel:
+  `{"action": "forward", "qType": "2-27,29-64,66-65535", "address":
+  "1.1.1.1", "port": 53, "outboundTag": "proxy"}` sends the query unchanged
+  to 1.1.1.1:53 through the `proxy` outbound and returns its answer. With
+  FakeDNS a DNS outbound answers A and AAAA itself; the other types (TXT,
+  SRV, MX, PTR, SVCB and the rest) could only be answered empty or sent
+  Direct, outside the tunnel, and a DNS outbound chained through a REALITY
+  outbound is refused. The query goes over UDP when the client asked over UDP
+  and the outbound carries UDP, over TCP otherwise or when the UDP answer is
+  truncated. Each query is one flow that holds one DNS operation permit until
+  it ends, by the outbound's operation deadline (the smaller of `connIdle`
+  and five seconds); over the limit, at the deadline or on a failure the
+  answer is SERVFAIL. `address` must be an IP address, and the outbound may
+  not be a `dns`, `blackhole` or `loopback` one. Xray-core has no such action
+  and refuses a config that uses it. Configs without a forward rule behave as
+  before.
+
 ## 0.10.0 - 2026-11-13
 
 Release candidate preparation; publication and exact-candidate release

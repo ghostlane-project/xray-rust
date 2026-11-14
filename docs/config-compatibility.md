@@ -4372,7 +4372,8 @@ Xray DNS client.
 
 The compatibility aliases `network`/`address`/`port` override their
 `rewrite*` counterparts exactly as in Xray; a zero port preserves the original
-port. `action` is case-insensitive and must be Direct, Drop, Return, or Hijack.
+port. `action` is case-insensitive and must be Direct, Drop, Return, Hijack, or
+Forward, which this core adds (see below).
 `qType` is Xray's `PortList`: a number, or a comma-separated string of types
 and `from-to` ranges over `0..=65535`, where empty entries add nothing. A
 single type reads as a JSON integer, with no sign or leading zero, and a
@@ -4394,6 +4395,35 @@ warning; supplying non-null `qType` and `qtype` together is rejected as
 ambiguous. The former `Reject` action is also accepted with a warning and maps
 to Return with `rCode: 5` unless an explicit `rCode` overrides it. Canonical
 configuration and normalized runtime state use `qType`, Return, and `rCode`.
+
+A Forward rule sends the query, unchanged, to its own server through a named
+outbound, as a flow of its own; Xray-core has no such action and refuses a
+config that uses one:
+
+```json
+{
+  "action": "forward",
+  "qType": "2-27,29-64,66-65535",
+  "address": "1.1.1.1",
+  "port": 53,
+  "outboundTag": "proxy"
+}
+```
+
+`address` must be an IP address, never a tunnel-local DNS address; `port`
+defaults to 53; `outboundTag` must name an outbound that carries flows, not a
+`dns`, `blackhole` or `loopback` one. Only a Forward rule takes these three
+fields, and a rule of another action that has one is an error. The query goes
+over UDP when the client asked over UDP and the outbound carries UDP, and over
+TCP when either does not; a UDP answer with TC set is asked again over TCP
+before the deadline. The flow is opened through the outbound's own protocol
+and transport (REALITY, XHTTP, Hysteria and the rest), not through the DNS
+outbound's `streamSettings` or `rewrite*`, and is not routed: the rule names
+its outbound. Each forwarded query holds one ingress operation permit for its
+whole exchange and ends by the outbound's operation deadline, the smaller of
+`connIdle` and five seconds; a query over the permit limit, a timeout or a
+failure is answered SERVFAIL. AXFR and IXFR are REFUSED. A UDP client still
+gets an answer that fits its payload limit or a truncated empty one.
 
 Deprecated `nonIPQuery`/`blockTypes` are normalized to ordered modern rules and
 emit a warning. They cannot be mixed with non-null `rules`. Config parsing caps
