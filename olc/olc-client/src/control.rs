@@ -294,12 +294,23 @@ async fn write_loop(
         let _ = control::encode(&msg, &mut out);
         let wrote = tokio::select! {
             () = stop.cancelled() => return (End::Stopped, Some(wr)),
-            r = wr.write_all(&out) => r,
+            r = write_message(&mut wr, &out) => r,
         };
         if let Err(e) = wrote {
             return (End::Failed(format!("control: write frame: {e}")), Some(wr));
         }
     }
+}
+
+/// One message, back once its frame is on the connection, as Go's `Write`:
+/// smux returns once each frame's write has its result (smux
+/// stream.go:607-612, session.go:674-708), so a data plane that fails while
+/// a control write waits fails that write (control.go:454-468), and one that
+/// failed before fails the next. olc-smux takes the frame at once; its flush
+/// waits for it to be written.
+async fn write_message(wr: &mut WriteHalf<Stream>, out: &[u8]) -> std::io::Result<()> {
+    wr.write_all(out).await?;
+    wr.flush().await
 }
 
 async fn probe_loop(
