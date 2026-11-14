@@ -1,16 +1,19 @@
+use bytes::BytesMut;
 use std::io::{self, Cursor};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use xray_proxy::inbound::{
-    decode_http_basic_credentials, encode_socks5_udp_datagram, negotiate_socks5,
-    negotiate_socks5_no_auth, parse_http_connect, parse_http_connect_request, parse_socks4_connect,
-    parse_socks5_connect, parse_socks5_request, parse_socks5_request_message,
-    parse_socks5_udp_datagram, read_socks5_command, read_socks5_target,
-    write_socks5_command_not_supported, write_socks5_failure, write_socks5_success,
-    write_socks5_success_with_bind, HttpInboundAccounts, HttpParseError, SocksAccount,
-    SocksCommand, SocksInboundAuth, SocksParseError, MAX_SOCKS_CREDENTIAL_LENGTH,
+    decode_http_basic_credentials, decode_socks5_udp_in_tcp_frame, encode_socks5_udp_datagram,
+    encode_socks5_udp_in_tcp_frame, negotiate_socks5, negotiate_socks5_no_auth, parse_http_connect,
+    parse_http_connect_request, parse_socks4_connect, parse_socks5_connect, parse_socks5_request,
+    parse_socks5_request_message, parse_socks5_udp_datagram, read_socks5_command,
+    read_socks5_target, socks5_udp_in_tcp_max_reply, write_socks5_command_not_supported,
+    write_socks5_failure, write_socks5_success, write_socks5_success_with_bind,
+    HttpInboundAccounts, HttpParseError, SocksAccount, SocksCommand, SocksInboundAuth,
+    SocksParseError, SocksUdpDatagram, MAX_SOCKS_CREDENTIAL_LENGTH,
+    SOCKS5_UDP_IN_TCP_CLIENT_BUFFER,
 };
 use xray_routing::{Network, Target, TargetAddr};
 
@@ -920,6 +923,199 @@ async fn socks5_commands_are_refused_before_their_address() {
         .await
         .unwrap();
     assert_eq!(target.network, Network::Udp);
+}
+
+/// hev-socks5's `FWD_UDP` request as its client sends it: an all-zero
+/// IPv4 address and port.
+#[tokio::test]
+async fn socks5_fwd_udp_reads_as_udp_in_tcp() {
+    let request = [5, 5, 0, 1, 0, 0, 0, 0, 0, 0];
+    let request = parse_socks5_request_message(&request[..]).await.unwrap();
+    assert_eq!(request.command, SocksCommand::UdpInTcp);
+    assert_eq!(request.target.network, Network::Udp);
+    assert_eq!(request.target.port, 0);
+}
+
+fn udp_target(addr: Result<TargetAddr, SocksParseError>, port: u16) -> Target {
+    Target::new(addr.unwrap(), port, Network::Udp)
+}
+
+/// One frame for each address type, laid out as hev-socks5-core writes its
+/// `HevSocks5UDPHdr` (`hev-socks5-udp.c` at `162dd996`).
+#[test]
+fn socks5_udp_in_tcp_frames_lay_out_as_hev_socks5_writes_them() {
+    let ipv4 = udp_target(ip("172.19.0.2"), 53);
+    assert_eq!(
+        encode_socks5_udp_in_tcp_frame(&ipv4, b"abc").unwrap(),
+        [0, 3, 10, 1, 172, 19, 0, 2, 0, 53, b'a', b'b', b'c']
+    );
+    let ipv6 = udp_target(ip("2001:db8::1"), 443);
+    let frame = encode_socks5_udp_in_tcp_frame(&ipv6, b"q").unwrap();
+    assert_eq!(frame[..4], [0, 1, 22, 4]);
+    assert_eq!(frame[20..], [1, 187, b'q']);
+    let name = udp_target(domain("example.com"), 443);
+    let frame = encode_socks5_udp_in_tcp_frame(&name, b"").unwrap();
+    assert_eq!(frame[..5], [0, 0, 18, 3, 11]);
+    assert_eq!(&frame[5..16], b"example.com");
+    assert_eq!(frame[16..], [1, 187]);
+
+    let tcp = Target::new(
+        TargetAddr::Domain("example.com".to_owned()),
+        443,
+        Network::Tcp,
+    );
+    assert!(encode_socks5_udp_in_tcp_frame(&tcp, b"x").is_err());
+}
+
+/// Frames split by the reads that carry them, a byte at a time, and several
+/// arriving in one read come out whole, in order, and only once complete.
+#[test]
+fn socks5_udp_in_tcp_frames_survive_split_and_joined_reads() {
+    let datagrams = [
+        (udp_target(ip("172.19.0.2"), 53), b"first query".to_vec()),
+        (udp_target(ip("2001:db8::1"), 443), vec![0x5a; 1200]),
+        (udp_target(domain("example.com"), 3478), b"".to_vec()),
+        (udp_target(ip("192.0.2.7"), 9), b"last".to_vec()),
+    ];
+    let mut stream = Vec::new();
+    for (target, payload) in &datagrams {
+        stream.extend(encode_socks5_udp_in_tcp_frame(target, payload).unwrap());
+    }
+    let expected: Vec<SocksUdpDatagram> = datagrams
+        .iter()
+        .map(|(target, payload)| SocksUdpDatagram {
+            target: target.clone(),
+            payload: payload.clone().into(),
+        })
+        .collect();
+
+    // A byte at a time: nothing until a frame's last byte.
+    let mut buffer = BytesMut::new();
+    let mut decoded = Vec::new();
+    for (index, byte) in stream.iter().enumerate() {
+        buffer.extend_from_slice(&[*byte]);
+        while let Some(datagram) = decode_socks5_udp_in_tcp_frame(&mut buffer).unwrap() {
+            decoded.push((index, datagram));
+        }
+    }
+    let mut end = 0;
+    let ends: Vec<usize> = datagrams
+        .iter()
+        .map(|(target, payload)| {
+            end += encode_socks5_udp_in_tcp_frame(target, payload)
+                .unwrap()
+                .len();
+            end - 1
+        })
+        .collect();
+    assert_eq!(
+        decoded.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+        ends
+    );
+    assert_eq!(
+        decoded
+            .into_iter()
+            .map(|(_, datagram)| datagram)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    assert!(buffer.is_empty());
+
+    // Every frame in one read, then the last frame cut in two.
+    let mut buffer = BytesMut::from(&stream[..stream.len() - 2]);
+    let mut decoded = Vec::new();
+    while let Some(datagram) = decode_socks5_udp_in_tcp_frame(&mut buffer).unwrap() {
+        decoded.push(datagram);
+    }
+    assert_eq!(decoded, expected[..3]);
+    assert_eq!(buffer.len(), 12, "the last frame's first twelve bytes wait");
+    buffer.extend_from_slice(&stream[stream.len() - 2..]);
+    assert_eq!(
+        decode_socks5_udp_in_tcp_frame(&mut buffer).unwrap(),
+        Some(expected[3].clone())
+    );
+    assert_eq!(decode_socks5_udp_in_tcp_frame(&mut buffer).unwrap(), None);
+}
+
+/// `DATLEN` carries up to 65,535 bytes and `HDRLEN` a domain of up to 248;
+/// a hev-socks5 client reads at most 1,500 bytes of address and data.
+#[test]
+fn socks5_udp_in_tcp_frames_carry_the_largest_datagram() {
+    let target = udp_target(ip("192.0.2.7"), 4500);
+    let largest = vec![0xa5; usize::from(u16::MAX)];
+    let frame = encode_socks5_udp_in_tcp_frame(&target, &largest).unwrap();
+    assert_eq!(frame.len(), 10 + largest.len());
+    let mut buffer = BytesMut::from(&frame[..frame.len() - 1]);
+    assert_eq!(decode_socks5_udp_in_tcp_frame(&mut buffer).unwrap(), None);
+    assert!(buffer.capacity() >= frame.len());
+    buffer.extend_from_slice(&frame[frame.len() - 1..]);
+    let datagram = decode_socks5_udp_in_tcp_frame(&mut buffer)
+        .unwrap()
+        .unwrap();
+    assert_eq!(datagram.target, target);
+    assert_eq!(datagram.payload.len(), largest.len());
+    assert!(buffer.is_empty());
+    assert_eq!(
+        encode_socks5_udp_in_tcp_frame(&target, &vec![0; largest.len() + 1]),
+        Err(SocksParseError::PayloadTooLarge)
+    );
+
+    let name = |len: usize| udp_target(domain(&"a".repeat(len)), 53);
+    let frame = encode_socks5_udp_in_tcp_frame(&name(248), b"x").unwrap();
+    assert_eq!(frame[2], u8::MAX);
+    let mut buffer = BytesMut::from(&frame[..]);
+    assert_eq!(
+        decode_socks5_udp_in_tcp_frame(&mut buffer).unwrap(),
+        Some(SocksUdpDatagram {
+            target: name(248),
+            payload: b"x".as_slice().into(),
+        })
+    );
+    assert_eq!(
+        encode_socks5_udp_in_tcp_frame(&name(249), b"x"),
+        Err(SocksParseError::InvalidDomain)
+    );
+
+    assert_eq!(SOCKS5_UDP_IN_TCP_CLIENT_BUFFER, 1500);
+    assert_eq!(socks5_udp_in_tcp_max_reply(&target), 1493);
+    assert_eq!(
+        socks5_udp_in_tcp_max_reply(&udp_target(ip("2001:db8::1"), 53)),
+        1481
+    );
+    assert_eq!(socks5_udp_in_tcp_max_reply(&name(11)), 1485);
+}
+
+/// A header whose address does not end where `HDRLEN` says, or cannot be
+/// read, leaves nothing after it readable as frames.
+#[test]
+fn socks5_udp_in_tcp_frames_refuse_a_header_that_misstates_its_address() {
+    let decode = |frame: &[u8]| decode_socks5_udp_in_tcp_frame(&mut BytesMut::from(frame));
+    // IPv4 needs ten header bytes: one short, one over.
+    assert_eq!(
+        decode(&[0, 1, 9, 1, 192, 0, 2, 7, 0, 53, b'x']),
+        Err(SocksParseError::InvalidUdpFrame)
+    );
+    assert_eq!(
+        decode(&[0, 1, 11, 1, 192, 0, 2, 7, 0, 53, 0, b'x']),
+        Err(SocksParseError::InvalidUdpFrame)
+    );
+    // IPv6 in an IPv4-sized header, and a header too short for any address.
+    assert_eq!(
+        decode(&[0, 0, 10, 4, 0x20, 1, 0x0d, 0xb8, 0, 0]),
+        Err(SocksParseError::TruncatedUdpDatagram)
+    );
+    assert_eq!(
+        decode(&[0, 0, 0]),
+        Err(SocksParseError::TruncatedUdpDatagram)
+    );
+    assert_eq!(
+        decode(&[0, 0, 10, 2, 0, 0, 0, 0, 0, 53]),
+        Err(SocksParseError::UnsupportedAddressType(2))
+    );
+    let mut bad_name = vec![0, 0, 14, 3, 7];
+    bad_name.extend_from_slice(b"exa mpl");
+    bad_name.extend_from_slice(&53_u16.to_be_bytes());
+    assert_eq!(decode(&bad_name), Err(SocksParseError::InvalidDomain));
 }
 
 #[test]
