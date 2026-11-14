@@ -19,7 +19,8 @@ long-term supported release series.
   `UDP ASSOCIATE` datagram is, and the association ends with the connection.
   A reply larger than the 1,500 bytes of address and data hev reads is
   dropped, DNS-outbound answers are truncated to fit, and a reply that would
-  name a domain names the address the client sent to. Xray-core answers the
+  name a domain, or an address of the other family than the one the client
+  sent to, names the address the client sent to. Xray-core answers the
   command `REP = 0x07`.
 
 ## 0.10.0 - 2026-11-13

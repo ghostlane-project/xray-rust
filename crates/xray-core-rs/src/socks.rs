@@ -1381,26 +1381,40 @@ async fn handle_socks_udp_in_tcp(
 /// flow went to `client_target`, or else the most data that client reads from
 /// the address the frame would name.
 ///
-/// hev-socks5-tunnel writes a reply to the tun from the address its frame
-/// names, and cannot from a domain, which a reply to a sniffed destination
-/// may name. Such a reply comes from where the client sent, the address
-/// Xray-core's SOCKS inbound gives a reply that names no source of its own.
-/// A frame the client cannot read would end its reading of the association,
-/// so it is dropped alone, as a router drops a datagram larger than the path.
+/// hev-socks5-tunnel writes a reply to the app's socket from the address its
+/// frame names. It cannot from a domain, which a reply to a sniffed
+/// destination may name. Nor can it from an address of the other family,
+/// which a name dialed for an IPv4 destination may answer from: lwIP refuses
+/// that write, and hev then writes no more replies to that socket. So a
+/// reply names its source only when that is an address of the family of
+/// `client_target`, an IPv4-mapped one as IPv4; any other comes from where
+/// the client sent, the address Xray-core's SOCKS inbound gives a reply that
+/// names no source of its own. A frame the client cannot read would end its
+/// reading of the association, so it is dropped alone, as a router drops a
+/// datagram larger than the path.
 fn socks_udp_in_tcp_reply(
     client_target: &Target,
     source: &Target,
     payload: &[u8],
 ) -> Result<Vec<u8>, usize> {
-    let source = match source.addr {
-        TargetAddr::Domain(_) => client_target,
-        TargetAddr::Ip(_) => source,
+    let source = match (&client_target.addr, &source.addr) {
+        (TargetAddr::Ip(client), TargetAddr::Ip(ip))
+            if client.is_ipv4() == ip.to_canonical().is_ipv4() =>
+        {
+            let ip = if client.is_ipv4() {
+                ip.to_canonical()
+            } else {
+                *ip
+            };
+            Target::new(TargetAddr::Ip(ip), source.port, xray_routing::Network::Udp)
+        }
+        _ => client_target.clone(),
     };
-    let max_payload = socks5_udp_in_tcp_max_reply(source);
+    let max_payload = socks5_udp_in_tcp_max_reply(&source);
     if payload.len() > max_payload {
         return Err(max_payload);
     }
-    encode_socks5_udp_in_tcp_frame(source, payload).map_err(|_| max_payload)
+    encode_socks5_udp_in_tcp_frame(&source, payload).map_err(|_| max_payload)
 }
 
 /// Writes the frames of a `FWD_UDP` association, those that wait together in
@@ -2853,25 +2867,51 @@ mod tests {
 
     #[test]
     fn fwd_udp_reply_names_an_address_and_fits_the_client_buffer() {
-        let client_target = Target::new(
-            TargetAddr::Ip(IpAddr::V4(Ipv4Addr::new(198, 18, 0, 7))),
-            443,
-            Network::Udp,
-        );
+        let udp = |addr: IpAddr, port| Target::new(TargetAddr::Ip(addr), port, Network::Udp);
+        let client_target = udp(Ipv4Addr::new(198, 18, 0, 7).into(), 443);
+        let to_client_target = [0, 2, 10, 1, 198, 18, 0, 7, 1, 187, b'h', b'i'];
         let sniffed = Target::new(
             TargetAddr::Domain("fwd-udp.example".to_owned()),
             443,
             Network::Udp,
         );
-        let v6 = Target::new(
-            TargetAddr::Ip(IpAddr::V6(Ipv6Addr::LOCALHOST)),
-            53,
-            Network::Udp,
-        );
+        let v4_source = udp(Ipv4Addr::new(192, 0, 2, 9).into(), 4433);
+        let v6_source = udp(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x35).into(), 53);
 
-        let frame = socks_udp_in_tcp_reply(&client_target, &sniffed, b"hi")
-            .expect("a domain-sourced reply is framed from the client's target");
-        assert_eq!(frame, [0, 2, 10, 1, 198, 18, 0, 7, 1, 187, b'h', b'i']);
+        // hev writes a reply to the app's socket from the address its frame
+        // names, so the frame names one of that socket's family: a domain or
+        // an address of the other family (a name dialed for an IPv4
+        // destination may answer from IPv6) names the client's target.
+        for source in [&sniffed, &v6_source] {
+            assert_eq!(
+                socks_udp_in_tcp_reply(&client_target, source, b"hi"),
+                Ok(to_client_target.to_vec()),
+                "{source:?}"
+            );
+        }
+        let from_v4_source = [0, 2, 10, 1, 192, 0, 2, 9, 0x11, 0x51, b'h', b'i'];
+        assert_eq!(
+            socks_udp_in_tcp_reply(&client_target, &v4_source, b"hi"),
+            Ok(from_v4_source.to_vec())
+        );
+        let mapped = udp(Ipv4Addr::new(192, 0, 2, 9).to_ipv6_mapped().into(), 4433);
+        assert_eq!(
+            socks_udp_in_tcp_reply(&client_target, &mapped, b"hi"),
+            Ok(from_v4_source.to_vec()),
+            "an IPv4-mapped source is named as the IPv4 address it is"
+        );
+        let v6_client = udp(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 7).into(), 443);
+        let frame = socks_udp_in_tcp_reply(&v6_client, &v4_source, b"hi").unwrap();
+        assert_eq!(frame[..4], [0, 2, 22, 4]);
+        assert_eq!(
+            frame[4..20],
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 7).octets()
+        );
+        let frame = socks_udp_in_tcp_reply(&v6_client, &v6_source, b"hi").unwrap();
+        assert_eq!(
+            frame[4..20],
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x35).octets()
+        );
 
         // hev reads ATYP, the address, the port and the data into 1,500 bytes.
         let largest = vec![0; 1500 - (1 + 4 + 2)];
@@ -2879,12 +2919,19 @@ mod tests {
             socks_udp_in_tcp_reply(&client_target, &sniffed, &largest).map(|frame| frame.len()),
             Ok(3 + 1500)
         );
+        for source in [&sniffed, &v4_source, &v6_source] {
+            assert_eq!(
+                socks_udp_in_tcp_reply(&client_target, source, &[0; 1494]),
+                Err(1493),
+                "{source:?}"
+            );
+        }
         assert_eq!(
-            socks_udp_in_tcp_reply(&client_target, &sniffed, &[0; 1494]),
-            Err(1493)
+            socks_udp_in_tcp_reply(&v6_client, &v6_source, &[0; 1481]).map(|frame| frame.len()),
+            Ok(3 + 1500)
         );
         assert_eq!(
-            socks_udp_in_tcp_reply(&client_target, &v6, &[0; 1482]),
+            socks_udp_in_tcp_reply(&v6_client, &v6_source, &[0; 1482]),
             Err(1481)
         );
     }

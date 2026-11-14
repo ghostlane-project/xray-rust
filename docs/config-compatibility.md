@@ -776,9 +776,15 @@ relay socket is opened. Each datagram is routed as a `UDP ASSOCIATE` datagram
 is, under the inbound's tag and the login's user, with sniffing, the DNS
 outbound and fake IP, one flow per destination with the same budgets and
 60-second flow idle; the association and its flows end when the client closes
-the connection or sends a frame whose header does not match its address. A
-reply that names a domain, as one to a sniffed destination can, names the
-address the client sent to, since hev cannot answer from a domain. hev reads
+the connection, a write to it fails, or it sends a frame whose header does
+not match its address. A reply names its source only when that is an address
+of the family of the address the client sent to, an IPv4-mapped one as IPv4.
+A reply that names a domain, as one to a sniffed destination can, or an
+address of the other family, as a sniffed name dialed over IPv6 can, names the
+address the client sent to instead, since hev can answer from neither. A
+reply from another address of the same family (a sniffed name dialed to
+another of its addresses) keeps that address, which an app's connected socket
+drops. hev reads
 at most 1,500 bytes of address and data per frame (1,493 bytes of data from an
 IPv4 address) and stops reading the association at a larger one, so a larger
 reply is dropped and a DNS-outbound answer is truncated to fit. `"udp": false`

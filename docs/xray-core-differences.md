@@ -174,9 +174,12 @@ all-zero IPv4 or IPv6 address and reads a reply of either family;
 frame into a 1,500-byte buffer (`UDP_BUF_SIZE`) and failing on a larger one;
 hev-socks5-tunnel's `hev-socks5-session-udp.c` then stops reading the
 association, and its `hev_socks5_addr_into_lwip` refuses a reply that names a
-domain. The server here therefore drops a reply larger than that buffer,
-truncates DNS-outbound answers to fit it, and names the client's destination
-on a reply that would name a domain. The frame codec tests in
+domain. Its lwIP refuses to send from an address of the other family than the
+app's socket (`udp.c`, `ERR_VAL`), after which `hev-socks5-session-udp.c`
+writes no more replies to that socket. The server here therefore drops a reply
+larger than that buffer, truncates DNS-outbound answers to fit it, and names
+the client's destination on a reply that would name a domain or an address of
+the other family. The frame codec tests in
 [inbound_parser_tests.rs](../crates/xray-proxy/tests/inbound_parser_tests.rs)
 and the runtime tests in
 [socks_inbound_udp_in_tcp.rs](../crates/xray-core-rs/tests/runtime_data_path_tests/socks_inbound_udp_in_tcp.rs)
