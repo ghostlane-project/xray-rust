@@ -622,7 +622,10 @@ mod tests {
 
         all.try_hold(52 * KIB);
         assert_eq!(
-            tasks.iter().map(|(task, _)| wakes(task)).collect::<Vec<_>>(),
+            tasks
+                .iter()
+                .map(|(task, _)| wakes(task))
+                .collect::<Vec<_>>(),
             [1, 0, 0],
             "12 KiB back: the first waiter has its 8 KiB, the second 4 of its 8"
         );
@@ -630,7 +633,10 @@ mod tests {
         assert_eq!(waiting[0].try_hold(8 * KIB), 8 * KIB);
         all.try_hold(48 * KIB);
         assert_eq!(
-            tasks.iter().map(|(task, _)| wakes(task)).collect::<Vec<_>>(),
+            tasks
+                .iter()
+                .map(|(task, _)| wakes(task))
+                .collect::<Vec<_>>(),
             [1, 1, 0]
         );
         assert_eq!(waiting[1].try_hold(8 * KIB), 8 * KIB);
@@ -657,7 +663,11 @@ mod tests {
         all.try_hold(8 * KIB);
         assert_eq!(wakes(&second_task), 1);
         second.stop_waiting();
-        assert_eq!(budget.in_use(), 8 * KIB, "an ended wait gives its bytes back");
+        assert_eq!(
+            budget.in_use(),
+            8 * KIB,
+            "an ended wait gives its bytes back"
+        );
         assert_eq!(budget.waiting.load(Ordering::SeqCst), 0);
     }
 
