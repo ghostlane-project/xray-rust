@@ -108,11 +108,17 @@ fn normalize(server: &str) -> Option<String> {
     if split_host_port(t).is_some() {
         return Some(t.to_owned());
     }
-    Some(join_host_port(t.trim_matches(|c| c == '[' || c == ']'), "53"))
+    Some(join_host_port(
+        t.trim_matches(|c| c == '[' || c == ']'),
+        "53",
+    ))
 }
 
 fn ipv6_peer(host: &str) -> Option<&'static str> {
-    IPV6_PEER.iter().find(|(v4, _)| *v4 == host).map(|(_, v6)| *v6)
+    IPV6_PEER
+        .iter()
+        .find(|(v4, _)| *v4 == host)
+        .map(|(_, v6)| *v6)
 }
 
 /// `expandDNSServers`: each server normalised and followed by its IPv6
@@ -298,7 +304,12 @@ async fn server_addr(server: &str) -> io::Result<SocketAddr> {
     if let Ok(a) = server.parse::<SocketAddr>() {
         return Ok(a);
     }
-    let bad = || io::Error::new(io::ErrorKind::InvalidInput, format!("bad dns server {server:?}"));
+    let bad = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("bad dns server {server:?}"),
+        )
+    };
     let (host, port) = split_host_port(server).ok_or_else(bad)?;
     let port: u16 = port.parse().map_err(|_| bad())?;
     if let Some((ip, zone)) = host.split_once('%') {
@@ -444,7 +455,11 @@ impl Resolver {
 }
 
 /// `lookupError`: which resolver was asked and what each said.
-fn lookup_error(host: &str, configured: Option<&io::Error>, system: Option<&io::Error>) -> io::Error {
+fn lookup_error(
+    host: &str,
+    configured: Option<&io::Error>,
+    system: Option<&io::Error>,
+) -> io::Error {
     let mut parts = Vec::with_capacity(2);
     if let Some(e) = configured {
         parts.push(format!("configured servers: {e}"));
@@ -511,7 +526,9 @@ async fn lookup_family(ring: &Ring, host: &str, qtype: u16) -> io::Result<Vec<Ip
                 }
                 match parse_answer(msg, id, qtype) {
                     Some(ips) => return Ok(ips),
-                    None => last = io::Error::new(io::ErrorKind::InvalidData, "dns: malformed answer"),
+                    None => {
+                        last = io::Error::new(io::ErrorKind::InvalidData, "dns: malformed answer")
+                    }
                 }
             }
             Err(e) => last = e,
@@ -809,7 +826,10 @@ mod tests {
                 assert!(e.to_string().ends_with("no such host"), "{e}");
             }
             let ring = r.ring().unwrap();
-            assert!(!ring.dark(Instant::now()), "a name that does not exist darkens nothing");
+            assert!(
+                !ring.dark(Instant::now()),
+                "a name that does not exist darkens nothing"
+            );
             assert_eq!(ring.silences.load(Ordering::Relaxed), 0);
             // A query a family, each answered once: NXDOMAIN is not asked again.
             assert_eq!(srv.asked(), 2 * (RING_DARK_AFTER as usize + 1));

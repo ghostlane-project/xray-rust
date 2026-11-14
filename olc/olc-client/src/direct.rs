@@ -631,7 +631,10 @@ mod tests {
     #[test]
     fn the_host_header_is_found_as_go_finds_it() {
         let host = |h: &[u8]| http_host(h, true).0;
-        assert_eq!(host(b"GET / HTTP/1.1\r\nHost: A.example:80\r\n\r\n"), "a.example");
+        assert_eq!(
+            host(b"GET / HTTP/1.1\r\nHost: A.example:80\r\n\r\n"),
+            "a.example"
+        );
         assert_eq!(
             host(b"GET / HTTP/1.1\r\nX: a\nHost: b.example\r\n\r\n"),
             "",

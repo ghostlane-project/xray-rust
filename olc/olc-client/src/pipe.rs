@@ -460,8 +460,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_send_stuck_on_a_far_end_that_stopped_reading_holds_back_neither_reconnect_nor_close(
-    ) {
+    async fn a_send_stuck_on_a_far_end_that_stopped_reading_holds_back_neither_reconnect_nor_close()
+    {
         bounded(async {
             let (hub, url) = TestHub::start("stall").await;
             let (tx, mut rx) = mpsc::channel(EVENT_QUEUE);

@@ -80,7 +80,11 @@ impl Pool {
     fn take(&self) -> Box<[u8]> {
         let out = self.out.fetch_add(1, Ordering::Relaxed) + 1;
         self.peak.fetch_max(out, Ordering::Relaxed);
-        let spare = self.free.lock().unwrap_or_else(PoisonError::into_inner).pop();
+        let spare = self
+            .free
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop();
         spare.unwrap_or_else(|| vec![0u8; COPY_BUFFER].into_boxed_slice())
     }
 
@@ -104,7 +108,10 @@ impl Pool {
 
     /// Buffers kept for reuse.
     pub fn kept(&self) -> usize {
-        self.free.lock().unwrap_or_else(PoisonError::into_inner).len()
+        self.free
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 }
 

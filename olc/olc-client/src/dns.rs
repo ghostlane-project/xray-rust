@@ -324,15 +324,28 @@ mod tests {
             m.extend_from_slice(rest);
             m
         };
-        assert_eq!(question_name(&head(b"\x03a.b\x00\x00\x01\x00\x01")), None, "a dot in a label");
+        assert_eq!(
+            question_name(&head(b"\x03a.b\x00\x00\x01\x00\x01")),
+            None,
+            "a dot in a label"
+        );
         let mut cut = query("a.b");
         cut.pop();
         assert_eq!(question_name(&cut), None, "no class after the name");
-        assert_eq!(question_name(&head(b"\x00\x00\x01\x00\x01")).as_deref(), Some(""));
+        assert_eq!(
+            question_name(&head(b"\x00\x00\x01\x00\x01")).as_deref(),
+            Some("")
+        );
         // Labels of 63, 63, 63 and 61 make 253 bytes: the last that parses.
         let long = |last: usize| {
             let l = |c: char, n: usize| c.to_string().repeat(n);
-            format!("{}.{}.{}.{}", l('a', 63), l('b', 63), l('c', 63), l('d', last))
+            format!(
+                "{}.{}.{}.{}",
+                l('a', 63),
+                l('b', 63),
+                l('c', 63),
+                l('d', last)
+            )
         };
         assert_eq!(question_name(&query(&long(61))).map(|n| n.len()), Some(253));
         assert_eq!(question_name(&query(&long(62))), None);
@@ -348,7 +361,11 @@ mod tests {
         };
         assert_eq!(question_name(&chain(10)).as_deref(), Some("a"));
         assert_eq!(question_name(&chain(11)), None);
-        assert_eq!(question_name(&head(b"\x40a\x00\x00\x01\x00\x01")), None, "a reserved prefix");
+        assert_eq!(
+            question_name(&head(b"\x40a\x00\x00\x01\x00\x01")),
+            None,
+            "a reserved prefix"
+        );
     }
 
     #[test]

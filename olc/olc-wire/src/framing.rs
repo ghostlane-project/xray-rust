@@ -183,7 +183,10 @@ pub fn read<R: Read + ?Sized>(r: &mut R, max: usize, out: &mut Vec<u8>) -> Resul
         .into());
     }
     let len = len as usize;
-    let got = r.take(len as u64).read_to_end(out).map_err(ReadError::IoBody)?;
+    let got = r
+        .take(len as u64)
+        .read_to_end(out)
+        .map_err(ReadError::IoBody)?;
     match got {
         n if n == len => Ok(()),
         0 => Err(ReadError::EofBody),

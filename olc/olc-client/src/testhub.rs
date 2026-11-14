@@ -69,7 +69,11 @@ impl Member {
 /// A config for room `url` with a fixed key.
 pub(crate) fn config(url: &str) -> crate::Config {
     crate::Config::from_json(
-        format!(r#"{{"url":"{url}","key":"{}","device_id":"t"}}"#, "11".repeat(32)).as_bytes(),
+        format!(
+            r#"{{"url":"{url}","key":"{}","device_id":"t"}}"#,
+            "11".repeat(32)
+        )
+        .as_bytes(),
     )
     .unwrap()
 }

@@ -274,7 +274,10 @@ mod tests {
             .unwrap()
             .socks_listen_addr()
         };
-        assert_eq!(at("127.0.0.1:0", "", ""), Ok("127.0.0.1:0".parse().unwrap()));
+        assert_eq!(
+            at("127.0.0.1:0", "", ""),
+            Ok("127.0.0.1:0".parse().unwrap())
+        );
         assert_eq!(
             at("localhost:1080", "", ""),
             Ok("127.0.0.1:1080".parse().unwrap())

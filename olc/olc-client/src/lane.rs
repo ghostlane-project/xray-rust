@@ -19,10 +19,10 @@
 //! `poll_write` takes a whole smux frame or nothing, as the smux driver
 //! needs.
 
+use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::future::Future;
 use std::task::{Context, Poll, Waker};
 use std::time::Instant;
 
@@ -498,7 +498,13 @@ mod tests {
                 "a write returned while the link could not send (awaitLink, conn.go:724)"
             );
             link.set_ready(true);
-            assert_eq!(timeout(Duration::from_secs(2), write).await.unwrap().unwrap(), 10);
+            assert_eq!(
+                timeout(Duration::from_secs(2), write)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                10
+            );
             let (kind, _) = m.read().await.unwrap();
             assert_eq!(kind, KIND_DATA);
         })

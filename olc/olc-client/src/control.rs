@@ -552,7 +552,10 @@ mod tests {
             // A frame that is not a control message ends the loop (Go's
             // Run cancels its context on every end, and the watcher
             // announces the close: control.go:219-223).
-            theirs.write_all(&[0, 0, 0, 3, b'b', b'a', b'd']).await.unwrap();
+            theirs
+                .write_all(&[0, 0, 0, 3, b'b', b'a', b'd'])
+                .await
+                .unwrap();
             let end = run(
                 ours,
                 Liveness::default(),

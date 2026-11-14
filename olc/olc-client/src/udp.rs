@@ -1278,7 +1278,10 @@ mod tests {
         assert!(frames.len() < 1000, "the budget, not the queue, stopped it");
         let before = fwd_queued();
         drop(frames);
-        assert!(fwd_queued() + held <= before, "every frame gives its bytes back");
+        assert!(
+            fwd_queued() + held <= before,
+            "every frame gives its bytes back"
+        );
     }
 
     #[test]
