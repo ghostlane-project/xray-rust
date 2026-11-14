@@ -116,6 +116,8 @@ pub async fn open_control_stream(
         Instant::now() + HELLO_RESEND_INTERVAL,
         HELLO_RESEND_INTERVAL,
     );
+    // A Go Ticker drops the ticks a slow receiver missed.
+    resend.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             () = stop.cancelled() => {

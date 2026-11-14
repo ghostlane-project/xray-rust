@@ -102,6 +102,11 @@ mod heap {
 }
 
 fn main() -> ExitCode {
+    // First, as the Go runtime does: the soft file limit up to the hard one.
+    match olc_client::sys::raise_nofile_limit() {
+        Some(l) => olc_client::info!("file limit: {} (hard {})", l.soft, l.hard),
+        None => olc_client::info!("file limit: unknown"),
+    }
     let Some(path) = std::env::args().nth(1) else {
         eprintln!("usage: olc-client <config.json>");
         return ExitCode::from(2);

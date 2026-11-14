@@ -23,6 +23,7 @@ pub async fn read_frame<R: AsyncRead + Unpin + ?Sized>(
         &mut hdr,
         ReadError::EofHeader,
         ReadError::TruncatedHeader,
+        ReadError::IoHeader,
     )
     .await?;
     let len = u32::from_be_bytes(hdr) as usize;
@@ -34,7 +35,14 @@ pub async fn read_frame<R: AsyncRead + Unpin + ?Sized>(
     }
     buf.clear();
     buf.resize(len, 0);
-    fill(r, buf, ReadError::EofBody, ReadError::TruncatedBody).await
+    fill(
+        r,
+        buf,
+        ReadError::EofBody,
+        ReadError::TruncatedBody,
+        ReadError::IoBody,
+    )
+    .await
 }
 
 async fn fill<R: AsyncRead + Unpin + ?Sized>(
@@ -42,6 +50,7 @@ async fn fill<R: AsyncRead + Unpin + ?Sized>(
     out: &mut [u8],
     eof: ReadError,
     truncated: ReadError,
+    failed: fn(std::io::Error) -> ReadError,
 ) -> Result<(), ReadError> {
     let mut at = 0;
     while at < out.len() {
@@ -49,7 +58,7 @@ async fn fill<R: AsyncRead + Unpin + ?Sized>(
             Ok(0) if at == 0 => return Err(eof),
             Ok(0) => return Err(truncated),
             Ok(n) => at += n,
-            Err(e) => return Err(ReadError::Io(e)),
+            Err(e) => return Err(failed(e)),
         }
     }
     Ok(())

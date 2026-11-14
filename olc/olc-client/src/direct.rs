@@ -449,19 +449,48 @@ fn http_host(head: &[u8], complete: bool) -> (String, bool) {
     let Some(end) = head.windows(4).position(|w| w == b"\r\n\r\n") else {
         return (String::new(), head.len() < MAX_HEAD);
     };
-    for line in head[..end].split(|&b| b == b'\n') {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
+    // Lines end at CRLF alone, as Go's `bytes.SplitSeq(headers, "\r\n")`.
+    let lines = crlf_lines(&head[..end]);
+    for line in lines {
         let Some(colon) = line.iter().position(|&b| b == b':') else {
             continue;
         };
         let name = String::from_utf8_lossy(&line[..colon]);
-        if !name.trim().eq_ignore_ascii_case("host") {
+        if !is_host_header(name.trim()) {
             continue;
         }
         let value = String::from_utf8_lossy(&line[colon + 1..]);
         return (host_without_port(value.trim()), false);
     }
     (String::new(), false)
+}
+
+fn crlf_lines(mut rest: &[u8]) -> impl Iterator<Item = &[u8]> + '_ {
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let (line, next) = match rest.windows(2).position(|w| w == b"\r\n") {
+            Some(i) => (&rest[..i], &rest[i + 2..]),
+            None => (rest, &rest[rest.len()..]),
+        };
+        rest = next;
+        Some(line)
+    })
+}
+
+/// `bytes.EqualFold(name, "Host")`: Go's simple folding, under which the
+/// long s (U+017F) is an s.
+fn is_host_header(name: &str) -> bool {
+    let mut chars = name.chars();
+    let folds = |c: Option<char>, lower: char| {
+        c.is_some_and(|c| c.to_ascii_lowercase() == lower || (lower == 's' && c == '\u{17f}'))
+    };
+    folds(chars.next(), 'h')
+        && folds(chars.next(), 'o')
+        && folds(chars.next(), 's')
+        && folds(chars.next(), 't')
+        && chars.next().is_none()
 }
 
 fn host_without_port(host: &str) -> String {
@@ -516,13 +545,10 @@ impl Inner {
         if !job.open(&mut conn, &mut remote).await {
             return;
         }
+        let Job { host, port, .. } = job;
         let (_, end) = copy_bidirectional(conn, remote, false, HALF_OPEN_GRACE, &self.run).await;
         if matches!(end, CopyEnd::HalfOpenIdle) {
-            crate::debug!(
-                "direct to {}:{} closed: half-open and silent for 1m0s",
-                job.host,
-                job.port
-            );
+            crate::debug!("direct to {host}:{port} closed: half-open and silent for 1m0s");
         }
     }
 
@@ -600,6 +626,26 @@ mod tests {
 
     fn rules(lines: &[&str]) -> Rules {
         Rules::parse(lines).unwrap().unwrap()
+    }
+
+    #[test]
+    fn the_host_header_is_found_as_go_finds_it() {
+        let host = |h: &[u8]| http_host(h, true).0;
+        assert_eq!(
+            host(b"GET / HTTP/1.1\r\nHost: A.example:80\r\n\r\n"),
+            "a.example"
+        );
+        assert_eq!(
+            host(b"GET / HTTP/1.1\r\nX: a\nHost: b.example\r\n\r\n"),
+            "",
+            "a bare LF ends no line"
+        );
+        assert_eq!(
+            host("GET / HTTP/1.1\r\nHo\u{17f}t: c.example\r\n\r\n".as_bytes()),
+            "c.example",
+            "EqualFold folds the long s"
+        );
+        assert_eq!(host(b"GET / HTTP/1.1\r\nHosts: d.example\r\n\r\n"), "");
     }
 
     #[test]

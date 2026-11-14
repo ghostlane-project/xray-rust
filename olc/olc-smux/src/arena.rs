@@ -220,7 +220,15 @@ pub(crate) struct FrameQueue {
     front_open: bool,
 }
 
+/// What each frame keeps in front of its payload: its length.
+pub(crate) const FRAME_LEN_BYTES: usize = 2;
+
 impl FrameQueue {
+    /// The bytes held: the payload left and the lengths not yet read.
+    pub(crate) fn stored(&self) -> usize {
+        self.q.len()
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.q.len() == 0 && !self.front_open
     }
@@ -228,7 +236,8 @@ impl FrameQueue {
     /// Appends one frame. `len` may be 0 (a marker frame).
     pub(crate) fn push(&mut self, arena: &mut Arena, data: &[u8]) {
         debug_assert!(data.len() <= u16::MAX as usize);
-        self.q.push(arena, &(data.len() as u16).to_le_bytes());
+        let len: [u8; FRAME_LEN_BYTES] = (data.len() as u16).to_le_bytes();
+        self.q.push(arena, &len);
         self.q.push(arena, data);
     }
 

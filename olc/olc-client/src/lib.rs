@@ -24,7 +24,8 @@
 //! next to its constant; [`sizes`] holds the per-layer budget and the
 //! `size_of` assertions on the per-session and per-stream state.
 
-#![forbid(unsafe_code)]
+// Only `sys` may use `unsafe`, for its calls into the C library.
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod client;
@@ -42,6 +43,9 @@ pub mod pipe;
 pub mod sizes;
 pub mod socks;
 pub mod supervisor;
+pub mod sys;
+#[cfg(test)]
+mod testhub;
 pub mod tunnel;
 pub mod udp;
 

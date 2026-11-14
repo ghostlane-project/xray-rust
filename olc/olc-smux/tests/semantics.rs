@@ -458,3 +458,83 @@ async fn an_open_that_cannot_write_times_out() {
     assert_eq!(s.num_streams(), 1);
     drop(b);
 }
+
+// Bounded memory against tiny frames: Go reads while the bucket is positive
+// (smux/session.go:390-399), and each frame the bucket lets in costs this
+// port its length plus 2 bytes in the pool. One-byte frames would hold three
+// times max_receive_buffer; the reader also stops once the pool holds the
+// buffer's worth, and starts again as the stream is read.
+#[tokio::test(start_paused = true)]
+async fn tiny_frames_hold_no_more_than_the_receive_buffer() {
+    let mut c = cfg();
+    c.max_receive_buffer = 65_536;
+    c.max_stream_buffer = 65_536;
+    let (s, _d, mut raw) = server(c);
+    raw.send(Cmd::Syn, 3, &[]).await;
+    const FRAMES: usize = 50_000;
+    for _ in 0..FRAMES {
+        raw.send(Cmd::Psh, 3, &[1]).await;
+    }
+    let mut st = s.accept_stream().await.unwrap();
+    settle().await;
+    let stats = s.stats();
+    assert!(
+        stats.pool_in_use <= 65_536 + 2 * 4096,
+        "the pool holds {} for a 64 KiB receive buffer: {stats:?}",
+        stats.pool_in_use
+    );
+    assert!(stats.bucket > 0, "{stats:?}");
+    // Reading frees it and lets the rest in.
+    let mut got = 0;
+    while got < FRAMES {
+        got += read_some(&mut st, 100).await.len();
+    }
+    assert_eq!(got, FRAMES);
+    assert!(s.stats().peak_pool_in_use <= 65_536 + 2 * 4096);
+}
+
+// A parked read gets io.ErrClosedPipe when its stream dies (smux/stream.go
+// waitRead: `case <-s.die`); a read after the death gets io.EOF (tryRead).
+#[tokio::test(start_paused = true)]
+async fn a_parked_read_gets_closed_pipe_when_the_session_dies() {
+    let (s, _d, mut raw) = server(cfg());
+    raw.send(Cmd::Syn, 3, &[]).await;
+    let mut st = s.accept_stream().await.unwrap();
+    let reader = tokio::spawn(async move {
+        let mut b = [0u8; 16];
+        let first = st.read(&mut b).await.map_err(|e| e.to_string());
+        let second = st.read(&mut b).await.map_err(|e| e.to_string());
+        (first, second)
+    });
+    settle().await;
+    s.close().unwrap();
+    let (first, second) = reader.await.unwrap();
+    assert_eq!(first, Err("io: read/write on closed pipe".to_owned()));
+    assert_eq!(second, Ok(0));
+}
+
+// A driver dropped without being run to its end (its task aborted) closes
+// the session: no stream waits on a driver that is gone.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_driver_ends_the_session() {
+    let (a, _b) = tokio::io::duplex(1 << 16);
+    let (s, d) = Session::server(a, cfg()).unwrap();
+    let d = tokio::spawn(d);
+    settle().await;
+    d.abort();
+    let _ = d.await;
+    assert!(s.is_closed());
+    assert_eq!(s.accept_stream().await.unwrap_err(), Error::ClosedPipe);
+}
+
+// Each send buffer must hold one whole frame, or a full frame never fits.
+#[test]
+fn send_buffers_smaller_than_a_frame_are_refused() {
+    let mut c = cfg();
+    c.max_stream_send_buffer = c.max_frame_size - 1;
+    assert!(c.verify().is_err());
+    let mut c = cfg();
+    c.max_send_buffer = c.max_frame_size - 1;
+    assert!(c.verify().is_err());
+    assert!(cfg().verify().is_ok());
+}

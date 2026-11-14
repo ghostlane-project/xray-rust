@@ -127,6 +127,31 @@ impl Stream {
     }
 }
 
+impl Stream {
+    /// Ready once a read would not wait: data, the peer's FIN, the end of
+    /// the stream or the session, or an error. A copy waits here before it
+    /// puts a buffer down; the wait counts as a read waiting
+    /// ([`flag::READ_PARKED`]), so the read after it sees the stream's
+    /// death as a waiting read does.
+    pub fn poll_read_ready(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut guard = self.shared.lock();
+        let st = &mut *guard;
+        let idx = self.idx;
+        if st.slot(idx).has(flag::UPD_QUEUED | flag::UPD_FLIGHT) {
+            set_waker(&mut st.slot_mut(idx).read_waker, cx);
+            return Poll::Pending;
+        }
+        let over = st.closed || st.read_err.is_some() || st.proto_err;
+        let s = st.slot_mut(idx);
+        if over || !s.rx.is_empty() || s.has(flag::PEER_FIN | flag::DIED) {
+            return Poll::Ready(());
+        }
+        s.set(flag::READ_PARKED);
+        set_waker(&mut s.read_waker, cx);
+        Poll::Pending
+    }
+}
+
 impl AsyncRead for Stream {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -148,13 +173,23 @@ impl AsyncRead for Stream {
             return Poll::Ready(Ok(()));
         }
         let n = {
-            let crate::state::State { slots, arena, .. } = &mut *st;
+            let crate::state::State {
+                slots,
+                arena,
+                rx_headers,
+                ..
+            } = &mut *st;
             let s = slots[idx as usize].as_mut().expect("live slot");
-            s.rx.read_front(arena, buf.initialize_unfilled())
+            let before = s.rx.stored();
+            let n = s.rx.read_front(arena, buf.initialize_unfilled());
+            // A frame opened here gave its length back to the pool.
+            *rx_headers -= before - s.rx.stored() - n;
+            n
         };
         if n > 0 {
             buf.advance(n);
             let s = st.slot_mut(idx);
+            s.clear(flag::READ_PARKED);
             s.rx_payload -= n as u32;
             // smux/stream.go:277-285: the first read, or half the buffer
             // read since the last update, sends one.
@@ -175,12 +210,16 @@ impl AsyncRead for Stream {
             }
             return Poll::Ready(Ok(()));
         }
-        let s = st.slot(idx);
+        let closed = st.closed;
+        let s = st.slot_mut(idx);
+        let parked = s.has(flag::READ_PARKED);
+        s.clear(flag::READ_PARKED);
         // smux/stream.go:302-307,443-450: EOF once nothing is left and the
-        // stream is dead or the peer sent FIN.
-        if s.has(flag::DIED | flag::PEER_FIN) || st.closed {
+        // peer sent FIN.
+        if s.has(flag::PEER_FIN) {
             return Poll::Ready(Ok(()));
         }
+        let died = s.has(flag::DIED) || closed;
         // smux/stream.go:451-454.
         if let Some(e) = &st.read_err {
             return Poll::Ready(if e.is_clean_eof() {
@@ -192,7 +231,19 @@ impl AsyncRead for Stream {
         if st.proto_err {
             return Poll::Ready(Err(Error::InvalidProtocol.into()));
         }
-        set_waker(&mut st.slot_mut(idx).read_waker, cx);
+        // `waitRead` (smux/stream.go): a read that waited when the stream
+        // died gets io.ErrClosedPipe; one that starts after it, io.EOF
+        // (`tryRead`).
+        if died {
+            return Poll::Ready(if parked {
+                Err(Error::ClosedPipe.into())
+            } else {
+                Ok(())
+            });
+        }
+        let s = st.slot_mut(idx);
+        s.set(flag::READ_PARKED);
+        set_waker(&mut s.read_waker, cx);
         Poll::Pending
     }
 }

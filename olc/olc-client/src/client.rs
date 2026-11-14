@@ -199,14 +199,28 @@ impl Client {
         on_ready: impl FnOnce(SocketAddr) + Send,
         on_session_open: Option<SessionListener>,
     ) -> Result<(), RunError> {
+        Self::run_inner(cfg, stop, on_ready, on_session_open, |_| {}).await
+    }
+
+    /// [`Client::run_with`]; `inspect` sees the run's state once it is
+    /// built (the tests hold a `Weak` of it).
+    async fn run_inner(
+        cfg: Config,
+        stop: CancellationToken,
+        on_ready: impl FnOnce(SocketAddr) + Send,
+        on_session_open: Option<SessionListener>,
+        inspect: impl FnOnce(&Arc<Inner>) + Send,
+    ) -> Result<(), RunError> {
         if cfg.transport != TRANSPORT_DATACHANNEL {
-            return Err(ConfigError::Transport(cfg.transport).into());
+            return Err(ConfigError::Transport(cfg.transport.clone()).into());
         }
         let keys = Arc::new(
             KeySet::from_hex(&cfg.key, Role::Client)
                 .map_err(|e| ConfigError::Key(e.to_string()))?,
         );
         let rules = Rules::parse(&cfg.direct).map_err(ConfigError::Rule)?;
+        // Checked before anything connects: an open relay never starts.
+        let socks = cfg.socks_listen_addr()?;
         crate::log::set_verbose(cfg.debug);
         // The ring the engine's own names and the direct DNS ask (the mobile
         // runtime's `protect.NewResolver(dns)`).
@@ -244,13 +258,19 @@ impl Client {
             cfg,
         });
         inner.install_datagram_sink();
+        inspect(&inner);
         {
-            let inner = inner.clone();
+            // The run's state is held only while an event is handled: the
+            // task ends with the run, and the link's close ends the queue.
+            let me = Arc::downgrade(&inner);
+            let run = inner.run.clone();
             tokio::spawn(async move {
-                while let Some(ev) = ev_rx.recv().await {
-                    if inner.run.is_cancelled() {
-                        break;
-                    }
+                loop {
+                    let ev = tokio::select! {
+                        () = run.cancelled() => break,
+                        ev = ev_rx.recv() => match ev { Some(ev) => ev, None => break },
+                    };
+                    let Some(inner) = me.upgrade() else { break };
                     match ev {
                         LinkEvent::Reconnected => inner.on_provider_reconnect(),
                         LinkEvent::Ended(reason) => {
@@ -265,7 +285,7 @@ impl Client {
             inner.shutdown().await;
             return Err(e);
         }
-        let listener = match TcpListener::bind(&inner.cfg.socks).await {
+        let listener = match TcpListener::bind(socks).await {
             Ok(l) => l,
             Err(err) => {
                 inner.shutdown().await;
@@ -396,27 +416,25 @@ impl Inner {
     pub(crate) async fn wait_session(&self) -> Result<(Session, String), WaitRefused> {
         let deadline = Instant::now() + SESSION_READY_TIMEOUT;
         let mut ready = self.ready.subscribe();
-        let mut parked = false;
-        let out = loop {
+        // The slot goes back however the wait ends, an abort included (a
+        // sniffed direct name drops the tunnel's preparation).
+        let mut parked: Option<Parked<'_>> = None;
+        loop {
             if let Some(s) = self.session() {
-                break Ok(s);
+                return Ok(s);
             }
-            if !parked {
+            if parked.is_none() {
                 if !self.park() {
                     return Err(WaitRefused::Saturated);
                 }
-                parked = true;
+                parked = Some(Parked(self));
             }
             tokio::select! {
-                () = self.run.cancelled() => break Err(WaitRefused::Timeout),
-                () = tokio::time::sleep_until(deadline) => break Err(WaitRefused::Timeout),
-                r = ready.changed() => if r.is_err() { break Err(WaitRefused::Timeout) },
+                () = self.run.cancelled() => return Err(WaitRefused::Timeout),
+                () = tokio::time::sleep_until(deadline) => return Err(WaitRefused::Timeout),
+                r = ready.changed() => if r.is_err() { return Err(WaitRefused::Timeout) },
             }
-        };
-        if parked {
-            self.unpark();
         }
-        out
     }
 
     fn park(&self) -> bool {
@@ -913,6 +931,15 @@ impl Inner {
     }
 }
 
+/// One parked request's slot, given back on drop.
+struct Parked<'a>(&'a Inner);
+
+impl Drop for Parked<'_> {
+    fn drop(&mut self) {
+        self.0.unpark();
+    }
+}
+
 /// Why a request got no session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WaitRefused {
@@ -925,6 +952,108 @@ pub(crate) enum WaitRefused {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipe::{PipeLink, KIND_END};
+    use crate::testhub::{self, TestHub};
+    use crate::testing::bounded;
+    use std::sync::Weak;
+
+    /// Waits up to 2 s for every strong reference to go.
+    async fn gone<T>(what: &str, weak: &Weak<T>) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while weak.strong_count() > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "{what} still held {} times after the run",
+                weak.strong_count()
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    /// Starts a run on `url`; its state's and its link's `Weak`s.
+    async fn start(
+        url: &str,
+        stop: &CancellationToken,
+    ) -> (
+        tokio::task::JoinHandle<Result<(), RunError>>,
+        Weak<Inner>,
+        Weak<PipeLink>,
+    ) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let run = tokio::spawn(Client::run_inner(
+            testhub::config(url),
+            stop.clone(),
+            |_| {},
+            None,
+            move |inner| {
+                let Link::Pipe(link) = &inner.link else {
+                    panic!("the test hub's run is on the interop pipe");
+                };
+                let _ = tx.send((Arc::downgrade(inner), Arc::downgrade(link)));
+            },
+        ));
+        let (inner, link) = rx.await.unwrap();
+        (run, inner, link)
+    }
+
+    #[tokio::test]
+    async fn a_run_the_conference_ended_leaves_nothing_behind() {
+        bounded(async {
+            let (hub, url) = TestHub::start("leak-end").await;
+            let stop = CancellationToken::new();
+            let (run, inner, link) = start(&url, &stop).await;
+            let mut m = hub.accept().await;
+            m.send(KIND_END, b"over").await.unwrap();
+            assert!(run.await.unwrap().is_err(), "the hello cannot win");
+            gone("the run's state", &inner).await;
+            gone("the link", &link).await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_stopped_run_leaves_nothing_behind() {
+        bounded(async {
+            let (hub, url) = TestHub::start("leak-stop").await;
+            let stop = CancellationToken::new();
+            let (run, inner, link) = start(&url, &stop).await;
+            let _m = hub.accept().await;
+            stop.cancel();
+            assert!(run.await.unwrap().is_err());
+            gone("the run's state", &inner).await;
+            gone("the link", &link).await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_abandoned_wait_gives_its_park_slot_back() {
+        bounded(async {
+            let (hub, url) = TestHub::start("park").await;
+            let stop = CancellationToken::new();
+            let (run, inner, _) = start(&url, &stop).await;
+            let _m = hub.accept().await;
+            let me = inner.upgrade().unwrap();
+            // A sniffed direct name aborts the tunnel's preparation while it
+            // waits for a session (direct.rs sniff_then_route).
+            let waiter = {
+                let me = me.clone();
+                tokio::spawn(async move {
+                    let _ = me.wait_session().await;
+                })
+            };
+            while me.parked.load(Ordering::Relaxed) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            waiter.abort();
+            let _ = waiter.await;
+            assert_eq!(me.parked.load(Ordering::Relaxed), 0);
+            drop(me);
+            stop.cancel();
+            let _ = run.await;
+        })
+        .await;
+    }
 
     #[test]
     fn a_close_from_the_peer_is_peer_close_and_any_other_end_liveness() {

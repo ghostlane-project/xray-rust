@@ -68,6 +68,7 @@ type Hub struct {
 	black   map[string]bool
 	rng     *rand.Rand
 	closed  bool
+	joins   uint64
 	members sync.WaitGroup
 }
 
@@ -78,8 +79,10 @@ type member struct {
 	out  chan frame
 	done chan struct{}
 	once sync.Once
-	last time.Time // when the last reliable frame is due; the writer's
-	held *frame    // a datagram held back to be reordered; the writer's
+	seq  uint64        // join order in the hub; under hub.mu
+	hold chan struct{} // while set, nothing is read from conn; under hub.mu
+	last time.Time     // when the last reliable frame is due; the writer's
+	held *frame        // a datagram held back to be reordered; the writer's
 }
 
 type frame struct {
@@ -136,6 +139,53 @@ func (h *Hub) Blackhole(room string, on bool) {
 	h.mu.Lock()
 	h.black[room] = on
 	h.mu.Unlock()
+}
+
+// StallNewest stops reading from the room's latest participant (the client a
+// scenario starts after its server): a far end that stops draining while the
+// link stays up, so the participant's writes fill the socket buffers and then
+// block. Frames to it are still delivered. A participant that joins later is
+// read as usual. release reads again; it is idempotent.
+func (h *Hub) StallNewest(room string) (release func()) {
+	h.mu.Lock()
+	var newest *member
+	for m := range h.rooms[room] {
+		if newest == nil || m.seq > newest.seq {
+			newest = m
+		}
+	}
+	if newest != nil && newest.hold == nil {
+		newest.hold = make(chan struct{})
+	}
+	h.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if newest == nil {
+				return
+			}
+			h.mu.Lock()
+			if newest.hold != nil {
+				close(newest.hold)
+				newest.hold = nil
+			}
+			h.mu.Unlock()
+		})
+	}
+}
+
+// waitHeld waits while the participant is stalled, or until it is stopped.
+func (h *Hub) waitHeld(m *member) {
+	h.mu.Lock()
+	hold := m.hold
+	h.mu.Unlock()
+	if hold == nil {
+		return
+	}
+	select {
+	case <-hold:
+	case <-m.done:
+	}
 }
 
 // Cut drops every participant's connection to a room; their engines rejoin.
@@ -201,11 +251,14 @@ func (h *Hub) serve(conn net.Conn) {
 	if h.rooms[m.room] == nil {
 		h.rooms[m.room] = map[*member]struct{}{}
 	}
+	h.joins++
+	m.seq = h.joins
 	h.rooms[m.room][m] = struct{}{}
 	h.mu.Unlock()
 	go m.write()
 	h.announce(m.room)
 	for {
+		h.waitHeld(m)
 		kind, payload, err := ReadFrame(br)
 		if err != nil {
 			break

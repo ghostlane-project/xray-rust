@@ -8,10 +8,11 @@
 //!
 //! # Bounds
 //!
-//! At most [`MAX_SOCKS_CONNS`] connections; each holds two
-//! [`crate::copy::COPY_BUFFER`]s while it copies, so the front holds at
-//! most 512 × 2 × 16 KiB = 16 MiB, 2 MiB for the 64 live connections of
-//! the burst (plan §9: cap 3 MiB at the expected load).
+//! At most [`MAX_SOCKS_CONNS`] connections; each direction borrows a
+//! [`crate::copy::COPY_BUFFER`] only while bytes move ([`crate::copy`]), so
+//! an idle connection holds none: 2 MiB for the 64 moving connections of
+//! the burst, whatever the number open (plan §9: cap 3 MiB at the expected
+//! load; 16 MiB only if all 512 moved at once).
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -460,6 +461,8 @@ impl Inner {
         if !job.open(&mut conn, &mut stream).await {
             return;
         }
+        // Its sniffed bytes are sent: they are not held for the copy's life.
+        drop(job);
         let sid = stream.id();
         let (_, end) = copy_bidirectional(conn, stream, true, HALF_OPEN_GRACE, &self.run).await;
         if matches!(end, CopyEnd::HalfOpenIdle) {

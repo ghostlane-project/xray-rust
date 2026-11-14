@@ -19,6 +19,7 @@
 //! `poll_write` takes a whole smux frame or nothing, as the smux driver
 //! needs.
 
+use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -114,7 +115,14 @@ impl Lane {
             kick: Notify::new(),
         });
         tokio::spawn(flush(lane.clone()));
-        Ok((lane.clone(), LaneIo { lane }))
+        Ok((
+            lane.clone(),
+            LaneIo {
+                lane,
+                due: None,
+                link_wait: None,
+            },
+        ))
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -297,9 +305,30 @@ async fn flush(lane: Arc<Lane>) {
 }
 
 /// The connection smux runs on. Dropping it closes the lane.
-#[derive(Debug)]
+///
+/// A write returns once the link can send (`awaitLink`, conn.go:724) and,
+/// when its frame made the batch due, once that batch has gone (`waitSent`,
+/// batch.go): the hello's reply window starts when its SYN is on the way,
+/// not while the path is closed (olcrtc#10). A write that returned
+/// `Pending` after its frame was taken must be polled again with the same
+/// frame, as the smux driver does.
 pub struct LaneIo {
     lane: Arc<Lane>,
+    /// The frame taken into batch `.0`, `.1` bytes, waiting for it to go.
+    due: Option<(u64, usize)>,
+    /// The wait for a link that cannot send.
+    link_wait: Option<LinkWait>,
+}
+
+type LinkWait = Pin<Box<dyn Future<Output = bool> + Send + Sync>>;
+
+impl std::fmt::Debug for LaneIo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LaneIo")
+            .field("due", &self.due)
+            .field("link_wait", &self.link_wait.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl LaneIo {
@@ -338,25 +367,81 @@ impl AsyncRead for LaneIo {
     }
 }
 
+/// Why a write cannot go on: the lane failed or closed.
+fn refused(st: &State) -> Option<io::Error> {
+    if let Some(kind) = st.failed {
+        return Some(kind.into());
+    }
+    st.closed.then(|| io::ErrorKind::BrokenPipe.into())
+}
+
 impl AsyncWrite for LaneIo {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         frame: &[u8],
     ) -> Poll<io::Result<usize>> {
-        let lane = &self.lane;
-        let mut st = lane.lock();
-        if let Some(kind) = st.failed {
-            return Poll::Ready(Err(kind.into()));
+        let this = self.get_mut();
+        let lane = &this.lane;
+        // `waitSent`: the frame is in a batch that has not gone yet.
+        if let Some((batch, len)) = this.due {
+            let mut st = lane.lock();
+            if st.batch.sent() >= batch {
+                this.due = None;
+                return Poll::Ready(Ok(len));
+            }
+            if let Some(err) = refused(&st) {
+                this.due = None;
+                return Poll::Ready(Err(err));
+            }
+            st.write_waker = Some(cx.waker().clone());
+            return Poll::Pending;
         }
-        if st.closed {
-            return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+        // `awaitLink`: a wait that runs out marks the lane stalled; one that
+        // does not clears it.
+        if this.link_wait.is_some() || !lane.link.can_send() {
+            {
+                let mut st = lane.lock();
+                if let Some(err) = refused(&st) {
+                    this.link_wait = None;
+                    return Poll::Ready(Err(err));
+                }
+                // The close wakes it.
+                st.write_waker = Some(cx.waker().clone());
+            }
+            let wait = this.link_wait.get_or_insert_with(|| {
+                let link = lane.link.clone();
+                Box::pin(async move { link.wait_ready(WRITE_READY_TIMEOUT).await })
+            });
+            match wait.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(joined) => {
+                    this.link_wait = None;
+                    if !joined {
+                        lane.stats.note_write_stall();
+                        lane.fail(io::ErrorKind::TimedOut);
+                        return Poll::Ready(Err(io::ErrorKind::TimedOut.into()));
+                    }
+                    lane.stats.note_write_ready();
+                }
+            }
+        }
+        let mut st = lane.lock();
+        if let Some(err) = refused(&st) {
+            return Poll::Ready(Err(err));
         }
         match st.batch.append(frame) {
-            Ok(Append::Queued | Append::Due(_)) => {
+            Ok(Append::Queued) => {
                 drop(st);
                 lane.kick.notify_one();
                 Poll::Ready(Ok(frame.len()))
+            }
+            Ok(Append::Due(batch)) => {
+                this.due = Some((batch, frame.len()));
+                st.write_waker = Some(cx.waker().clone());
+                drop(st);
+                lane.kick.notify_one();
+                Poll::Pending
             }
             Ok(Append::Full) => {
                 st.write_waker = Some(cx.waker().clone());
@@ -381,6 +466,70 @@ impl AsyncWrite for LaneIo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pipe::{LinkEvent, PipeLink, KIND_DATA};
+    use crate::testhub::TestHub;
+    use crate::testing::bounded;
+    use olc_wire::record::Role;
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
+
+    async fn lane_on(room: &str) -> (TestHub, Arc<PipeLink>, Arc<Lane>, LaneIo) {
+        let (hub, url) = TestHub::start(room).await;
+        let (tx, _) = mpsc::channel::<LinkEvent>(4);
+        let link = PipeLink::connect(&url, tx).await.unwrap();
+        let keys = Arc::new(KeySet::from_hex(&"11".repeat(32), Role::Client).unwrap());
+        let (lane, io) = Lane::new(Link::Pipe(link.clone()), keys, &DATACHANNEL).unwrap();
+        (hub, link, lane, io)
+    }
+
+    #[tokio::test]
+    async fn a_batched_write_waits_for_a_link_that_can_send() {
+        bounded(async {
+            let (hub, link, _lane, mut io) = lane_on("await-link").await;
+            let mut m = hub.accept().await;
+            link.set_ready(false);
+            let mut write = Box::pin(io.write(&[7u8; 10]));
+            assert!(
+                timeout(Duration::from_millis(300), write.as_mut())
+                    .await
+                    .is_err(),
+                "a write returned while the link could not send (awaitLink, conn.go:724)"
+            );
+            link.set_ready(true);
+            assert_eq!(
+                timeout(Duration::from_secs(2), write)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                10
+            );
+            let (kind, _) = m.read().await.unwrap();
+            assert_eq!(kind, KIND_DATA);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_write_that_makes_its_batch_due_returns_once_the_batch_went() {
+        bounded(async {
+            let (hub, _link, lane, mut io) = lane_on("wait-sent").await;
+            let _m = hub.accept().await; // never reads
+            let frame = vec![9u8; 7000];
+            assert!(frame.len() >= DATACHANNEL.max_frame() / 2);
+            let mut accepted = 0usize;
+            while let Ok(r) = timeout(Duration::from_millis(300), io.write(&frame)).await {
+                assert_eq!(r.unwrap(), frame.len());
+                accepted += 1;
+                assert!(accepted < 10_000, "the hub never backed up");
+            }
+            // The write that waits is the one whose batch the flusher holds
+            // (waitSent, batch.go): nothing was taken in after it.
+            assert_eq!(lane.lock().batch.pending_len(), 0);
+        })
+        .await;
+    }
 
     #[test]
     fn the_datachannel_numbers() {
