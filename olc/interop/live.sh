@@ -12,7 +12,8 @@
 #
 # One run is one create call and three joins (the server, the Go client, the
 # Rust client), plus one rejoin for every reconnect a cell reports: count
-# them in the log before running it again. The gate's room and account
+# them in the log before running it again. -olcrtc.gate-rust-only leaves the
+# Go client out: one create call and two joins. The gate's room and account
 # variables (the CI's secrets) are cleared for the run: this step uses none.
 # Extra flags go to go test.
 set -euo pipefail

@@ -175,6 +175,12 @@ type rustConfig struct {
 	// e2e scenarios (zz_rust_e2e_test.go).
 	Liveness           *rustLiveness `json:"liveness,omitempty"`
 	LivenessFallbackMS int           `json:"liveness_fallback_ms,omitempty"`
+	// ICETransportPolicy is "relay" for a relay-only run (the fakeroom
+	// target's relay rooms).
+	ICETransportPolicy string `json:"ice_transport_policy,omitempty"`
+	// MaxJoins caps the joins the client starts on the carrier, rejoins
+	// included (the live step's budget); 0 is no cap.
+	MaxJoins int `json:"max_joins,omitempty"`
 }
 
 // rustClient runs the Rust client as a child process; its stderr is the

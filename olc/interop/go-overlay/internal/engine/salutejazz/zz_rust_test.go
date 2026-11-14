@@ -113,6 +113,9 @@ type rustConfig struct {
 	DeviceID  string        `json:"device_id"`
 	Debug     bool          `json:"debug"`
 	Liveness  *rustLiveness `json:"liveness,omitempty"`
+	// ICETransportPolicy is "relay" for a relay-only client
+	// (zz_rust_relay_test.go); empty is pion's and Go's "all".
+	ICETransportPolicy string `json:"ice_transport_policy,omitempty"`
 }
 
 // rustRoomConfig joins room with key, liveness as given (zero: Go's).
@@ -357,8 +360,11 @@ type rustTunnel struct {
 	serverSessionsTotal atomic.Int64
 }
 
-// startRustTunnel is startFakeTunnelLive with the Rust client.
-func startRustTunnel(t *testing.T, room *salutejazz.FakeRoom, probeEvery, pongTimeout time.Duration) *rustTunnel {
+// startRustTunnel is startFakeTunnelLive with the Rust client; tweaks change
+// the client's config (a relay-only run points it at a TURN relay).
+func startRustTunnel(t *testing.T, room *salutejazz.FakeRoom, probeEvery, pongTimeout time.Duration,
+	tweaks ...func(*rustConfig),
+) *rustTunnel {
 	t.Helper()
 	session.RegisterDefaults()
 	provider, engines := registerFakeRoom(t, room)
@@ -392,7 +398,11 @@ func startRustTunnel(t *testing.T, room *salutejazz.FakeRoom, probeEvery, pongTi
 	})
 	x.serverID = engines.at(0).LocalPeerID()
 
-	x.client = startRust(t, rustRoomConfig(room, tunnelKeyHex, probeEvery, pongTimeout), &x.clientLive)
+	cfg := rustRoomConfig(room, tunnelKeyHex, probeEvery, pongTimeout)
+	for _, tweak := range tweaks {
+		tweak(&cfg)
+	}
+	x.client = startRust(t, cfg, &x.clientLive)
 	select {
 	case x.socksAddr = <-x.client.listen:
 	case <-x.client.exited:
@@ -831,10 +841,14 @@ func (s *roomServer) open(w http.ResponseWriter, req *http.Request) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	r.serverID = r.engines.at(0).LocalPeerID()
-	writeJSON(w, map[string]any{
+	reply := map[string]any{
 		"id": id, "url": room.URL(), "room": salutejazz.FakeRoomCode, "password": salutejazz.FakeRoomPassword,
 		"server": r.serverID,
-	})
+	}
+	if os.Getenv(rustRelayEnv) == "1" {
+		reply["relay_url"] = startTurnRelay(s.t, room.URL()).url
+	}
+	writeJSON(w, reply)
 }
 
 // stop ends the room's server and its participants, once.

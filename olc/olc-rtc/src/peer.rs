@@ -35,6 +35,7 @@ use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
 
 pub use str0m::IceConnectionState;
 
+use crate::turn::{Arrival, RelayEvent, Relays, Resolved, TurnServer};
 use crate::{CryptoProvider, DtlsVersion};
 
 /// The driver's one receive buffer: the largest datagram it reads. An SFU
@@ -73,6 +74,14 @@ pub struct PeerConfig {
     /// What its channels may hold unacknowledged, in bytes, all channels
     /// together (str0m's `sctp_max_buffered_amount`; 128 KiB by default).
     pub sctp_max_buffered: usize,
+    /// The TURN servers it allocates on once it gathers ([`Peer::gather`]),
+    /// over UDP from its own socket; at most
+    /// [`crate::turn::MAX_ALLOCATIONS`] are used. Each allocation's relayed
+    /// candidate comes as [`PeerEvent::LocalCandidate`].
+    pub turn: Vec<TurnServer>,
+    /// Only relayed candidates (WebRTC's `iceTransportPolicy: "relay"`):
+    /// [`Peer::gather`] adds no host candidate.
+    pub relay_only: bool,
 }
 
 impl std::fmt::Debug for PeerConfig {
@@ -82,6 +91,8 @@ impl std::fmt::Debug for PeerConfig {
             .field("dtls_version", &self.dtls_version)
             .field("host_ip", &self.host_ip)
             .field("sctp_max_buffered", &self.sctp_max_buffered)
+            .field("turn", &self.turn)
+            .field("relay_only", &self.relay_only)
             .finish_non_exhaustive()
     }
 }
@@ -91,6 +102,10 @@ impl std::fmt::Debug for PeerConfig {
 pub enum PeerEvent {
     /// ICE moved to this state.
     IceState(IceConnectionState),
+    /// A local candidate gathered after the start (a TURN allocation's
+    /// relayed address), as its SDP attribute (`candidate:...`), for
+    /// trickling.
+    LocalCandidate(String),
     /// ICE and DTLS are up.
     Connected,
     /// A data channel opened, with its label.
@@ -164,6 +179,14 @@ struct Shared {
     /// Datagrams the host refused to send (a path the firewall drops):
     /// counted, as ICE fails such a pair on its own.
     send_refused: AtomicU64,
+    /// [`PeerConfig::relay_only`].
+    relay_only: bool,
+    /// [`PeerConfig::turn`], until [`Peer::gather`] takes it.
+    turn: Mutex<Vec<TurnServer>>,
+    /// The resolved servers, waiting for the driver to allocate on them.
+    turn_ready: Mutex<Option<Vec<Resolved>>>,
+    /// Datagrams that could not go through a relay ([`Relays::dropped`]).
+    relay_dropped: AtomicU64,
 }
 
 /// The str0m settings every peer uses: RTP mode (media would pass through
@@ -205,6 +228,10 @@ impl Peer {
             local,
             creds,
             send_refused: AtomicU64::new(0),
+            relay_only: cfg.relay_only,
+            turn: Mutex::new(cfg.turn.clone()),
+            turn_ready: Mutex::new(None),
+            relay_dropped: AtomicU64::new(0),
         });
         let (tx, rx) = mpsc::channel(EVENT_QUEUE);
         tokio::spawn(drive(sh.clone(), sock, tx));
@@ -247,6 +274,33 @@ impl Peer {
                 .map(Candidate::to_sdp_string)
                 .ok_or_else(|| PeerError::Rtc("str0m refused the host candidate".into()))
         })
+    }
+
+    /// Starts gathering, as `setLocalDescription` does: the host candidate
+    /// now, returned for trickling (none when relay-only), and an
+    /// allocation on each TURN server once its host resolves, whose relayed
+    /// candidate comes as [`PeerEvent::LocalCandidate`]. A second call adds
+    /// only the host candidate again.
+    ///
+    /// # Errors
+    /// str0m refused the host candidate.
+    pub fn gather(&self) -> Result<Option<String>, PeerError> {
+        let turn = std::mem::take(&mut *lock(&self.sh.turn));
+        if !turn.is_empty() {
+            let sh = Arc::downgrade(&self.sh);
+            let v4 = self.sh.local.is_ipv4();
+            tokio::spawn(async move {
+                let resolved = crate::turn::resolve(&turn, v4).await;
+                if let Some(sh) = sh.upgrade() {
+                    *lock(&sh.turn_ready) = Some(resolved);
+                    sh.kick.notify_one();
+                }
+            });
+        }
+        if self.sh.relay_only {
+            return Ok(None);
+        }
+        self.add_host_candidate().map(Some)
     }
 
     /// Adds a candidate the remote trickled.
@@ -327,6 +381,13 @@ impl Peer {
         self.sh.send_refused.load(Ordering::Relaxed)
     }
 
+    /// Datagrams that could not go through a TURN relay so far (no
+    /// permission yet, which ICE's retransmit covers, or refused).
+    #[must_use]
+    pub fn relay_dropped(&self) -> u64 {
+        self.sh.relay_dropped.load(Ordering::Relaxed)
+    }
+
     /// Starts closing: the goodbyes go out for at most [`CLOSE_DRAIN`], then
     /// the driver ends with [`PeerEvent::Closed`].
     pub fn close(&self) {
@@ -335,15 +396,28 @@ impl Peer {
     }
 }
 
-/// Polls str0m until it asks to be woken: sends what it transmits, keeps
-/// its events. Returns when to wake it.
-fn pump(sh: &Shared, sock: &UdpSocket, events: &mut Vec<Event>) -> Result<Instant, String> {
-    let mut rtc = sh.rtc.lock().unwrap_or_else(PoisonError::into_inner);
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Polls str0m until it asks to be woken: sends what it transmits (from a
+/// relayed address, through its relay), keeps its events. Returns when to
+/// wake it.
+fn pump(
+    sh: &Shared,
+    sock: &UdpSocket,
+    relays: &mut Relays,
+    events: &mut Vec<Event>,
+) -> Result<Instant, String> {
+    let mut rtc = lock(&sh.rtc);
+    let now = Instant::now();
     loop {
         match rtc.poll_output().map_err(|e| format!("poll: {e}"))? {
             Output::Timeout(t) => return Ok(t),
             Output::Transmit(t) => {
-                if sock.try_send_to(&t.contents, t.destination).is_err() {
+                if !relays.send(sock, t.source, t.destination, &t.contents, now)
+                    && sock.try_send_to(&t.contents, t.destination).is_err()
+                {
                     sh.send_refused.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -352,16 +426,62 @@ fn pump(sh: &Shared, sock: &UdpSocket, events: &mut Vec<Event>) -> Result<Instan
     }
 }
 
+/// Runs the relays: their timers, what they send, and the allocations that
+/// came up, whose relayed candidates go to str0m and, as SDP lines, into
+/// `lines`. Returns when to run them again.
+fn run_relays(
+    sh: &Shared,
+    sock: &UdpSocket,
+    relays: &mut Relays,
+    lines: &mut Vec<String>,
+) -> Option<Instant> {
+    let mut up = Vec::new();
+    let wake = relays.poll(sock, sh.name, Instant::now(), &mut up);
+    sh.relay_dropped.store(relays.dropped(), Ordering::Relaxed);
+    if up.is_empty() {
+        return wake;
+    }
+    let mut rtc = lock(&sh.rtc);
+    for RelayEvent::Allocated(relayed) in up {
+        match Candidate::relayed(relayed, sh.local, "udp") {
+            Ok(c) => {
+                if let Some(c) = rtc.add_local_candidate(c) {
+                    lines.push(c.to_sdp_string());
+                }
+            }
+            Err(e) => olc_net::debug!("webrtc: {} relayed candidate {relayed}: {e}", sh.name),
+        }
+    }
+    wake
+}
+
 async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
     let inbound = Arc::new(Semaphore::new(INBOUND_BYTES));
     let mut buf = vec![0u8; RECV_BUF];
     let mut events = Vec::new();
+    let mut lines = Vec::new();
+    let mut relays = Relays::new(&[], sh.local, Instant::now());
     let mut drain_until: Option<Instant> = None;
     let reason: String = 'run: loop {
-        let wake = match pump(&sh, &sock, &mut events) {
+        if let Some(servers) = lock(&sh.turn_ready).take() {
+            relays = Relays::new(&servers, sh.local, Instant::now());
+        }
+        // New relayed candidates reach str0m before it polls, so its checks
+        // from them start now.
+        run_relays(&sh, &sock, &mut relays, &mut lines);
+        let wake = match pump(&sh, &sock, &mut relays, &mut events) {
             Ok(t) => t,
             Err(e) => break 'run e,
         };
+        // A transmit through a relay may have queued a request (a
+        // permission, a channel): out with it now, not at the next wake.
+        let relay_wake = run_relays(&sh, &sock, &mut relays, &mut lines);
+        let wake = relay_wake.map_or(wake, |r| r.min(wake));
+        for line in lines.drain(..) {
+            if tx.send(PeerEvent::LocalCandidate(line)).await.is_err() {
+                break 'run "the owner went".into();
+            }
+        }
         sh.progressed.notify_waiters();
         let mut remote_closed = false;
         for e in events.drain(..) {
@@ -398,8 +518,7 @@ async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
         }
         let now = Instant::now();
         if sh.closing.load(Ordering::Acquire) && drain_until.is_none() {
-            let mut rtc = sh.rtc.lock().unwrap_or_else(PoisonError::into_inner);
-            let _ = rtc.close();
+            let _ = lock(&sh.rtc).close();
             drain_until = Some(now + CLOSE_DRAIN);
             continue;
         }
@@ -417,11 +536,18 @@ async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
         tokio::select! {
             got = sock.recv_from(&mut buf) => match got {
                 Ok((n, src)) => {
-                    if let Ok(r) = Receive::new(Protocol::Udp, src, sh.local, &buf[..n]) {
-                        let mut rtc = sh.rtc.lock().unwrap_or_else(PoisonError::into_inner);
-                        if let Err(e) = rtc.handle_input(Input::Receive(Instant::now(), r)) {
-                            break 'run format!("input: {e}");
-                        }
+                    let now = Instant::now();
+                    let fed = match relays.recv(src, &buf[..n], now) {
+                        Arrival::Direct => feed(&sh, now, Receive::new(Protocol::Udp, src, sh.local, &buf[..n])),
+                        Arrival::Handled => Ok(()),
+                        Arrival::Relayed { relayed, data } => feed(
+                            &sh,
+                            now,
+                            Receive::new(Protocol::Udp, data.peer, relayed, data.data()),
+                        ),
+                    };
+                    if let Err(e) = fed {
+                        break 'run e;
                     }
                 }
                 Err(e) if matches!(e.kind(),
@@ -438,10 +564,19 @@ async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
             () = sh.kick.notified() => {}
         }
     };
+    relays.close(&sock, Instant::now());
     sh.ended.store(true, Ordering::Release);
     sh.progressed.notify_waiters();
     olc_net::debug!("webrtc: {} peer connection ended: {reason}", sh.name);
     let _ = tx.send(PeerEvent::Closed(reason)).await;
+}
+
+/// Hands str0m one datagram (one it cannot parse is dropped, as before).
+fn feed<E>(sh: &Shared, now: Instant, r: Result<Receive<'_>, E>) -> Result<(), String> {
+    let Ok(r) = r else { return Ok(()) };
+    lock(&sh.rtc)
+        .handle_input(Input::Receive(now, r))
+        .map_err(|e| format!("input: {e}"))
 }
 
 #[cfg(test)]
@@ -477,6 +612,48 @@ mod tests {
             dtls_version: DtlsVersion::Dtls12,
             host_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
             sctp_max_buffered: buffered,
+            turn: Vec::new(),
+            relay_only: false,
+        }
+    }
+
+    /// `a` offers one reliable channel and `b` answers; returns its id.
+    fn negotiate(a: &Peer, b: &Peer) -> ChannelId {
+        let (offer, pending, id) = a.with_rtc(|rtc| {
+            let mut api = rtc.sdp_api();
+            let id = api.add_channel_with_config(ChannelConfig {
+                label: "_reliable".into(),
+                ordered: true,
+                reliability: Reliability::Reliable,
+                negotiated: None,
+                protocol: String::new(),
+            });
+            let (offer, pending) = api.apply().unwrap();
+            (offer, pending, id)
+        });
+        let offer = SdpOffer::from_sdp_string(&offer.to_sdp_string()).unwrap();
+        let answer = b.with_rtc(|rtc| rtc.sdp_api().accept_offer(offer)).unwrap();
+        a.with_rtc(|rtc| rtc.sdp_api().accept_answer(pending, answer))
+            .unwrap();
+        id
+    }
+
+    /// Waits until the channel is open at both ends.
+    async fn both_open(a_rx: &mut mpsc::Receiver<PeerEvent>, b_rx: &mut mpsc::Receiver<PeerEvent>) {
+        let mut open = (false, false);
+        while !(open.0 && open.1) {
+            tokio::select! {
+                Some(e) = a_rx.recv() => match e {
+                    PeerEvent::ChannelOpen(..) => open.0 = true,
+                    PeerEvent::Closed(r) => panic!("a closed: {r}"),
+                    _ => {}
+                },
+                Some(e) = b_rx.recv() => match e {
+                    PeerEvent::ChannelOpen(..) => open.1 = true,
+                    PeerEvent::Closed(r) => panic!("b closed: {r}"),
+                    _ => {}
+                },
+            }
         }
     }
 
@@ -494,34 +671,125 @@ mod tests {
         crate::init();
         let (a, mut a_rx) = Peer::start(&config("a", buffered)).unwrap();
         let (b, mut b_rx) = Peer::start(&config("b", buffered)).unwrap();
-        let (offer, pending, id) = a.with_rtc(|rtc| {
-            let mut api = rtc.sdp_api();
-            let id = api.add_channel_with_config(ChannelConfig {
-                label: "_reliable".into(),
-                ordered: true,
-                reliability: Reliability::Reliable,
-                negotiated: None,
-                protocol: String::new(),
-            });
-            let (offer, pending) = api.apply().unwrap();
-            (offer, pending, id)
-        });
-        let offer = SdpOffer::from_sdp_string(&offer.to_sdp_string()).unwrap();
-        let answer = b.with_rtc(|rtc| rtc.sdp_api().accept_offer(offer)).unwrap();
-        a.with_rtc(|rtc| rtc.sdp_api().accept_answer(pending, answer))
-            .unwrap();
+        let id = negotiate(&a, &b);
         let ca = Candidate::from_sdp_string(&a.add_host_candidate().unwrap()).unwrap();
         let cb = Candidate::from_sdp_string(&b.add_host_candidate().unwrap()).unwrap();
         a.add_remote_candidate(cb);
         b.add_remote_candidate(ca);
-        let mut open = (false, false);
-        while !(open.0 && open.1) {
-            tokio::select! {
-                Some(e) = a_rx.recv() => if let PeerEvent::ChannelOpen(..) = e { open.0 = true },
-                Some(e) = b_rx.recv() => if let PeerEvent::ChannelOpen(..) = e { open.1 = true },
+        both_open(&mut a_rx, &mut b_rx).await;
+        (a, a_rx, b, b_rx, id)
+    }
+
+    /// Moves `n` messages of `len` bytes from `from` to `to` on `id`, and
+    /// checks each arrives whole and in order.
+    async fn send_through(
+        from: &Peer,
+        to_rx: &mut mpsc::Receiver<PeerEvent>,
+        id: ChannelId,
+        n: usize,
+        len: usize,
+    ) {
+        for i in 0..n {
+            let msg = vec![u8::try_from(i % 251).unwrap(); len];
+            while !from.write(id, true, &msg).unwrap() {
+                from.wait_buffered(id, 128 << 10).await.unwrap();
             }
         }
-        (a, a_rx, b, b_rx, id)
+        let mut got = 0usize;
+        while got < n {
+            match to_rx.recv().await.unwrap() {
+                PeerEvent::Data(m) => {
+                    assert_eq!(m.data.len(), len);
+                    assert!(m.data.iter().all(|&x| usize::from(x) == got % 251));
+                    got += 1;
+                }
+                PeerEvent::Closed(r) => panic!("closed: {r}"),
+                _ => {}
+            }
+        }
+    }
+
+    /// `a` uses only its relayed candidate (relay-only, no host candidate
+    /// added) and `b` knows only that one: whatever connects them goes
+    /// through the TURN server, both ways.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_relay_only_peer_connects_through_turn() {
+        bounded(async {
+            crate::init();
+            let (server, entry) = crate::testing::turn_server().await;
+            let mut ca = config("a", 1 << 20);
+            ca.turn = vec![entry];
+            ca.relay_only = true;
+            let (a, mut a_rx) = Peer::start(&ca).unwrap();
+            let (b, mut b_rx) = Peer::start(&config("b", 1 << 20)).unwrap();
+            let id = negotiate(&a, &b);
+            assert_eq!(
+                a.gather().unwrap(),
+                None,
+                "a relay-only peer has no host candidate"
+            );
+            let cb = Candidate::from_sdp_string(&b.add_host_candidate().unwrap()).unwrap();
+            a.add_remote_candidate(cb);
+            let line = loop {
+                match a_rx.recv().await {
+                    Some(PeerEvent::LocalCandidate(line)) => break line,
+                    Some(PeerEvent::Closed(r)) => panic!("a closed: {r}"),
+                    None => panic!("a's queue ended"),
+                    Some(_) => {}
+                }
+            };
+            assert!(line.contains(" typ relay"), "{line}");
+            let relayed = Candidate::from_sdp_string(&line).unwrap();
+            assert_ne!(relayed.addr(), a.local_addr(), "{line}");
+            b.add_remote_candidate(relayed);
+            both_open(&mut a_rx, &mut b_rx).await;
+            send_through(&a, &mut b_rx, id, 40, 12_000).await;
+            send_through(&b, &mut a_rx, id, 40, 12_000).await;
+            // Nothing went around the relay: a has no other candidate.
+            assert_eq!(a.send_refused(), 0);
+            a.close();
+            b.close();
+            server.close().await.unwrap();
+        })
+        .await;
+    }
+
+    /// A TURN server that refuses the credential costs the peer nothing
+    /// else: no relayed candidate, and its host candidate still connects.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_turn_credential_leaves_the_host_path() {
+        bounded(async {
+            crate::init();
+            let (server, mut entry) = crate::testing::turn_server().await;
+            entry.password = "not-the-password".into();
+            let mut ca = config("a", 1 << 20);
+            ca.turn = vec![entry];
+            let (a, mut a_rx) = Peer::start(&ca).unwrap();
+            let (b, mut b_rx) = Peer::start(&config("b", 1 << 20)).unwrap();
+            let id = negotiate(&a, &b);
+            let host = a.gather().unwrap().expect("a host candidate");
+            let ca = Candidate::from_sdp_string(&host).unwrap();
+            let cb = Candidate::from_sdp_string(&b.add_host_candidate().unwrap()).unwrap();
+            a.add_remote_candidate(cb);
+            b.add_remote_candidate(ca);
+            let mut open = (false, false);
+            while !(open.0 && open.1) {
+                tokio::select! {
+                    Some(e) = a_rx.recv() => match e {
+                        PeerEvent::ChannelOpen(..) => open.0 = true,
+                        PeerEvent::LocalCandidate(l) => panic!("a relayed candidate on a refused credential: {l}"),
+                        PeerEvent::Closed(r) => panic!("a closed: {r}"),
+                        _ => {}
+                    },
+                    Some(e) = b_rx.recv() => if let PeerEvent::ChannelOpen(..) = e { open.1 = true },
+                }
+            }
+            send_through(&a, &mut b_rx, id, 5, 1_000).await;
+            a.close();
+            b.close();
+            server.close().await.unwrap();
+        })
+        .await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

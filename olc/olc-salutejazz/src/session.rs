@@ -28,7 +28,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -211,6 +211,9 @@ pub enum Error {
     /// `ErrNoDataChannel`.
     #[error("salutejazz data channel not ready")]
     NoDataChannel,
+    /// [`Config::max_joins`] joins were started already.
+    #[error("salutejazz join budget spent: {0} joins")]
+    JoinBudget(u32),
     /// `ErrDestinationEnded`.
     #[error("salutejazz destination's session ended while the send was held")]
     DestinationEnded,
@@ -258,6 +261,16 @@ pub struct Config {
     pub name: String,
     /// The host candidates' address; the default route's when `None`.
     pub host_ip: Option<IpAddr>,
+    /// Only relayed candidates (`iceTransportPolicy: "relay"`): no host
+    /// candidate is trickled, so every path goes through the carrier's TURN
+    /// servers. Go's engine has no such setting (pion's default, `all`);
+    /// tests use it to prove the relay path.
+    pub relay_only: bool,
+    /// The most joins this process may start on the connector, all links
+    /// and runs together; 0 is no limit (Go has none). A live test against
+    /// the real service spends a fixed number and no more: past it a join
+    /// fails without dialing.
+    pub max_joins: u32,
 }
 
 impl std::fmt::Debug for Config {
@@ -267,6 +280,8 @@ impl std::fmt::Debug for Config {
             .field("room_id", &self.room_id)
             .field("name", &self.name)
             .field("host_ip", &self.host_ip)
+            .field("relay_only", &self.relay_only)
+            .field("max_joins", &self.max_joins)
             .finish_non_exhaustive()
     }
 }
@@ -924,6 +939,10 @@ impl Shared {
                 teardown(&old).await;
             }
         }
+        if let Err(e) = take_join(self.cfg.max_joins) {
+            self.abandon(&gen).await;
+            return Err(e);
+        }
         let reader = match dial(&self.cfg.url).await {
             Ok((reader, writer)) => {
                 *lock(&gen.ws) = Some(writer);
@@ -1118,13 +1137,21 @@ impl Shared {
         }
     }
 
-    fn peer_config(&self, name: &'static str, buffered: usize) -> PeerConfig {
+    /// A peer connection's settings, with the generation's ICE servers
+    /// (`rtc:config`) as pion is handed them: their UDP TURN URLs.
+    fn peer_config(&self, gen: &Gen, name: &'static str, buffered: usize) -> PeerConfig {
+        let turn = lock(&gen.ice_servers)
+            .iter()
+            .flat_map(|s| olc_rtc::turn::udp_servers(&s.urls, &s.username, &s.credential))
+            .collect();
         PeerConfig {
             name,
             crypto: self.crypto.clone(),
             dtls_version: DtlsVersion::Dtls12,
             host_ip: self.host_ip,
             sctp_max_buffered: buffered,
+            turn,
+            relay_only: self.cfg.relay_only,
         }
     }
 }
@@ -1155,6 +1182,22 @@ fn send_window_frame(gen: &Gen, to: &str, kind: u8, counter: u64) {
     if !matches!(peer.write(rel, true, &frame), Ok(true)) {
         olc_net::debug!("salutejazz: a relay window frame did not fit the lane");
     }
+}
+
+/// Joins this process started under a budget ([`Config::max_joins`]):
+/// process-wide, so a run the supervisor starts again spends from the same
+/// budget. A join counts at its dial, whether or not the dial succeeds.
+static BUDGETED_JOINS: AtomicU32 = AtomicU32::new(0);
+
+/// Takes one join from a budget of `max` (0: no budget, nothing counted).
+fn take_join(max: u32) -> Result<(), Error> {
+    if max == 0 {
+        return Ok(());
+    }
+    if BUDGETED_JOINS.fetch_add(1, Ordering::AcqRel) >= max {
+        return Err(Error::JoinBudget(max));
+    }
+    Ok(())
 }
 
 /// The connector's WebSocket, with the web client's Origin and User-Agent.
@@ -1487,19 +1530,32 @@ fn drain_ice(gen: &Gen, target: &'static str, peer: &Peer) {
     }
 }
 
-/// `sendICE`: one candidate a frame, with the local ufrag.
+/// Gathering starts once the local description went out (pion's
+/// `SetLocalDescription`): the host candidate now (none when relay-only),
+/// relayed ones as their allocations come up ([`run_peer`]).
 async fn send_ice(sh: &Shared, gen: &Gen, target: &str, peer: &Peer) -> Result<(), Error> {
-    let line = peer
-        .add_host_candidate()
-        .map_err(|e| Error::Other(e.to_string()))?;
-    let ufrag = peer.creds().ufrag.clone();
+    let line = peer.gather().map_err(|e| Error::Other(e.to_string()))?;
+    match line {
+        Some(line) => send_candidate(sh, gen, target, &peer.creds().ufrag, &line).await,
+        None => Ok(()),
+    }
+}
+
+/// `sendICE`: one candidate a frame, with the local ufrag.
+async fn send_candidate(
+    sh: &Shared,
+    gen: &Gen,
+    target: &str,
+    ufrag: &str,
+    line: &str,
+) -> Result<(), Error> {
     let m = wire::MediaIn {
         method: method::ICE,
         candidates: vec![wire::IceOut {
-            candidate: &line,
+            candidate: line,
             sdp_mid: "0",
             sdp_mline_index: 0,
-            username_fragment: &ufrag,
+            username_fragment: ufrag,
             target,
         }],
         ..wire::MediaIn::default()
@@ -1524,8 +1580,8 @@ async fn handle_offer(
     let (peer, fresh) = match existing {
         Some(p) => (p, false),
         None => {
-            let (p, rx) =
-                Peer::start(&sh.peer_config("subscriber", SUB_SCTP_BUFFERED)).map_err(|e| {
+            let (p, rx) = Peer::start(&sh.peer_config(gen, "subscriber", SUB_SCTP_BUFFERED))
+                .map_err(|e| {
                     Error::Other(format!(
                         "salutejazz new {TARGET_SUBSCRIBER} peer connection: {e}"
                     ))
@@ -1535,7 +1591,13 @@ async fn handle_offer(
                 return Err(Error::SessionClosed);
             }
             *lock(&gen.sub) = Some(p.clone());
-            tokio::spawn(run_peer(sh.clone(), gen.clone(), rx, false));
+            tokio::spawn(run_peer(
+                sh.clone(),
+                gen.clone(),
+                rx,
+                false,
+                p.creds().ufrag.clone(),
+            ));
             (p, true)
         }
     };
@@ -1581,11 +1643,12 @@ async fn negotiate(sh: Arc<Shared>, gen: Arc<Gen>) {
 
 /// `startPublisher` and `awaitPublisherAnswer`.
 async fn start_publisher(sh: &Arc<Shared>, gen: &Arc<Gen>) -> Result<(), Error> {
-    let (peer, rx) = Peer::start(&sh.peer_config("publisher", PUB_SCTP_BUFFERED)).map_err(|e| {
-        Error::Other(format!(
-            "salutejazz new {TARGET_PUBLISHER} peer connection: {e}"
-        ))
-    })?;
+    let (peer, rx) =
+        Peer::start(&sh.peer_config(gen, "publisher", PUB_SCTP_BUFFERED)).map_err(|e| {
+            Error::Other(format!(
+                "salutejazz new {TARGET_PUBLISHER} peer connection: {e}"
+            ))
+        })?;
     if gen.is_done() {
         peer.close();
         return Err(Error::SessionClosed);
@@ -1616,7 +1679,13 @@ async fn start_publisher(sh: &Arc<Shared>, gen: &Arc<Gen>) -> Result<(), Error> 
         lossy,
     });
     *lock(&gen.pending_pub) = Some(pending);
-    tokio::spawn(run_peer(sh.clone(), gen.clone(), rx, true));
+    tokio::spawn(run_peer(
+        sh.clone(),
+        gen.clone(),
+        rx,
+        true,
+        peer.creds().ufrag.clone(),
+    ));
     let (tx, answer_rx) = oneshot::channel();
     *lock(&gen.answer) = Some(tx);
     let sdp = offer.to_sdp_string();
@@ -1687,6 +1756,7 @@ async fn run_peer(
     gen: Arc<Gen>,
     mut rx: mpsc::Receiver<PeerEvent>,
     publisher: bool,
+    ufrag: String,
 ) {
     let target = if publisher {
         TARGET_PUBLISHER
@@ -1727,6 +1797,11 @@ async fn run_peer(
                     IceConnectionState::Connected | IceConnectionState::Completed
                 ) {
                     failing = None;
+                }
+            }
+            PeerEvent::LocalCandidate(line) => {
+                if let Err(e) = send_candidate(&sh, &gen, target, &ufrag, &line).await {
+                    olc_net::debug!("salutejazz: {target} candidate: {e}");
                 }
             }
             PeerEvent::Connected => {
@@ -1902,6 +1977,20 @@ async fn ping(sh: &Shared, gen: &Gen) -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The process-wide budget: joins up to it pass, the next one does
+    /// not dial. No other test sets a budget, so only this one counts.
+    #[test]
+    fn a_join_past_the_budget_is_refused() {
+        take_join(0).unwrap();
+        let spent = BUDGETED_JOINS.load(Ordering::Acquire);
+        let max = spent + 2;
+        take_join(max).unwrap();
+        take_join(max).unwrap();
+        assert!(matches!(take_join(max), Err(Error::JoinBudget(m)) if m == max));
+        assert!(matches!(take_join(max), Err(Error::JoinBudget(_))));
+        take_join(0).unwrap();
+    }
 
     #[test]
     fn ice_states_take_pions_words() {

@@ -58,6 +58,10 @@ type fakeRoomCreds struct {
 	Room     string `json:"room"`
 	Password string `json:"password"`
 	Server   string `json:"server"`
+	// RelayURL, served with OLCRTC_GATE_RUST_RELAY=1, is the room's
+	// connector behind a relay that hands out a TURN server: the rust
+	// flavour joins through it relay-only (zz_rust_relay_test.go).
+	RelayURL string `json:"relay_url,omitempty"`
 }
 
 // fakeRoomState is a served room's state (TestServeFakeRoom's /state).
@@ -313,6 +317,9 @@ func TestGateRustFakeRoom(t *testing.T) {
 						return
 					}
 					cfg.Engine, cfg.Token, cfg.RoomID = providerJazz, c.Password, c.Room
+					if c.RelayURL != "" {
+						cfg.URL, cfg.ICETransportPolicy = c.RelayURL, "relay"
+					}
 				}})
 		case cliFlavour:
 			clients = append(clients, goFakeRoomClient{target: target, cli: cliClient{start: startBudget, stop: stopBudget}})

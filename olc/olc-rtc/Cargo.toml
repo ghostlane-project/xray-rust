@@ -15,6 +15,10 @@ str0m = { version = "=0.25.0", default-features = false, features = ["aws-lc-rs"
 str0m-aws-lc-rs = "=0.7.0"
 thiserror.workspace = true
 tokio.workspace = true
+turn-client-proto = { version = "=0.8.0", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+# An in-process TURN server for the relay tests (webrtc-rs; tests only).
+turn = "=0.17.3"
+webrtc-util = { version = "=0.17.3", default-features = false, features = ["conn", "vnet"] }
