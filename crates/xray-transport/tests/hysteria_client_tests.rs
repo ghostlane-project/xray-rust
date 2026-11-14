@@ -906,13 +906,16 @@ async fn download_at_120ms(flows: usize, each: usize) -> f64 {
     let (relay, _relay) = delay_relay(config.remote_addr, Duration::from_millis(60)).await;
     config.remote_addr = relay;
     let client = HysteriaClient::connect(config, &tls).await.unwrap();
+    // Every stream is open before any asks for data: a stream that streams
+    // while later ones open would leave their answers no connection credit.
     let mut streams = Vec::new();
     for _ in 0..flows {
-        let mut stream = client.open_tcp(&target()).await.unwrap();
-        stream.write_all(b"g").await.unwrap();
-        streams.push(stream);
+        streams.push(client.open_tcp(&target()).await.unwrap());
     }
     let started = std::time::Instant::now();
+    for stream in &mut streams {
+        stream.write_all(b"g").await.unwrap();
+    }
     futures_util::future::join_all(streams.iter_mut().map(|stream| async move {
         let mut bytes = vec![0; each];
         stream.read_exact(&mut bytes).await.unwrap();
