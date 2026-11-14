@@ -459,6 +459,23 @@ class EvidenceAllowlists(unittest.TestCase):
             "unreviewed.json": line,
         }), {(name, "generic-api-key") for name in (path, "unreviewed.json")})
 
+    def test_olc_key_parser_vector_exception_is_narrow(self):
+        path = "olc/interop/vectors/2d4266af/runtime.json"
+        cycle = "0123456789abcdef" * 4
+        values = [cycle[:-2], cycle[:-1], cycle, cycle + "00", cycle.upper(),
+                  " " + cycle[1:], "zz" + cycle[2:]]
+        lines = "".join('    "key_hex": "' + value + '",\n' for value in values)
+        if (ROOT / path).exists():
+            text = (ROOT / path).read_text()
+            for value in values:
+                self.assertIn('"key_hex": "' + value + '"', text)
+        self.assertEqual(self.scan({path: lines}), set())
+        other = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        self.assertEqual(self.scan({
+            path: '    "key_hex": "' + other + '",\n',
+            "unreviewed/runtime.json": lines,
+        }), {(name, "generic-api-key") for name in (path, "unreviewed/runtime.json")})
+
     def test_xdrive_s3_oracle_signature_exception_is_narrow(self):
         path = "tests/fixtures/xdrive/http-vectors.json"
         lines = [line + "\n" for line in (ROOT / path).read_text().splitlines()

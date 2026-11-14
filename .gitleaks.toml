@@ -46,6 +46,27 @@ regexTarget = "line"
 paths = ['''^tests/fixtures/xmc/vectors\.json$''']
 regexes = ['''^\s*"password": "0123456789abcdef0123456789abcdef",?\s*$''']
 
+# The olcRTC port's interop vectors (olc/interop/vectors/<engine pin>/), made
+# by the Go engine's own key parser at the pin: the synthetic key
+# 0123456789abcdef repeated and its malformed variants (upper case, too short,
+# too long, not hex, a space). The generic rule reads the 62 to 66 hex digits
+# as an API key.
+[[allowlists]]
+description = "Synthetic olcRTC key-parser vectors"
+targetRules = ["generic-api-key"]
+condition = "AND"
+regexTarget = "line"
+paths = ['''^olc/interop/vectors/[0-9a-f]{8}/runtime\.json$''']
+regexes = [
+  '''^\s*"key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",?\s*$''',
+  '''^\s*"key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",?\s*$''',
+  '''^\s*"key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",?\s*$''',
+  '''^\s*"key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00",?\s*$''',
+  '''^\s*"key_hex": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",?\s*$''',
+  '''^\s*"key_hex": " 123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",?\s*$''',
+  '''^\s*"key_hex": "zz23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",?\s*$''',
+]
+
 # The XDRIVE oracle signs S3 requests with AWS's documented example key pair
 # (AKIDEXAMPLE); the generic rule reads the signature after
 # "x-amz-security-token" in the signed-header list as a token.
