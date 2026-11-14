@@ -360,11 +360,9 @@ fn split_windows(held: u64, want: [u64; 2], moved: [u64; 2]) -> [u64; 2] {
         return want;
     }
     let total = u128::from(moved[0]) + u128::from(moved[1]);
-    let receive = if total == 0 {
-        held / 2
-    } else {
-        (u128::from(held) * u128::from(moved[0]) / total) as u64
-    };
+    let receive = (u128::from(held) * u128::from(moved[0]))
+        .checked_div(total)
+        .map_or(held / 2, |share| u64::try_from(share).unwrap_or(held));
     let send = (held - receive.min(want[0])).min(want[1]);
     [(held - send).min(want[0]), send]
 }
