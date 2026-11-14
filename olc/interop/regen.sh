@@ -41,12 +41,13 @@ expected=(
 	crypto/keys.json crypto/open.json crypto/seal.json
 	handshake/client.json handshake/hello.json handshake/server.json
 	transport/datachannel.json transport/vp8channel.json
+	vp8/kcp-settings.json vp8/kcp.json
 )
 
 cd "$engine"
 unformatted=$(gofmt -l $(olc_overlay_files | grep '\.go$'))
 [ -z "$unformatted" ] || olc_die "gofmt: $unformatted"
-GOFLAGS=-mod=readonly go vet -tags "$OLC_GO_TAGS" "${pkgs[@]}" ./cmd/zz-olcrtc-oracle
+GOFLAGS=-mod=readonly go vet -tags "$OLC_GO_TAGS" "${pkgs[@]}" ./cmd/zz-olcrtc-oracle ./cmd/zz-olcrtc-kcppeer
 
 for run in 1 2; do
 	out=$OLC_WORK/run$run
