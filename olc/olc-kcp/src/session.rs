@@ -249,6 +249,12 @@ impl Session {
         Ok(n)
     }
 
+    /// `SetWindowSize` (`sess.go:534-539`): a window of 0 or less is left as
+    /// it is (vp8channel's lane sets the send window alone, `dataWindow`).
+    pub fn set_window_size(&mut self, snd_wnd: i32, rcv_wnd: i32) {
+        self.kcp.wnd_size(snd_wnd, rcv_wnd);
+    }
+
     /// Whether a write would be taken now.
     #[must_use]
     pub fn writable(&self) -> bool {
