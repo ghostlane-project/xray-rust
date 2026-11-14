@@ -898,8 +898,9 @@ fn phone_budget(config: &mut HysteriaConfig) {
 }
 
 /// Mbit/s of `flows` downloads of `each` bytes at once, through a 120 ms
-/// round trip with a phone's windows.
-async fn download_at_120ms(flows: usize, each: usize) -> f64 {
+/// round trip with a phone's windows; `None` if they did not all finish
+/// within 20 s.
+async fn download_at_120ms(flows: usize, each: usize) -> Option<f64> {
     let (server, tls) = Mock::start(Mode::Stream);
     let mut config = server.config_on(MemoryClass::Constrained);
     phone_budget(&mut config);
@@ -916,30 +917,46 @@ async fn download_at_120ms(flows: usize, each: usize) -> f64 {
     for stream in &mut streams {
         stream.write_all(b"g").await.unwrap();
     }
-    futures_util::future::join_all(streams.iter_mut().map(|stream| async move {
+    let reads = streams.iter_mut().map(|stream| async move {
         let mut bytes = vec![0; each];
-        stream.read_exact(&mut bytes).await.unwrap();
-    }))
-    .await;
+        stream.read_exact(&mut bytes).await.is_ok()
+    });
+    let all = futures_util::future::join_all(reads);
+    let stall = Duration::from_secs(20);
+    let finished = timeout(stall, all)
+        .await
+        .is_ok_and(|reads| reads.into_iter().all(|read| read));
     let elapsed = started.elapsed();
     drop(streams);
     client.close();
-    (flows * each) as f64 * 8.0 / elapsed.as_secs_f64() / 1e6
+    let mbit = (flows * each) as f64 * 8.0 / elapsed.as_secs_f64() / 1e6;
+    finished.then_some(mbit)
 }
 
 /// Hysteria2 downloads at a simulated 120 ms round trip with a phone's
-/// windows, one stream and then 32 at once: numbers for the tables, run by
-/// hand with `--ignored`.
+/// windows: one stream (held by its stream window), four (held by the
+/// connection window) and 32: numbers for the tables, run by hand with
+/// `--ignored`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "a benchmark: prints Mbit/s at a simulated 120 ms round trip"]
 async fn hysteria_downloads_at_a_120ms_round_trip() {
     const MIB: usize = 1024 * 1024;
-    for (flows, each) in [(1, 16 * MIB), (32, 2 * MIB)] {
+    for (flows, each) in [(1, 16 * MIB), (4, 4 * MIB), (32, MIB)] {
         let mut runs = Vec::new();
         for _ in 0..3 {
             runs.push(download_at_120ms(flows, each).await);
         }
-        let best = runs.iter().copied().fold(0.0, f64::max);
-        eprintln!("HYSTERIA-RTT120 flows {flows}: best {best:.0} Mbit/s of {runs:.0?}");
+        let best = runs.iter().flatten().copied().fold(0.0, f64::max);
+        let mut shown = Vec::new();
+        for run in &runs {
+            shown.push(match run {
+                Some(mbit) => format!("{mbit:.0}"),
+                None => "stalled".to_owned(),
+            });
+        }
+        eprintln!(
+            "HYSTERIA-RTT120 flows {flows}: best {best:.0} Mbit/s of [{}]",
+            shown.join(", ")
+        );
     }
 }
