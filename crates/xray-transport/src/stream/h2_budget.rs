@@ -105,10 +105,18 @@ mod tests {
             hand_back(&mut gate, body.flow_control()).unwrap();
             assert!(gate.held() <= 64 * KIB);
         }
-        assert_eq!(read, 2 * 1024 * 1024, "through a 256 KiB window and 64 KiB of B");
+        assert_eq!(
+            read,
+            2 * 1024 * 1024,
+            "through a 256 KiB window and 64 KiB of B"
+        );
         hand_back(&mut gate, body.flow_control()).unwrap();
         assert_eq!(gate.owed(), 0);
-        assert_eq!(budget.in_use(), 0, "a stream with nothing queued holds nothing");
+        assert_eq!(
+            budget.in_use(),
+            0,
+            "a stream with nothing queued holds nothing"
+        );
         server.await.unwrap();
     }
 

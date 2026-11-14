@@ -1144,7 +1144,10 @@ mod tests {
         assert!(!moved.add(0, 5));
         assert_eq!(moved.recent(0), 15);
         assert!(!moved.add(1, 7), "still recent in the next turn");
-        assert_eq!((moved.recent(1), moved.recent(2), moved.recent(3)), (22, 7, 0));
+        assert_eq!(
+            (moved.recent(1), moved.recent(2), moved.recent(3)),
+            (22, 7, 0)
+        );
         assert!(moved.add(3, 1), "two turns without bytes are quiet");
         assert_eq!(moved.recent(3), 1);
     }

@@ -526,7 +526,11 @@ async fn a_connection_holds_its_windows_within_a_byte_budget_while_it_moves_data
 
     for turn in 0..3 {
         let stream = client.open_tcp(&target()).await.unwrap();
-        assert_eq!(budget.in_use(), 0, "turn {turn}: an open stream alone holds nothing");
+        assert_eq!(
+            budget.in_use(),
+            0,
+            "turn {turn}: an open stream alone holds nothing"
+        );
         // Through the windows 2 MiB go out and come back whole.
         let data: Vec<u8> = (0..2 * MIB).map(|i| (i % 251) as u8).collect();
         let (mut reader, mut writer) = tokio::io::split(stream);
@@ -543,9 +547,17 @@ async fn a_connection_holds_its_windows_within_a_byte_budget_while_it_moves_data
         .await
         .unwrap();
         read.unwrap();
-        assert!(echoed == data, "turn {turn}: {} of {} bytes", echoed.len(), data.len());
+        assert!(
+            echoed == data,
+            "turn {turn}: {} of {} bytes",
+            echoed.len(),
+            data.len()
+        );
         let usage = budget.usage();
-        assert!(usage.window_bytes > 0, "turn {turn}: the busy connection held a lease");
+        assert!(
+            usage.window_bytes > 0,
+            "turn {turn}: the busy connection held a lease"
+        );
         assert!(
             usage.peak <= budget.window_cap(),
             "turn {turn}: the lease held {} of the leases' {}",

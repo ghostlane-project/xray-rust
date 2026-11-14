@@ -630,9 +630,13 @@ impl<'b> ReceiveGate<'b> {
         let before = self.permits.held();
         let held = self.permits.try_hold(need);
         if held > before {
-            budget.window_bytes.fetch_add(held - before, Ordering::SeqCst);
+            budget
+                .window_bytes
+                .fetch_add(held - before, Ordering::SeqCst);
         } else {
-            budget.window_bytes.fetch_sub(before - held, Ordering::SeqCst);
+            budget
+                .window_bytes
+                .fetch_sub(before - held, Ordering::SeqCst);
         }
         let spent = budget.in_use() > budget.capacity()
             || budget.window_bytes.load(Ordering::SeqCst) > budget.window_cap();
@@ -646,7 +650,10 @@ impl<'b> ReceiveGate<'b> {
     pub fn close(&mut self) {
         self.owed = 0;
         let held = self.permits.held();
-        self.permits.budget().window_bytes.fetch_sub(held, Ordering::SeqCst);
+        self.permits
+            .budget()
+            .window_bytes
+            .fetch_sub(held, Ordering::SeqCst);
         self.permits.release();
     }
 }
@@ -718,15 +725,18 @@ impl<'b> WindowLease<'b> {
             .window_bytes
             .load(Ordering::SeqCst)
             .saturating_sub(before);
-        let others_short =
-            budget.short_windows.load(Ordering::SeqCst) > usize::from(self.short);
+        let others_short = budget.short_windows.load(Ordering::SeqCst) > usize::from(self.short);
         let share = if others_short { fair } else { cap };
         let target = want.min(share).min(cap.saturating_sub(others_hold));
         let held = self.permits.try_hold(target);
         if held > before {
-            budget.window_bytes.fetch_add(held - before, Ordering::SeqCst);
+            budget
+                .window_bytes
+                .fetch_add(held - before, Ordering::SeqCst);
         } else {
-            budget.window_bytes.fetch_sub(before - held, Ordering::SeqCst);
+            budget
+                .window_bytes
+                .fetch_sub(before - held, Ordering::SeqCst);
         }
         let short = held < want.min(fair);
         if short != self.short {
@@ -1030,7 +1040,11 @@ mod tests {
         assert_eq!(gate.grant(64 * KIB), 0);
         assert_eq!(budget.usage().window_bytes, 60 * KIB);
         gate.consumed(8 * KIB);
-        assert_eq!(gate.grant(56 * KIB), 16 * KIB, "52 KiB fit the windows' part");
+        assert_eq!(
+            gate.grant(56 * KIB),
+            16 * KIB,
+            "52 KiB fit the windows' part"
+        );
         let mut relay = BudgetPermits::new(&budget);
         assert_eq!(relay.try_hold(16 * KIB), 12 * KIB);
         drop(gate);
@@ -1050,8 +1064,16 @@ mod tests {
             floor: 4 * KIB,
         }));
         gate.consumed(8 * KIB);
-        assert_eq!(gate.grant(28 * KIB), 0, "B is spent: the queue drains first");
-        assert_eq!(gate.held(), 24 * KIB, "what it holds follows the queue down");
+        assert_eq!(
+            gate.grant(28 * KIB),
+            0,
+            "B is spent: the queue drains first"
+        );
+        assert_eq!(
+            gate.held(),
+            24 * KIB,
+            "what it holds follows the queue down"
+        );
         gate.consumed(16 * KIB);
         assert_eq!(gate.grant(12 * KIB), 24 * KIB, "within the new B again");
         assert_eq!(budget.in_use(), 8 * KIB);
@@ -1067,7 +1089,11 @@ mod tests {
         assert_eq!(budget.usage().windows, 1);
         assert_eq!(budget.usage().window_bytes, 700 * KIB);
         let mut relay = BudgetPermits::new(&budget);
-        assert_eq!(relay.try_hold(200 * KIB), 100 * KIB, "the reserve is the relays'");
+        assert_eq!(
+            relay.try_hold(200 * KIB),
+            100 * KIB,
+            "the reserve is the relays'"
+        );
         assert_eq!(lease.fit(0), 0, "an idle connection holds nothing");
         assert_eq!(budget.usage().windows, 0);
         assert_eq!(budget.usage().window_bytes, 0);
@@ -1080,7 +1106,11 @@ mod tests {
         let mut second = WindowLease::new(&budget);
         assert_eq!(first.fit(1024 * KIB), 700 * KIB);
         let seen = budget.window_generation();
-        assert_eq!(second.fit(1024 * KIB), 0, "the first holds the leases' share");
+        assert_eq!(
+            second.fit(1024 * KIB),
+            0,
+            "the first holds the leases' share"
+        );
         assert!(second.is_short());
         assert_ne!(budget.window_generation(), seen, "the others are told");
         assert_eq!(first.fit(1024 * KIB), 350 * KIB, "half of the share each");
@@ -1105,7 +1135,11 @@ mod tests {
             capacity: 80 * KIB,
             floor: 4 * KIB,
         }));
-        assert_ne!(budget.window_generation(), seen, "leases are told to fit again");
+        assert_ne!(
+            budget.window_generation(),
+            seen,
+            "leases are told to fit again"
+        );
         assert_eq!(lease.fit(1024 * KIB), 70 * KIB);
         assert_eq!(budget.in_use(), 70 * KIB);
     }
