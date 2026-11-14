@@ -2555,8 +2555,10 @@ impl XmuxManager {
         &self,
     ) -> Result<(Arc<XmuxClient>, XmuxUsageLease), XhttpTransportError> {
         let now = (self.clock)();
-        let generation = self.generation();
         let mut clients = self.clients.lock().await;
+        // Read under the lock the reset follower takes, so a slot made after
+        // the follower emptied the list belongs to the new generation.
+        let generation = self.generation();
         clients.retain(|client| client.generation == generation && client.is_reusable(now));
 
         if clients.is_empty() || (self.connections > 0 && clients.len() < self.connections as usize)

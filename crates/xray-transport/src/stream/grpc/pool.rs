@@ -188,10 +188,13 @@ impl GrpcTransport {
         let mut may_replace_refusing_connection = true;
 
         loop {
-            // Read on every turn: a reset while this flow waited for a dial
-            // must not leave it on a connection of the old network.
-            let generation = dialer.network_resets().generation();
             let mut state = self.pool.state.lock().await;
+            // Read on every turn: a reset while this flow waited for a dial
+            // must not leave it on a connection of the old network. Read
+            // under the lock the retirement task takes after a reset, so a
+            // flow that finds the slot emptied by a reset starts its dial in
+            // the new generation, not in the one the reset ended.
+            let generation = dialer.network_resets().generation();
             match &mut *state {
                 PoolState::Ready(connection, dialled_in) => {
                     if *dialled_in != generation
