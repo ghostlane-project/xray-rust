@@ -108,6 +108,18 @@ func newParty(t *testing.T, rawURL string) *party {
 	return p
 }
 
+// connect joins p's session and waits until the hub holds it: Connect
+// returns once the JOIN is written, before the hub has read it, and a frame
+// a stranger sends the room meanwhile misses p.
+func connect(ctx context.Context, t *testing.T, hub *interoppipe.Hub, room string, p *party) {
+	t.Helper()
+	before := hub.Members(room)
+	if err := p.s.Connect(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the session in the room", func() bool { return hub.Members(room) > before })
+}
+
 // observe joins room as a bare participant that says nothing, once the hub
 // holds it.
 func observe(t *testing.T, hub *interoppipe.Hub, room string) net.Conn {
@@ -245,9 +257,7 @@ func TestSignallingIgnoresOthers(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), testBudget)
 	defer cancel()
 	a := newParty(t, hub.URL("ignore"))
-	if err := a.s.Connect(ctx); err != nil {
-		t.Fatal(err)
-	}
+	connect(ctx, t, hub, "ignore", a)
 	conn, err := net.Dial("tcp", strings.TrimPrefix(strings.TrimSuffix(hub.URL("ignore"), "/ignore"), "tcp://"))
 	if err != nil {
 		t.Fatal(err)
@@ -319,9 +329,7 @@ func TestCrossedOffersTheGreaterIDStands(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), testBudget)
 			defer cancel()
 			a := newParty(t, hub.URL("crossed"))
-			if err := a.s.Connect(ctx); err != nil {
-				t.Fatal(err)
-			}
+			connect(ctx, t, hub, "crossed", a)
 			conn, err := net.Dial("tcp", strings.TrimPrefix(strings.TrimSuffix(hub.URL("crossed"), "/crossed"), "tcp://"))
 			if err != nil {
 				t.Fatal(err)
