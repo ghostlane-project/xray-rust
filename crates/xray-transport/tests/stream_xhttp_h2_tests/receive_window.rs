@@ -504,7 +504,8 @@ async fn an_adaptive_window_grows_for_a_reader_that_keeps_up() {
 
 /// Under a spent budget a reader's credit waits for its queue: a reader that
 /// stops with more than `B` queued keeps the credit of what it read until its
-/// reads take the queue down to `B`, and then all of it goes back at once.
+/// reads take the queue within the windows' part of `B` (`B` less the relays'
+/// eighth), and then all of it goes back at once.
 #[tokio::test(start_paused = true)]
 async fn a_reader_that_stops_with_more_than_the_budget_queued_keeps_its_credit_until_it_drains() {
     const WINDOW: usize = 8 * 1024 * 1024;
@@ -519,13 +520,15 @@ async fn a_reader_that_stops_with_more_than_the_budget_queued_keeps_its_credit_u
     assert_blocked(&mut send).await;
 
     // 6 MiB stay queued, more than the phone's 3 MB: the 2 MiB read wait.
+    // The gate holds the windows' part of B and the relays keep B / 8.
     let mut bytes = vec![0; 2 * MIB];
     body.read_exact(&mut bytes).await.unwrap();
     assert_blocked(&mut send).await;
     let usage = budget.usage();
     assert_eq!(
-        usage.in_use, usage.capacity,
-        "the queue holds all of B: {usage:?}"
+        usage.in_use,
+        budget.window_cap(),
+        "the queue holds the windows' part of B: {usage:?}"
     );
 
     // 2 MiB stay queued, within B: the 6 MiB read go back, and no more.
