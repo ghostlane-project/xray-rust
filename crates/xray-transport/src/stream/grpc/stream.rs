@@ -26,6 +26,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use super::framing::{encode_hunk, HunkDecoder, HunkMode, MAX_HUNK_PAYLOAD_LEN};
 use super::h2client::H2ConnectionDriver;
 use super::keepalive::OpenCall;
+use crate::memory_budget::{ByteBudget, WindowGate};
+use crate::stream::h2_budget::hand_back;
 use crate::{TransportError, TransportStream};
 
 /// Where [`GrpcStream::poll_drain_uplink`] stopped.
@@ -158,6 +160,9 @@ pub struct GrpcStream {
     /// succeeded. Every other way a downlink can end is an error, not this.
     eof: bool,
     send_closed: bool,
+    /// The downlink's credit, handed back within the process's byte budget
+    /// ([`hand_back`]).
+    window: WindowGate<'static>,
     /// The connection task this call rides on, held so that
     /// [`Self::connection_is_finished`] has something to ask.
     ///
@@ -215,6 +220,7 @@ impl GrpcStream {
             downlink_carried_data: false,
             eof: false,
             send_closed: false,
+            window: WindowGate::new(ByteBudget::process()),
             driver,
             _open_call: open_call,
         }
@@ -791,14 +797,26 @@ impl AsyncRead for GrpcStream {
                 Downlink::Reading(recv) => recv,
             };
 
-            match ready!(recv.poll_data(cx)) {
+            // Credit an earlier read freed and the budget had no room for.
+            hand_back(&mut this.window, recv.flow_control())
+                .map_err(|error| h2_io_error("could not release the window", &error))?;
+            let Poll::Ready(data) = recv.poll_data(cx) else {
+                if this.window.owed() > 0 {
+                    // The credit still owed goes out once the budget has
+                    // bytes again, should the peer have none left to send.
+                    this.window.budget().wake_when_free(cx);
+                }
+                return Poll::Pending;
+            };
+            match data {
                 Some(Ok(chunk)) => {
                     // The window has to be handed back explicitly or the peer
                     // stalls the moment it has sent 65535 bytes, which is the
                     // connection and stream default. h2 releases the stream
-                    // and connection windows together here.
-                    recv.flow_control()
-                        .release_capacity(chunk.len())
+                    // and connection windows together here, as far as the
+                    // byte budget lets it.
+                    this.window.consumed(chunk.len());
+                    hand_back(&mut this.window, recv.flow_control())
                         .map_err(|error| h2_io_error("could not release the window", &error))?;
                     this.decoder.push(&chunk);
                     this.downlink_carried_data = true;
