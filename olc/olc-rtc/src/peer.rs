@@ -19,6 +19,14 @@
 //!   drops it. With none left the driver stops reading its socket, so a
 //!   slow owner slows the sender through SCTP's own flow control, as a
 //!   blocking `OnMessage` does under pion.
+//!
+//! # Media
+//!
+//! The `Rtc` runs in RTP mode: an owner that negotiated a media line writes
+//! whole RTP packets through the direct API ([`Peer::with_rtc`]) and hears
+//! each one that arrives through its [`RtpSink`], called on the driver's
+//! task as the packet is decrypted (pion's `TrackRemote.ReadRTP` loop, with
+//! no queue between).
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -29,6 +37,7 @@ use std::time::{Duration, Instant};
 
 use str0m::channel::ChannelId;
 use str0m::net::{Protocol, Receive};
+use str0m::rtp::RtpPacket;
 use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
 use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
@@ -49,6 +58,10 @@ pub const RECV_BUF: usize = 2048;
 /// message SCTP accepted can pass, and no more. A message larger than this
 /// takes all of it.
 pub const INBOUND_BYTES: usize = 256 * 1024;
+
+/// Takes each RTP packet the remote sends, on the driver's task; it must
+/// not block (the driver reads nothing else meanwhile).
+pub type RtpSink = Box<dyn FnMut(&RtpPacket) + Send>;
 
 /// The event queue's length. Only the non-data events need it (data events
 /// are bounded by [`INBOUND_BYTES`]); a peer's life has a handful of those.
@@ -164,6 +177,8 @@ struct Shared {
     /// Datagrams the host refused to send (a path the firewall drops):
     /// counted, as ICE fails such a pair on its own.
     send_refused: AtomicU64,
+    /// Where arriving RTP goes; dropped without one.
+    rtp: Mutex<Option<RtpSink>>,
 }
 
 /// The str0m settings every peer uses: RTP mode (media would pass through
@@ -205,6 +220,7 @@ impl Peer {
             local,
             creds,
             send_refused: AtomicU64::new(0),
+            rtp: Mutex::new(None),
         });
         let (tx, rx) = mpsc::channel(EVENT_QUEUE);
         tokio::spawn(drive(sh.clone(), sock, tx));
@@ -247,6 +263,11 @@ impl Peer {
                 .map(Candidate::to_sdp_string)
                 .ok_or_else(|| PeerError::Rtc("str0m refused the host candidate".into()))
         })
+    }
+
+    /// Where the RTP the remote sends goes from now on; `None` drops it.
+    pub fn set_rtp_sink(&self, sink: Option<RtpSink>) {
+        *self.sh.rtp.lock().unwrap_or_else(PoisonError::into_inner) = sink;
     }
 
     /// Adds a candidate the remote trickled.
@@ -385,6 +406,17 @@ async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
                 }
                 Event::Closed => {
                     remote_closed = true;
+                    continue;
+                }
+                Event::RtpPacket(p) => {
+                    if let Some(sink) = sh
+                        .rtp
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .as_mut()
+                    {
+                        sink(&p);
+                    }
                     continue;
                 }
                 _ => continue,
@@ -618,6 +650,92 @@ mod tests {
                     rest += 1;
                 }
             }
+        })
+        .await;
+    }
+
+    /// RTP written on a negotiated video line reaches the remote's sink
+    /// whole: sequence numbers, markers and payloads (the vp8channel lane).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rtp_on_a_video_line_reaches_the_sink() {
+        use str0m::format::Codec;
+        use str0m::media::{Direction, MediaKind};
+        use str0m::rtp::{RtpWrite, SeqNo};
+
+        bounded(async {
+            crate::init();
+            let (a, mut a_rx) = Peer::start(&config("a", 1 << 20)).unwrap();
+            let (b, mut b_rx) = Peer::start(&config("b", 1 << 20)).unwrap();
+            let (got_tx, mut got) = mpsc::unbounded_channel();
+            b.set_rtp_sink(Some(Box::new(move |p: &RtpPacket| {
+                let _ = got_tx.send((
+                    p.header.sequence_number,
+                    p.header.marker,
+                    p.payload.to_vec(),
+                ));
+            })));
+            let (offer, pending, mid) = a.with_rtc(|rtc| {
+                let mut api = rtc.sdp_api();
+                let mid = api.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+                let (offer, pending) = api.apply().unwrap();
+                (offer, pending, mid)
+            });
+            let offer = SdpOffer::from_sdp_string(&offer.to_sdp_string()).unwrap();
+            let answer = b.with_rtc(|rtc| rtc.sdp_api().accept_offer(offer)).unwrap();
+            a.with_rtc(|rtc| rtc.sdp_api().accept_answer(pending, answer))
+                .unwrap();
+            let ca = Candidate::from_sdp_string(&a.add_host_candidate().unwrap()).unwrap();
+            let cb = Candidate::from_sdp_string(&b.add_host_candidate().unwrap()).unwrap();
+            a.add_remote_candidate(cb);
+            b.add_remote_candidate(ca);
+            let mut up = (false, false);
+            while !(up.0 && up.1) {
+                tokio::select! {
+                    Some(e) = a_rx.recv() => if let PeerEvent::Connected = e { up.0 = true },
+                    Some(e) = b_rx.recv() => if let PeerEvent::Connected = e { up.1 = true },
+                }
+            }
+            let pt = a.with_rtc(|rtc| {
+                rtc.codec_config()
+                    .find(|p| p.spec().codec == Codec::Vp8)
+                    .unwrap()
+                    .pt()
+            });
+            let sent: Vec<(u16, bool, Vec<u8>)> = (0..20u16)
+                .map(|i| {
+                    (
+                        65_530u16.wrapping_add(i),
+                        i % 4 == 3,
+                        vec![0x90, 0x80, u8::try_from(i).unwrap(), 7, 7],
+                    )
+                })
+                .collect();
+            for (i, (seq, marker, payload)) in sent.iter().enumerate() {
+                let ext = 65_530u64 + u64::try_from(i).unwrap();
+                a.with_rtc(|rtc| {
+                    let mut api = rtc.direct_api();
+                    let tx = api.stream_tx_by_mid(mid, None).unwrap();
+                    tx.write_rtp(
+                        RtpWrite::new(
+                            pt,
+                            SeqNo::from(ext),
+                            3000 * u32::from(*seq),
+                            Instant::now(),
+                            payload.clone(),
+                        )
+                        .marker(*marker),
+                    );
+                });
+            }
+            let mut seen = Vec::new();
+            while seen.len() < sent.len() {
+                seen.push(got.recv().await.unwrap());
+            }
+            seen.sort_by_key(|(seq, ..)| u32::from(seq.wrapping_sub(65_530)));
+            assert_eq!(seen, sent);
+            b.set_rtp_sink(None);
+            a.close();
+            b.close();
         })
         .await;
     }
