@@ -12,6 +12,9 @@
 //     second; a client whose key is outside the ring never pairs;
 //   - reconnects: the hub drops every connection to the room, twice; the
 //     client rejoins, reopens its session and carries a pull again;
+//   - reconnects: as fast as Go: 20 such cuts under the Rust client and 20
+//     under the Go client (zz_rust_reconnect_test.go), each with its own
+//     server; the Rust client's reopens take at most 1.5 times as long;
 //   - dead link: the room goes silent (the hub drops every frame); liveness
 //     tears the session down and, once the room relays again, it reopens;
 //   - egress refusal: a server without the private-target switch refuses a
@@ -60,9 +63,10 @@ type rustLiveness struct {
 
 // e2eEnv is one run of the scenarios: the hub, the server binary, the origin.
 type e2eEnv struct {
-	t       *testing.T
-	target  *InteropTarget
-	capture *Capture
+	t         *testing.T
+	target    *InteropTarget
+	capture   *Capture
+	serverLog string // the log of the server started last
 }
 
 // room is a fresh room on the hub: its name and its endpoint.
@@ -153,6 +157,7 @@ func (e *e2eEnv) server(ep Endpoint, ring []string, allowPrivate bool) func() {
 		})
 	}
 	t.Cleanup(stop)
+	e.serverLog = logPath
 	if err := waitForLine(logPath, linkedLine, linkBudget, exited); err != nil {
 		t.Fatal(err)
 	}
@@ -400,6 +405,24 @@ func TestRustE2E(t *testing.T) {
 			waitLog(t, log, "client reconnect reason=provider", round, 30*time.Second)
 			waitLog(t, log, " reopened (device=", round, 60*time.Second)
 			env.pullSoon(socks, 20*time.Second)
+		}
+	})
+
+	// The hub cuts the room 20 times under each client, each with its own
+	// server: the Rust client's reopens may take at most 1.5 times as long as
+	// the Go client's in all. A round slower than a second (a first hello
+	// lost to the 2 s resend) is logged with the hub's trace, the client's
+	// log and the server's around it.
+	t.Run("reconnects: as fast as Go", func(t *testing.T) {
+		env.t = t
+		const rounds = 20
+		rust := env.reopenRounds("rust", rounds, time.Second)
+		cli := env.reopenRounds("cli", rounds, time.Second)
+		t.Logf("rust: %s", describeRounds(rust))
+		t.Logf("cli:  %s", describeRounds(cli))
+		if r, g := sumDurations(rust), sumDurations(cli); r*2 > g*3 {
+			t.Fatalf("over %d rounds the Rust client took %s to reopen, the Go client %s: more than 1.5 times as long",
+				rounds, r.Round(time.Millisecond), g.Round(time.Millisecond))
 		}
 	})
 

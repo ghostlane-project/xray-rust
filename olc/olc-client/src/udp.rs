@@ -38,7 +38,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::Inner;
-use crate::socks::{atyp, go_ip_string, Request};
+use crate::socks::{atyp, go_ip_string, host_text, Request};
 use crate::tunnel::{rep, reply};
 
 /// One read of a UDP socket: the tun's MTU (9000 behind hev) and a SOCKS
@@ -137,18 +137,18 @@ pub enum Addr {
     V4(Ipv4Addr),
     /// IPv6.
     V6(Ipv6Addr),
-    /// A name.
-    Domain(String),
+    /// A name: its bytes, UTF-8 or not, as Go's string holds them.
+    Domain(Vec<u8>),
 }
 
 impl Addr {
     /// From a Go host string (`socksAddrBytes`): a literal is an address,
     /// a mapped IPv6 one IPv4.
-    pub fn parse(host: &str) -> Self {
-        match host.parse::<IpAddr>() {
-            Ok(IpAddr::V4(a)) => Self::V4(a),
-            Ok(IpAddr::V6(a)) => a.to_ipv4_mapped().map_or(Self::V6(a), Self::V4),
-            Err(_) => Self::Domain(host.to_owned()),
+    pub fn parse(host: &[u8]) -> Self {
+        match std::str::from_utf8(host).map(str::parse::<IpAddr>) {
+            Ok(Ok(IpAddr::V4(a))) => Self::V4(a),
+            Ok(Ok(IpAddr::V6(a))) => a.to_ipv4_mapped().map_or(Self::V6(a), Self::V4),
+            _ => Self::Domain(host.to_vec()),
         }
     }
 
@@ -157,7 +157,7 @@ impl Addr {
             Host::None => None,
             Host::V4(a) => Some(Self::V4(*a)),
             Host::V6(a) => Some(a.to_ipv4_mapped().map_or(Self::V6(*a), Self::V4)),
-            Host::Domain(d) => Some(Self::Domain((*d).to_owned())),
+            Host::Domain(d) => Some(Self::Domain(d.as_bytes().to_vec())),
         }
     }
 
@@ -185,7 +185,7 @@ impl Addr {
                 let len = u8::try_from(d.len()).ok().filter(|&l| l > 0)?;
                 out.push(atyp::DOMAIN);
                 out.push(len);
-                out.extend_from_slice(d.as_bytes());
+                out.extend_from_slice(d);
             }
         }
         Some(())
@@ -241,8 +241,8 @@ pub enum PacketError {
 /// A datagram's target and payload, borrowed from the packet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Datagram<'a> {
-    /// The host as Go's string.
-    pub host: String,
+    /// The host as Go's string: an address's text, or a name's bytes as sent.
+    pub host: Vec<u8>,
     /// The port.
     pub port: u16,
     /// The data.
@@ -275,7 +275,7 @@ pub fn parse_socks_udp(packet: &[u8]) -> Result<Datagram<'_>, PacketError> {
 }
 
 /// `parseSocksUDPHost`.
-fn parse_host(packet: &[u8], off: usize) -> Result<(String, usize), PacketError> {
+fn parse_host(packet: &[u8], off: usize) -> Result<(Vec<u8>, usize), PacketError> {
     let kind = *packet.get(off).ok_or(PacketError::MissingAddrType)?;
     match kind {
         atyp::IPV4 => {
@@ -283,7 +283,7 @@ fn parse_host(packet: &[u8], off: usize) -> Result<(String, usize), PacketError>
                 .get(off + 1..off + 5)
                 .and_then(|s| s.try_into().ok())
                 .ok_or(PacketError::ShortIpv4)?;
-            Ok((Ipv4Addr::from(b).to_string(), off + 5))
+            Ok((Ipv4Addr::from(b).to_string().into_bytes(), off + 5))
         }
         atyp::DOMAIN => {
             let size = usize::from(*packet.get(off + 1).ok_or(PacketError::MissingDomainSize)?);
@@ -291,14 +291,17 @@ fn parse_host(packet: &[u8], off: usize) -> Result<(String, usize), PacketError>
                 .get(off + 2..off + 2 + size)
                 .filter(|_| size > 0)
                 .ok_or(PacketError::ShortDomain)?;
-            Ok((String::from_utf8_lossy(name).into_owned(), off + 2 + size))
+            Ok((name.to_vec(), off + 2 + size))
         }
         atyp::IPV6 => {
             let b: [u8; 16] = packet
                 .get(off + 1..off + 17)
                 .and_then(|s| s.try_into().ok())
                 .ok_or(PacketError::ShortIpv6)?;
-            Ok((go_ip_string(IpAddr::V6(Ipv6Addr::from(b))), off + 17))
+            Ok((
+                go_ip_string(IpAddr::V6(Ipv6Addr::from(b))).into_bytes(),
+                off + 17,
+            ))
         }
         other => Err(PacketError::AddressType(other)),
     }
@@ -446,9 +449,9 @@ impl Reply {
 pub(crate) struct FlowKey {
     owner: u64,
     client: SocketAddr,
-    /// A boxed str, not a `String`: the key is held twice (the flow and the
+    /// Boxed bytes, not a `Vec`: the key is held twice (the flow and the
     /// index), and the capacity word is 8 bytes in each.
-    host: Box<str>,
+    host: Box<[u8]>,
     port: u16,
 }
 
@@ -643,10 +646,9 @@ impl Inner {
         };
         let mut allowed = Source {
             peer,
-            request: req
-                .addr
-                .parse::<IpAddr>()
+            request: std::str::from_utf8(&req.addr)
                 .ok()
+                .and_then(|a| a.parse::<IpAddr>().ok())
                 .filter(|ip| !ip.is_unspecified())
                 .map(unmap),
             port: req.port,
@@ -743,7 +745,7 @@ impl Inner {
                 .await;
             return;
         };
-        if conn.write_all(&reply(rep::SUCCESS, "")).await.is_err() {
+        if conn.write_all(&reply(rep::SUCCESS, b"")).await.is_err() {
             return;
         }
         let _ = conn.set_nodelay(true);
@@ -856,7 +858,7 @@ impl Inner {
         let key = FlowKey {
             owner,
             client,
-            host: dg.host.as_str().into(),
+            host: dg.host.as_slice().into(),
             port: dg.port,
         };
         let Some(id) = self.flows.id(key, reply) else {
@@ -866,13 +868,7 @@ impl Inner {
         let mut record = [0u8; UDP_MAX_RECORD];
         let len = {
             let mut lane = self.datagram.lock().unwrap_or_else(PoisonError::into_inner);
-            match lane.seal(
-                FrameType::Packet,
-                id,
-                dg.host.as_bytes(),
-                dg.port,
-                dg.payload,
-            ) {
+            match lane.seal(FrameType::Packet, id, &dg.host, dg.port, dg.payload) {
                 Ok(r) => {
                     record[..r.len()].copy_from_slice(r);
                     r.len()
@@ -956,13 +952,17 @@ impl Inner {
         dg: &Datagram<'_>,
         assoc: &CancellationToken,
     ) -> bool {
-        if !self.rules.as_ref().is_some_and(|r| r.match_host(&dg.host)) {
+        if !self
+            .rules
+            .as_ref()
+            .is_some_and(|r| r.match_host(&host_text(&dg.host)))
+        {
             return false;
         }
         let key = FlowKey {
             owner,
             client,
-            host: dg.host.as_str().into(),
+            host: dg.host.as_slice().into(),
             port: dg.port,
         };
         let existing = {
@@ -974,7 +974,11 @@ impl Inner {
                     Some(f.remote.clone())
                 }
                 None if held >= self.flows.max => {
-                    crate::debug!("direct udp to {}:{}: too many udp flows", dg.host, dg.port);
+                    crate::debug!(
+                        "direct udp to {}:{}: too many udp flows",
+                        host_text(&dg.host),
+                        dg.port
+                    );
                     return false;
                 }
                 None => None,
@@ -988,7 +992,11 @@ impl Inner {
             },
         };
         if let Err(e) = remote.send(dg.payload).await {
-            crate::debug!("direct udp to {}:{} write failed: {e}", dg.host, dg.port);
+            crate::debug!(
+                "direct udp to {}:{} write failed: {e}",
+                host_text(&dg.host),
+                dg.port
+            );
         }
         true
     }
@@ -1000,9 +1008,10 @@ impl Inner {
         dg: &Datagram<'_>,
         assoc: &CancellationToken,
     ) -> Option<Arc<UdpSocket>> {
-        let target = crate::direct::join_host_port(&dg.host, dg.port);
+        let name = host_text(&dg.host);
+        let target = crate::direct::join_host_port(&name, dg.port);
         let dialed = async {
-            let ip = *crate::resolver::lookup(&dg.host)
+            let ip = *crate::resolver::lookup(&name)
                 .await?
                 .first()
                 .ok_or_else(|| std::io::Error::other("no address"))?;
@@ -1039,7 +1048,7 @@ impl Inner {
             },
         );
         drop(t);
-        crate::info!("direct udp to {}:{}", dg.host, dg.port);
+        crate::info!("direct udp to {}:{}", host_text(&dg.host), dg.port);
         Some(remote)
     }
 
@@ -1139,8 +1148,8 @@ mod tests {
         let pkt = [0, 0, 0, 1, 8, 8, 8, 8, 0, 53, 0xab];
         let dg = parse_socks_udp(&pkt).unwrap();
         assert_eq!(
-            (dg.host.as_str(), dg.port, dg.payload),
-            ("8.8.8.8", 53, &[0xab][..])
+            (&dg.host[..], dg.port, dg.payload),
+            (&b"8.8.8.8"[..], 53, &[0xab][..])
         );
         let built = build_socks_udp(&Addr::parse(&dg.host), dg.port, dg.payload).unwrap();
         assert_eq!(built, pkt);
@@ -1165,15 +1174,34 @@ mod tests {
             "unsupported address type: 9"
         );
         assert_eq!(
-            Addr::parse("::ffff:1.2.3.4"),
+            Addr::parse(b"::ffff:1.2.3.4"),
             Addr::V4(Ipv4Addr::new(1, 2, 3, 4))
         );
-        assert!(build_socks_udp(&Addr::Domain(String::new()), 1, b"").is_none());
+        assert!(build_socks_udp(&Addr::Domain(Vec::new()), 1, b"").is_none());
         let addr: SocketAddr = "127.0.0.1:5353".parse().unwrap();
         assert_eq!(
             reply_success_udp(addr),
             [5, 0, 0, 1, 127, 0, 0, 1, 0x14, 0xe9]
         );
+    }
+
+    #[test]
+    fn a_non_utf8_name_goes_through_as_its_bytes() {
+        // parseSocksUDPHost's string(...) keeps the bytes, and so does the
+        // reply's header (socksAddrBytes), both ways and on both framings.
+        let name: &[u8] = b"\xff\xfe.\xe2\x80.example";
+        let mut pkt = vec![0, 0, 0, 3, u8::try_from(name.len()).unwrap()];
+        pkt.extend_from_slice(name);
+        pkt.extend_from_slice(&[0, 53, 0xab]);
+        let dg = parse_socks_udp(&pkt).unwrap();
+        let host: &[u8] = dg.host.as_ref();
+        assert_eq!(host, name);
+        let built = build_socks_udp(&Addr::parse(&dg.host), dg.port, dg.payload).unwrap();
+        assert_eq!(built, pkt);
+        let frame = encode_fwd_frame(&Addr::parse(&dg.host), dg.port, dg.payload).unwrap();
+        let (fwd, used) = decode_fwd_frame(&frame).unwrap().unwrap();
+        let host: &[u8] = fwd.host.as_ref();
+        assert_eq!((host, used), (name, frame.len()));
     }
 
     #[test]
@@ -1187,8 +1215,8 @@ mod tests {
         two.extend_from_slice(&frame);
         let (dg, used) = decode_fwd_frame(&two).unwrap().unwrap();
         assert_eq!(
-            (dg.host.as_str(), dg.port, dg.payload, used),
-            ("192.0.2.53", 53, &b"q"[..], 11)
+            (&dg.host[..], dg.port, dg.payload, used),
+            (&b"192.0.2.53"[..], 53, &b"q"[..], 11)
         );
         // A header length that is not the address's: a frame error once the
         // whole header (12 bytes here) has arrived.
@@ -1296,7 +1324,7 @@ mod tests {
         let key = |port| FlowKey {
             owner: 1,
             client: "127.0.0.1:1".parse().unwrap(),
-            host: "h".into(),
+            host: b"h"[..].into(),
             port,
         };
         let a = flows.id(key(1), &reply).unwrap();

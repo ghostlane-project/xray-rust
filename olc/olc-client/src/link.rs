@@ -128,6 +128,16 @@ impl Link {
         }
     }
 
+    /// Waits until the peer has settled in the room, for the first hello
+    /// (`PipeLink::wait_peer_settled`); the caller bounds it. SaluteJazz
+    /// returns at once, as Go sends its hello.
+    pub async fn wait_peer_settled(&self) {
+        match self {
+            Link::Pipe(p) => p.wait_peer_settled().await,
+            Link::SaluteJazz(_) => {}
+        }
+    }
+
     /// `Send`.
     ///
     /// # Errors

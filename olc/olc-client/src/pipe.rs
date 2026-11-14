@@ -54,6 +54,19 @@ pub const FRAME_HEADER: usize = 5;
 /// the same bound (zz_pipe.go).
 pub const SEND_HIGH_WATER: u32 = 512 * 1024;
 
+/// How long a participant must have been in the room before a hello is
+/// sent to it ([`PipeLink::wait_peer_settled`]). The hub relays to a
+/// participant from its JOIN on, and the engine above the participant
+/// installs its session only after that, when its reconnect callback runs:
+/// the pinned server's `handleReconnect` replaces its smux session after the
+/// rejoin (server/link.go:141-200), and a record that arrives in between is
+/// pushed into the session being replaced (`onData`, server/link.go:409).
+/// Nothing on the wire says when the swap is done; on the gate's box it was
+/// done within 3 ms of the JOIN. Twice that would be safer, but every reopen
+/// waits it out, and 5 ms keeps a reopen within 1.5 times of Go's when Go's
+/// first hello is not lost (13 ms on that box).
+pub const PEER_SETTLE: Duration = Duration::from_millis(5);
+
 /// The first pause between rejoins, doubled up to [`REJOIN_MAX`].
 pub const REJOIN_BACKOFF: Duration = Duration::from_millis(100);
 /// The longest pause between rejoins.
@@ -106,6 +119,9 @@ pub struct PipeLink {
     /// stopped reading without waiting for the writer's lock.
     conn: Mutex<Option<CancellationToken>>,
     ready: watch::Sender<bool>,
+    /// When another participant last arrived in the room as this connection
+    /// sees it; `None` while it sees none (or is not joined).
+    peer: watch::Sender<Option<tokio::time::Instant>>,
     shut: CancellationToken,
     /// Taken by [`PipeLink::close`]: the client's event queue ends with it.
     events: Mutex<Option<mpsc::Sender<LinkEvent>>>,
@@ -151,6 +167,7 @@ impl PipeLink {
     ) -> Result<Arc<Self>, LinkError> {
         let (addr, room) = parse_url(url)?;
         let (ready, _) = watch::channel(false);
+        let (peer, _) = watch::channel(None);
         let link = Arc::new(Self {
             addr,
             room,
@@ -158,6 +175,7 @@ impl PipeLink {
             writer: tokio::sync::Mutex::new(None),
             conn: Mutex::new(None),
             ready,
+            peer,
             shut: CancellationToken::new(),
             events: Mutex::new(Some(events)),
         });
@@ -208,6 +226,35 @@ impl PipeLink {
     /// Whether the room is joined (`CanSend`).
     pub fn can_send(&self) -> bool {
         *self.ready.borrow()
+    }
+
+    /// Waits until the room has held another participant, as this
+    /// connection sees it, for [`PEER_SETTLE`] since the last one arrived: a
+    /// hello sent sooner reaches nobody, or a peer whose session is still
+    /// being replaced. It waits on across a rejoin and for as long as the
+    /// room holds nobody; the caller bounds it.
+    pub async fn wait_peer_settled(&self) {
+        let mut rx = self.peer.subscribe();
+        loop {
+            let since = *rx.borrow_and_update();
+            match since {
+                Some(at) => {
+                    tokio::select! {
+                        () = tokio::time::sleep_until(at + PEER_SETTLE) => {
+                            if *rx.borrow() == Some(at) {
+                                return;
+                            }
+                        }
+                        r = rx.changed() => if r.is_err() { return },
+                    }
+                }
+                None => {
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// Waits until the room is joined, at most `limit`; whether it is.
@@ -292,6 +339,9 @@ impl PipeLink {
     async fn read_loop(self: Arc<Self>, mut read: OwnedReadHalf, mut cut: CancellationToken) {
         // The one read buffer: the largest frame the hub relays.
         let mut buf = vec![0u8; MAX_PAYLOAD];
+        // The others in the room, as the hub last counted them on this
+        // connection.
+        let mut peers = 0u16;
         loop {
             let got = tokio::select! {
                 biased;
@@ -313,9 +363,20 @@ impl PipeLink {
                     }
                 }
                 Ok((KIND_PEERS, 2)) => {
-                    if u16::from_be_bytes([buf[0], buf[1]]) > 0 {
+                    let n = u16::from_be_bytes([buf[0], buf[1]]);
+                    if n > 0 {
                         self.lock().peer_seen = true;
                     }
+                    // An arrival starts the settle again: it may be the
+                    // server rejoining while the hub still counts its cut
+                    // connection. A departure changes nothing until the
+                    // room is empty.
+                    if n == 0 {
+                        self.peer.send_replace(None);
+                    } else if n > peers {
+                        self.peer.send_replace(Some(tokio::time::Instant::now()));
+                    }
+                    peers = n;
                 }
                 Ok((KIND_END, n)) => {
                     let reason = String::from_utf8_lossy(&buf[..n]).into_owned();
@@ -334,6 +395,7 @@ impl PipeLink {
                         return;
                     };
                     (read, cut) = (next, next_cut);
+                    peers = 0;
                     self.event(LinkEvent::Reconnected);
                 }
             }
@@ -343,6 +405,7 @@ impl PipeLink {
     /// Forgets connection `cut`: not joined, its writer gone.
     async fn drop_conn(&self, cut: &CancellationToken) {
         self.ready.send_replace(false);
+        self.peer.send_replace(None);
         cut.cancel();
         {
             let mut conn = locked(&self.conn);
@@ -502,6 +565,82 @@ mod tests {
                     .is_err(),
                 "a third connection"
             );
+            link.close().await;
+        })
+        .await;
+    }
+
+    /// A wait for the peer to settle, timed from its start.
+    fn settling(link: &Arc<PipeLink>) -> tokio::task::JoinHandle<Duration> {
+        let link = link.clone();
+        tokio::spawn(async move {
+            let from = tokio::time::Instant::now();
+            link.wait_peer_settled().await;
+            from.elapsed()
+        })
+    }
+
+    /// Waits until the link's read loop has taken what the hub said: its
+    /// sight of the peer is one `want` takes.
+    async fn sees(link: &PipeLink, want: impl Fn(Option<tokio::time::Instant>) -> bool) {
+        let mut rx = link.peer.subscribe();
+        timeout(QUICK, rx.wait_for(|at| want(*at)))
+            .await
+            .expect("the PEERS frame is read")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_peer_settles_from_the_last_arrival_and_an_empty_room_or_a_rejoin_forgets_it() {
+        bounded(async {
+            let (hub, url) = TestHub::start("settle").await;
+            let (tx, _rx) = mpsc::channel(EVENT_QUEUE);
+            let link = PipeLink::connect(&url, tx).await.unwrap();
+            let mut first = hub.accept().await;
+            // Nobody else in the room: the wait goes on.
+            let wait = settling(&link);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!wait.is_finished(), "settled in an empty room");
+            let came = tokio::time::Instant::now();
+            first.send(KIND_PEERS, &1u16.to_be_bytes()).await.unwrap();
+            timeout(QUICK, wait).await.unwrap().unwrap();
+            let after = came.elapsed();
+            assert!(
+                after >= PEER_SETTLE,
+                "settled {after:?} after the peer came"
+            );
+            // One more arrives (the server rejoining while the hub still
+            // counts its cut connection): the wait starts again.
+            let came = tokio::time::Instant::now();
+            first.send(KIND_PEERS, &2u16.to_be_bytes()).await.unwrap();
+            sees(&link, |at| at.is_some_and(|at| at >= came)).await;
+            timeout(QUICK, settling(&link)).await.unwrap().unwrap();
+            let after = came.elapsed();
+            assert!(after >= PEER_SETTLE, "settled {after:?} after the arrival");
+            // One leaves: the room stays settled.
+            first.send(KIND_PEERS, &1u16.to_be_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let again = timeout(QUICK, settling(&link)).await.unwrap().unwrap();
+            assert!(again < PEER_SETTLE, "a departure made the wait {again:?}");
+            // The room empties: the next wait is for the next peer.
+            first.send(KIND_PEERS, &0u16.to_be_bytes()).await.unwrap();
+            sees(&link, |at| at.is_none()).await;
+            let wait = settling(&link);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!wait.is_finished(), "settled on a peer that left");
+            first.send(KIND_PEERS, &1u16.to_be_bytes()).await.unwrap();
+            timeout(QUICK, wait).await.unwrap().unwrap();
+            // A rejoin forgets what the old connection saw.
+            drop(first);
+            let mut second = timeout(QUICK, hub.accept())
+                .await
+                .expect("the link rejoins");
+            let wait = settling(&link);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!wait.is_finished(), "settled on the old connection's peer");
+            second.send(KIND_PEERS, &1u16.to_be_bytes()).await.unwrap();
+            let took = timeout(QUICK, wait).await.unwrap().unwrap();
+            assert!(took >= Duration::from_millis(100) + PEER_SETTLE, "{took:?}");
             link.close().await;
         })
         .await;

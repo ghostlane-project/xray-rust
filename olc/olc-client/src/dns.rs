@@ -23,6 +23,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::client::Inner;
+use crate::socks::host_text;
 use crate::tunnel::send_connect;
 use crate::udp::{Addr, Datagram, Reply};
 
@@ -186,7 +187,7 @@ impl Inner {
         let Some(slot) = self.take_dns_slot() else {
             return false;
         };
-        self.announce_dns_over_stream(&sid, &dg.host);
+        self.announce_dns_over_stream(&sid, &host_text(&dg.host));
         let query = dg.payload.to_vec();
         let host = dg.host.clone();
         let reply = reply.clone();
@@ -261,7 +262,7 @@ impl Inner {
 
 /// `dnsQueryOverStream`: every failure is a silent drop; the resolver
 /// retries.
-async fn query_over_stream(session: &Session, host: &str, query: &[u8], reply: &Reply) {
+async fn query_over_stream(session: &Session, host: &[u8], query: &[u8], reply: &Reply) {
     let mut stream: Stream = match session.open_stream().await {
         Ok(s) => s,
         Err(e) => {
