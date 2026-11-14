@@ -519,15 +519,10 @@ mod tests {
             let frame = vec![9u8; 7000];
             assert!(frame.len() >= DATACHANNEL.max_frame() / 2);
             let mut accepted = 0usize;
-            loop {
-                match timeout(Duration::from_millis(300), io.write(&frame)).await {
-                    Ok(r) => {
-                        assert_eq!(r.unwrap(), frame.len());
-                        accepted += 1;
-                        assert!(accepted < 10_000, "the hub never backed up");
-                    }
-                    Err(_) => break,
-                }
+            while let Ok(r) = timeout(Duration::from_millis(300), io.write(&frame)).await {
+                assert_eq!(r.unwrap(), frame.len());
+                accepted += 1;
+                assert!(accepted < 10_000, "the hub never backed up");
             }
             // The write that waits is the one whose batch the flusher holds
             // (waitSent, batch.go): nothing was taken in after it.

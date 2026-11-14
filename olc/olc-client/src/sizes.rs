@@ -173,6 +173,14 @@ mod tests {
         let held = |moving: usize| (moving * 2 + POOL_KEEP) * COPY_BUFFER;
         assert!(held(BURST_CONNECTIONS / 2) <= 3 << 20);
         assert!(held(0) <= 128 << 10, "256 idle connections");
-        assert!(FWD_QUEUE_BUDGET <= 512 << 10, "UDP 0.5 MiB");
+        let rows = budget();
+        let fwd = rows
+            .iter()
+            .find(|r| r.layer.starts_with("FWD_UDP"))
+            .unwrap();
+        assert!(
+            fwd.cap <= 512 << 10,
+            "UDP 0.5 MiB, whatever the connection count"
+        );
     }
 }
