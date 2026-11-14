@@ -166,7 +166,7 @@ pub struct HysteriaConfig {
     /// process's ([`ByteBudget::process`]) unless set. While the connection
     /// moves data its receive and send windows run at the flow floor plus
     /// their parts of one [`WindowLease`], at most as configured; once it
-    /// moved nothing for [`WINDOW_IDLE_FIT`], at the floor. The handshake
+    /// moved nothing for a second, at the floor. The handshake
     /// still announces `quic`'s windows.
     pub byte_budget: &'static ByteBudget,
 }
