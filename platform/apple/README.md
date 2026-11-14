@@ -498,6 +498,20 @@ Packet Tunnel extensions without requiring an Apple Developer account.
 
 See [mobile testing](../../docs/mobile-testing.md) for the full artifact matrix.
 
+## Diagnostic logs
+
+The provider's debug-logging switch, the `xrayDebugLogging` start option or
+the `debugLogging` key of the provider configuration
+(`XrayTunnelProviderMessage`), writes the core's runtime log to
+`Caches/XrayRustLogs` (`xray-error.log` and `xray-access.log`). The switch
+decides only that files are written. Which lines they get is the loaded
+config's `log` object, read as Xray-core reads it: without `log`, warnings and
+errors and no access line. For debug and access lines, as the switch gave
+before the core read `log`, the profile's config sets
+`"log": {"loglevel": "debug", "access": "on"}`; the provider does not add it.
+Each file is capped at 1 MiB with one rotation to `<name>.1`. See
+[the runtime log](../../docs/ffi.md#runtime-log-abi-119).
+
 ## macOS Packet Tunnel debugging
 
 macOS discovers Packet Tunnel extensions inside installed, signed containing

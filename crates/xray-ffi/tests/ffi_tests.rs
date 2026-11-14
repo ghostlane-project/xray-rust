@@ -14,30 +14,31 @@ use xray_ffi::{
     xray_core_preflight_startup_probe, xray_core_probe_outbound_url,
     xray_core_replace_routing_policy_json, xray_core_routing_policy_snapshot_json,
     xray_core_set_dns_bootstrap_mode, xray_core_set_file_logging, xray_core_set_geodata_search_dir,
-    xray_core_set_geodata_search_dir_exclusive, xray_core_set_outbound_selector_override,
-    xray_core_set_socket_protect_callback, xray_core_set_startup_probe,
-    xray_core_set_tun_collect_tcp_timings, xray_core_set_tun_fd, xray_core_set_tun_runtime_profile,
-    xray_core_start, xray_core_stop, xray_error_code, xray_error_free, xray_error_message,
-    xray_ffi_capabilities, xray_ffi_version_major, xray_ffi_version_minor, xray_tun_poll_packet,
-    xray_tun_poll_packets, xray_tun_poll_tcp_flow_summary_event,
-    xray_tun_poll_tcp_open_error_event, xray_tun_poll_tcp_remote_write_slow_event,
-    xray_tun_poll_tcp_slow_flow_event, xray_tun_poll_udp_quic_blocked_event,
-    xray_tun_poll_udp_response_gap_event, xray_tun_poll_udp_slow_flow_event, xray_tun_push_packet,
-    xray_tun_stats, XrayDnsBootstrapMode, XrayOutboundProbeFailureKind, XrayStatus,
-    XrayTcpFlowSummaryEvent, XrayTcpOpenErrorEvent, XrayTcpRemoteWriteSlowEvent,
-    XrayTcpSlowFlowEvent, XrayTunFdClosePolicy, XrayTunFdPacketFormat, XrayTunRuntimeProfile,
-    XrayTunStats, XrayUdpQuicBlockedEvent, XrayUdpResponseGapEvent, XrayUdpSlowFlowEvent,
-    XRAY_FFI_ABI_MAJOR, XRAY_FFI_ABI_MINOR, XRAY_FFI_CAPABILITIES,
-    XRAY_FFI_CAPABILITY_CONFIG_WARNINGS, XRAY_FFI_CAPABILITY_CONNECTION_MANAGEMENT,
-    XRAY_FFI_CAPABILITY_DNS_BOOTSTRAP_POLICY, XRAY_FFI_CAPABILITY_FILE_LOGGING,
-    XRAY_FFI_CAPABILITY_GEODATA_SEARCH, XRAY_FFI_CAPABILITY_HYSTERIA2_OUTBOUND,
-    XRAY_FFI_CAPABILITY_OUTBOUND_HEALTH, XRAY_FFI_CAPABILITY_OUTBOUND_PROBE,
-    XRAY_FFI_CAPABILITY_OUTBOUND_SELECTION, XRAY_FFI_CAPABILITY_PROFILE_IMPORT,
-    XRAY_FFI_CAPABILITY_ROUTING_POLICY_UPDATE, XRAY_FFI_CAPABILITY_SOCKET_PROTECTION,
-    XRAY_FFI_CAPABILITY_STARTUP_PROBE, XRAY_FFI_CAPABILITY_TUN_BATCH_POLL,
-    XRAY_FFI_CAPABILITY_TUN_DIAGNOSTIC_EVENTS, XRAY_FFI_CAPABILITY_TUN_FD,
-    XRAY_FFI_CAPABILITY_TUN_PACKET_IO, XRAY_FFI_CAPABILITY_TUN_RUNTIME_PROFILES,
-    XRAY_FFI_CAPABILITY_TUN_STATS, XRAY_FFI_CAPABILITY_WIREGUARD_OUTBOUND,
+    xray_core_set_geodata_search_dir_exclusive, xray_core_set_log_callback,
+    xray_core_set_outbound_selector_override, xray_core_set_socket_protect_callback,
+    xray_core_set_startup_probe, xray_core_set_tun_collect_tcp_timings, xray_core_set_tun_fd,
+    xray_core_set_tun_runtime_profile, xray_core_start, xray_core_stop, xray_error_code,
+    xray_error_free, xray_error_message, xray_ffi_capabilities, xray_ffi_version_major,
+    xray_ffi_version_minor, xray_tun_poll_packet, xray_tun_poll_packets,
+    xray_tun_poll_tcp_flow_summary_event, xray_tun_poll_tcp_open_error_event,
+    xray_tun_poll_tcp_remote_write_slow_event, xray_tun_poll_tcp_slow_flow_event,
+    xray_tun_poll_udp_quic_blocked_event, xray_tun_poll_udp_response_gap_event,
+    xray_tun_poll_udp_slow_flow_event, xray_tun_push_packet, xray_tun_stats, XrayDnsBootstrapMode,
+    XrayLogLevel, XrayOutboundProbeFailureKind, XrayStatus, XrayTcpFlowSummaryEvent,
+    XrayTcpOpenErrorEvent, XrayTcpRemoteWriteSlowEvent, XrayTcpSlowFlowEvent, XrayTunFdClosePolicy,
+    XrayTunFdPacketFormat, XrayTunRuntimeProfile, XrayTunStats, XrayUdpQuicBlockedEvent,
+    XrayUdpResponseGapEvent, XrayUdpSlowFlowEvent, XRAY_FFI_ABI_MAJOR, XRAY_FFI_ABI_MINOR,
+    XRAY_FFI_CAPABILITIES, XRAY_FFI_CAPABILITY_CONFIG_WARNINGS,
+    XRAY_FFI_CAPABILITY_CONNECTION_MANAGEMENT, XRAY_FFI_CAPABILITY_DNS_BOOTSTRAP_POLICY,
+    XRAY_FFI_CAPABILITY_FILE_LOGGING, XRAY_FFI_CAPABILITY_GEODATA_SEARCH,
+    XRAY_FFI_CAPABILITY_HYSTERIA2_OUTBOUND, XRAY_FFI_CAPABILITY_OUTBOUND_HEALTH,
+    XRAY_FFI_CAPABILITY_OUTBOUND_PROBE, XRAY_FFI_CAPABILITY_OUTBOUND_SELECTION,
+    XRAY_FFI_CAPABILITY_PROFILE_IMPORT, XRAY_FFI_CAPABILITY_ROUTING_POLICY_UPDATE,
+    XRAY_FFI_CAPABILITY_SOCKET_PROTECTION, XRAY_FFI_CAPABILITY_STARTUP_PROBE,
+    XRAY_FFI_CAPABILITY_TUN_BATCH_POLL, XRAY_FFI_CAPABILITY_TUN_DIAGNOSTIC_EVENTS,
+    XRAY_FFI_CAPABILITY_TUN_FD, XRAY_FFI_CAPABILITY_TUN_PACKET_IO,
+    XRAY_FFI_CAPABILITY_TUN_RUNTIME_PROFILES, XRAY_FFI_CAPABILITY_TUN_STATS,
+    XRAY_FFI_CAPABILITY_WIREGUARD_OUTBOUND,
 };
 
 #[test]
@@ -1755,10 +1756,277 @@ fn ffi_file_logging_setter_accepts_directory_before_config_load() {
     let raw = CString::new(tun_config_without_port_with_freedom_outbound()).unwrap();
     let status = unsafe { xray_core_load_config_json(core, raw.as_ptr(), &mut err) };
     assert_eq!(status, XrayStatus::Ok, "load error: {}", error_message(err));
-    assert!(dir.join("xray-access.log").exists());
+    // A config without `log` asks for no access log, so none is created.
+    assert!(!dir.join("xray-access.log").exists());
     assert!(dir.join("xray-error.log").exists());
 
     unsafe {
+        xray_core_free(core);
+    }
+}
+
+#[test]
+fn ffi_file_logging_follows_the_config_log_object() {
+    // No `log`: warnings and errors only, and no access log.
+    let dir = unique_temp_dir("xray-ffi-file-logging-default");
+    run_failing_startup_probe_with_file_logging(&dir, None);
+    let error_log = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
+    assert!(
+        error_log.contains(" error Debug startupProbe fail"),
+        "{error_log}"
+    );
+    assert!(!error_log.contains("startupProbe start"), "{error_log}");
+    assert!(!error_log.contains("127.0.0.1"), "{error_log}");
+    assert!(!dir.join("xray-access.log").exists());
+
+    let dir = unique_temp_dir("xray-ffi-file-logging-debug");
+    run_failing_startup_probe_with_file_logging(
+        &dir,
+        Some(r#"{"loglevel": "debug", "access": "/var/log/xray/access.log"}"#),
+    );
+    let error_log = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
+    assert!(
+        error_log.contains(" debug Debug startupProbe start"),
+        "{error_log}"
+    );
+    assert!(
+        error_log.contains(" error Debug startupProbe fail"),
+        "{error_log}"
+    );
+    // The access log goes to the host's directory, never to the path named.
+    assert!(dir.join("xray-access.log").exists());
+
+    let dir = unique_temp_dir("xray-ffi-file-logging-error");
+    run_failing_startup_probe_with_file_logging(&dir, Some(r#"{"loglevel": "error"}"#));
+    let error_log = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
+    assert!(error_log.contains("startupProbe fail"), "{error_log}");
+    assert!(!error_log.contains("startupProbe start"), "{error_log}");
+
+    let dir = unique_temp_dir("xray-ffi-file-logging-none");
+    run_failing_startup_probe_with_file_logging(&dir, Some(r#"{"loglevel": "none"}"#));
+    assert!(!dir.join("xray-error.log").exists());
+    assert!(!dir.join("xray-access.log").exists());
+}
+
+struct LogLines {
+    lines: std::sync::Mutex<Vec<(i32, String)>>,
+    releases: std::sync::atomic::AtomicUsize,
+}
+
+unsafe extern "C" fn record_log_line(
+    level: i32,
+    line: *const libc::c_char,
+    line_len: usize,
+    user_data: *mut libc::c_void,
+) {
+    let sink = unsafe { &*(user_data as *const LogLines) };
+    let text = unsafe { CStr::from_ptr(line) }.to_str().unwrap().to_owned();
+    assert_eq!(text.len(), line_len);
+    sink.lines.lock().unwrap().push((level, text));
+}
+
+unsafe extern "C" fn release_log_lines(user_data: *mut libc::c_void) {
+    let sink = unsafe { &*(user_data as *const LogLines) };
+    sink.releases
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn new_log_lines() -> &'static LogLines {
+    Box::leak(Box::new(LogLines {
+        lines: std::sync::Mutex::new(Vec::new()),
+        releases: std::sync::atomic::AtomicUsize::new(0),
+    }))
+}
+
+fn log_lines_user_data(sink: &'static LogLines) -> *mut libc::c_void {
+    sink as *const LogLines as *mut libc::c_void
+}
+
+#[test]
+fn ffi_log_callback_receives_lines_instead_of_files() {
+    for (log, expected) in [
+        (None, vec![(XrayLogLevel::Error, "Debug startupProbe fail")]),
+        (
+            Some(r#"{"loglevel": "debug"}"#),
+            vec![
+                (XrayLogLevel::Debug, "Debug startupProbe start"),
+                (XrayLogLevel::Error, "Debug startupProbe fail"),
+            ],
+        ),
+    ] {
+        let sink = new_log_lines();
+        let mut err = std::ptr::null_mut();
+        let core = unsafe { xray_core_new(&mut err) };
+        assert!(!core.is_null());
+        // The callback wins over file logging.
+        let dir = unique_temp_dir("xray-ffi-log-callback");
+        let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(
+            unsafe { xray_core_set_file_logging(core, dir_c.as_ptr(), 1, &mut err) },
+            XrayStatus::Ok
+        );
+        let status = unsafe {
+            xray_core_set_log_callback(
+                core,
+                Some(record_log_line),
+                Some(release_log_lines),
+                log_lines_user_data(sink),
+                &mut err,
+            )
+        };
+        assert_eq!(status, XrayStatus::Ok, "{}", error_message(err));
+
+        run_failing_startup_probe(core, log);
+
+        assert_eq!(
+            sink.releases.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "release runs exactly once, by the end of xray_core_free"
+        );
+        let lines = sink.lines.lock().unwrap().clone();
+        assert_eq!(lines.len(), expected.len(), "{lines:?}");
+        for ((level, line), (expected_level, expected_start)) in lines.iter().zip(expected) {
+            assert_eq!(*level, expected_level as i32, "{line}");
+            assert!(line.starts_with(expected_start), "{line}");
+            assert!(!line.contains("127.0.0.1"), "{line}");
+            assert!(!line.contains('\n'), "{line}");
+        }
+        assert!(!dir.join("xray-error.log").exists());
+        assert!(!dir.join("xray-access.log").exists());
+    }
+}
+
+#[test]
+fn ffi_log_callback_setter_validates_arguments_and_lifecycle() {
+    let sink = new_log_lines();
+    let mut err = std::ptr::null_mut();
+
+    let status = unsafe {
+        xray_core_set_log_callback(
+            std::ptr::null_mut(),
+            Some(record_log_line),
+            Some(release_log_lines),
+            log_lines_user_data(sink),
+            &mut err,
+        )
+    };
+    assert_eq!(status, XrayStatus::NullArgument);
+    assert_error(&mut err, XrayStatus::NullArgument, "core handle is null");
+
+    let core = unsafe { xray_core_new(&mut err) };
+    let status = unsafe {
+        xray_core_set_log_callback(
+            core,
+            Some(record_log_line),
+            None,
+            log_lines_user_data(sink),
+            &mut err,
+        )
+    };
+    assert_eq!(status, XrayStatus::InvalidArgument);
+    assert_error(
+        &mut err,
+        XrayStatus::InvalidArgument,
+        "log callback requires a context release callback",
+    );
+    let status = unsafe {
+        xray_core_set_log_callback(core, None, None, log_lines_user_data(sink), &mut err)
+    };
+    assert_eq!(status, XrayStatus::InvalidArgument);
+    assert_error(
+        &mut err,
+        XrayStatus::InvalidArgument,
+        "clearing the log callback requires null context and release",
+    );
+    // Failed calls keep ownership with the caller.
+    assert_eq!(sink.releases.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+    // Replacing or clearing a registered callback releases its context.
+    for _ in 0..2 {
+        let status = unsafe {
+            xray_core_set_log_callback(
+                core,
+                Some(record_log_line),
+                Some(release_log_lines),
+                log_lines_user_data(sink),
+                &mut err,
+            )
+        };
+        assert_eq!(status, XrayStatus::Ok);
+    }
+    assert_eq!(sink.releases.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let status =
+        unsafe { xray_core_set_log_callback(core, None, None, std::ptr::null_mut(), &mut err) };
+    assert_eq!(status, XrayStatus::Ok);
+    assert_eq!(sink.releases.load(std::sync::atomic::Ordering::SeqCst), 2);
+    unsafe {
+        xray_core_free(core);
+    }
+
+    let core = loaded_core(&mut err);
+    let status = unsafe {
+        xray_core_set_log_callback(
+            core,
+            Some(record_log_line),
+            Some(release_log_lines),
+            log_lines_user_data(sink),
+            &mut err,
+        )
+    };
+    assert_eq!(status, XrayStatus::RuntimeError);
+    assert_error(
+        &mut err,
+        XrayStatus::RuntimeError,
+        "log callback must be set before config load",
+    );
+    assert_eq!(sink.releases.load(std::sync::atomic::Ordering::SeqCst), 2);
+    unsafe {
+        xray_core_free(core);
+    }
+}
+
+/// Starts a core whose startup probe dials a closed loopback port, so the
+/// runtime log gets a debug line as the probe starts and an error line as it
+/// fails, then frees the core so that every line is written.
+fn run_failing_startup_probe_with_file_logging(dir: &std::path::Path, log: Option<&str>) {
+    let mut err = std::ptr::null_mut();
+    let core = unsafe { xray_core_new(&mut err) };
+    assert!(!core.is_null());
+    let dir_c = CString::new(dir.to_string_lossy().as_bytes()).unwrap();
+    assert_eq!(
+        unsafe { xray_core_set_file_logging(core, dir_c.as_ptr(), 1, &mut err) },
+        XrayStatus::Ok
+    );
+    run_failing_startup_probe(core, log);
+}
+
+fn run_failing_startup_probe(core: *mut xray_ffi::XrayCoreHandle, log: Option<&str>) {
+    let mut err = std::ptr::null_mut();
+    let url = CString::new(format!(
+        "http://127.0.0.1:{}/health",
+        reserve_loopback_port()
+    ))
+    .unwrap();
+    let status = unsafe {
+        xray_core_set_startup_probe(core, url.as_ptr(), 5_000, std::ptr::null(), &mut err)
+    };
+    assert_eq!(status, XrayStatus::Ok);
+
+    let log = log.map_or_else(String::new, |log| format!(r#""log": {log},"#));
+    let raw = CString::new(format!(
+        r#"{{
+          {log}
+          "inbounds": [{{"tag": "socks-in", "protocol": "socks", "listen": "127.0.0.1", "port": 0, "settings": {{"udp": false}}}}],
+          "outbounds": [{{"tag": "direct", "protocol": "freedom"}}]
+        }}"#
+    ))
+    .unwrap();
+    let status = unsafe { xray_core_load_config_json(core, raw.as_ptr(), &mut err) };
+    assert_eq!(status, XrayStatus::Ok, "load error: {}", error_message(err));
+    let status = unsafe { xray_core_start(core, &mut err) };
+    assert_eq!(status, XrayStatus::RuntimeError);
+    unsafe {
+        xray_error_free(err);
         xray_core_free(core);
     }
 }

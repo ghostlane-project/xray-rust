@@ -21,6 +21,35 @@ long-term supported release series.
   calls do; and every relayed flow is asked to close. Listeners keep
   listening. The Swift and Kotlin adapters do not wrap it yet. See
   [network reset](docs/ffi.md#network-reset).
+- The config's `log` object is read as Xray-core v26.11.9 reads it, and it
+  decides what the runtime log writes. It was accepted and ignored, and file
+  logging wrote every line at every level, access lines included. Now
+  `loglevel` (or `logLevel`) filters the error log, `warning` by default and
+  `none` for nothing; access lines are written only when `access` names a
+  log; `error: "none"` turns the error log off. `dnsLog` and `maskAddress` are
+  checked and ignored, unknown fields are refused, and an unknown level reads
+  as `warning` with a warning. The paths are not opened. Every line shows a
+  destination by its port only, as `<redacted-ip>:443` or
+  `<redacted-domain>:443`. A host that relied on file logging for debug
+  or access lines sets `"log": {"loglevel": "debug", "access": "on"}` in the
+  config it loads. The adapters' debug-logging switches only turn the files
+  on and do not add it: the Apple Packet Tunnel provider's `xrayDebugLogging`
+  start option or `debugLogging` provider-configuration key, and Android's
+  `XrayCore.create(fileLoggingDirectory = ...)`, now write warnings and
+  errors and no access line for a config without `log`.
+- Each runtime log file is capped at 1 MiB: the line that would pass the cap
+  moves the file to `<name>.1`, replacing the previous one. A file already
+  over the cap when it is opened, left by an earlier build, is started anew.
+  A file the config gives no line is no longer created.
+- ABI 1.19 adds `xray_core_set_log_callback`: set before config load, it hands
+  each runtime log line and its `XrayLogLevel` to the host on the log thread,
+  instead of files, and releases the host's context exactly once. There is no
+  capability bit; hosts check the minor. The Swift and Kotlin adapters do not
+  expose it yet.
+- A socket option that fails without failing its dial is logged at `info`, as
+  in Xray-core, rather than at debug.
+- The TUN TCP timing lines and the periodic runtime stats lines, both debug
+  lines, are collected only when the log writes debug lines.
 
 ## 0.10.0 - 2026-11-13
 

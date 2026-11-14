@@ -71,7 +71,9 @@ pub use outbound::{
     OutboundSelectorGroup, OutboundSelectorGroupSnapshot, RoutingPolicySnapshot, TcpOutbound,
     UdpOutbound, VlessTcpOutbound, VlessUdpFraming,
 };
-pub use runtime_log::{RuntimeLogConfig, RuntimeLogger};
+pub use runtime_log::{
+    RuntimeLogConfig, RuntimeLogKind, RuntimeLogger, DEFAULT_RUNTIME_LOG_FILE_MAX_BYTES,
+};
 pub use startup_probe::{
     OutboundProbeError, OutboundProbeOutcome, StartupProbeError, StartupProbeOptions,
     MAX_OUTBOUND_PROBE_TIMEOUT,
@@ -967,15 +969,15 @@ impl Core {
     }
 
     pub fn set_runtime_logger(&mut self, runtime_logger: RuntimeLogger) {
-        // A socket option that fails without failing its dial is logged, as
-        // Xray-core logs it.
+        // A socket option that fails without failing its dial is logged at
+        // info, as Xray-core logs it.
         let logger = runtime_logger.clone();
         self.transport_dialer = Arc::new(
             self.transport_dialer
                 .as_ref()
                 .clone()
                 .with_socket_options_report(Arc::new(move |error: &std::io::Error| {
-                    logger.debug(|| format!("failed to apply socket options: {error}"));
+                    logger.info(|| format!("failed to apply socket options: {error}"));
                 })),
         );
         self.runtime_logger = runtime_logger;
@@ -1527,9 +1529,11 @@ impl Core {
         }
         if has_tun_inbound {
             let tun_inbound_tag = tun_inbounds.first().and_then(|(tag, _, _)| tag.clone());
+            // The timings feed only debug lines, so a log at a higher level
+            // does not turn their collection on.
             let tun_runtime_options = TunRuntimeOptions {
                 collect_tcp_timings: self.tun_runtime_options.collect_tcp_timings
-                    || self.runtime_logger.is_enabled(),
+                    || self.runtime_logger.debug_enabled(),
                 ..self.tun_runtime_options
             };
             tasks.push(tokio::spawn(tun::serve_tun_endpoint(

@@ -86,7 +86,8 @@ pub(crate) async fn forward_plain_request(
             context.dns.destination.as_ref(),
         )
         .await;
-    let source = context.logger.is_enabled().then(|| {
+    // Only access lines name the source.
+    let source = context.logger.access_enabled().then(|| {
         inbound
             .peer_addr()
             .map_or_else(|_| "unknown".to_owned(), |addr| addr.to_string())

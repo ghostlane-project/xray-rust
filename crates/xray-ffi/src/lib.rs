@@ -1,3 +1,5 @@
+mod log_callback;
+pub use log_callback::*;
 mod tun_admission;
 pub use tun_admission::*;
 mod profile_import;
@@ -30,7 +32,7 @@ use xray_tun::TunTcpSlowFlowKind;
 use zeroize::Zeroize;
 
 pub const XRAY_FFI_ABI_MAJOR: u32 = 1;
-pub const XRAY_FFI_ABI_MINOR: u32 = 18;
+pub const XRAY_FFI_ABI_MINOR: u32 = 19;
 
 pub const XRAY_FFI_CAPABILITY_CONFIG_WARNINGS: u64 = 1 << 0;
 pub const XRAY_FFI_CAPABILITY_GEODATA_SEARCH: u64 = 1 << 1;
@@ -535,6 +537,7 @@ pub struct XrayCoreHandle {
     tun_runtime_options: TunRuntimeOptions,
     tun_admission: Option<xray_core_rs::TunAdmissionPolicy>,
     config_warnings: String,
+    log_callback: Option<Arc<FfiLogCallback>>,
 }
 
 enum GeodataSearch {
@@ -662,6 +665,7 @@ unsafe fn xray_core_new_inner(error: *mut *mut XrayError) -> *mut XrayCoreHandle
         tun_runtime_options: TunRuntimeOptions::default(),
         tun_admission: None,
         config_warnings: String::new(),
+        log_callback: None,
     }))
 }
 
@@ -784,6 +788,11 @@ unsafe fn xray_core_set_geodata_search_dir_inner(
 ///
 /// When enabled, `log_dir` is used to create `xray-access.log` and
 /// `xray-error.log` during config load. Set this before loading config.
+/// Since ABI 1.19 the files hold what the config's `log` object asks for:
+/// error-log lines from its `loglevel` (default `warning`) up, and access
+/// lines only when its `access` names a log; a file that would get no line is
+/// not created. Each file is capped at 1 MiB, then moved to `<name>.1`,
+/// replacing the previous one. A log callback, when set, replaces the files.
 ///
 /// # Safety
 ///
@@ -979,6 +988,7 @@ unsafe fn xray_core_load_config_json_inner(
         }
     };
     let config_warnings = format_config_diagnostics(&parsed.diagnostics);
+    let log = parsed.log;
 
     let transport_dialer =
         match TransportDialer::system_with_socket_protector((*handle).socket_protector.clone()) {
@@ -1009,21 +1019,31 @@ unsafe fn xray_core_load_config_json_inner(
     if let Some(options) = unsafe { (*handle).startup_probe_options.clone() } {
         core.set_startup_probe(Some(options));
     }
-    if let Some(config) = unsafe { (*handle).file_log_config.clone() } {
-        let logger = match RuntimeLogger::new(config) {
-            Ok(logger) => logger,
-            Err(err) => {
-                unsafe {
-                    set_error(
-                        error,
-                        XrayStatus::RuntimeError,
-                        format!("failed to initialize file logging: {err}"),
-                    );
-                }
-                return XrayStatus::RuntimeError;
+    // The callback replaces the files; the config's `log` object filters
+    // either.
+    let logger = if let Some(callback) = unsafe { (*handle).log_callback.clone() } {
+        let mut line = Vec::new();
+        Some(
+            RuntimeLogger::with_callback(log, move |kind, text| {
+                callback.deliver(&mut line, kind, text);
+            })
+            .map_err(|err| format!("failed to start the log callback thread: {err}")),
+        )
+    } else {
+        unsafe { (*handle).file_log_config.clone() }.map(|config| {
+            RuntimeLogger::new(config.with_log(log))
+                .map_err(|err| format!("failed to initialize file logging: {err}"))
+        })
+    };
+    match logger {
+        Some(Ok(logger)) => core.set_runtime_logger(logger),
+        Some(Err(message)) => {
+            unsafe {
+                set_error(error, XrayStatus::RuntimeError, message);
             }
-        };
-        core.set_runtime_logger(logger);
+            return XrayStatus::RuntimeError;
+        }
+        None => {}
     }
 
     unsafe {

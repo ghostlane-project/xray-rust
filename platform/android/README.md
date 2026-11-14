@@ -67,6 +67,13 @@ artifact directory.
   startup probe with a pre-start preflight (ABI 1.12), blocking on-demand
   outbound probe (ABI 1.9) with in-flight cancellation (ABI 1.15), TUN MTU (ABI 1.16), runtime profiles, DNS bootstrap policy, and socket
   protection.
+- `XrayCore.create(fileLoggingDirectory = dir)` writes the core's runtime log
+  to `xray-error.log` and `xray-access.log` in `dir`. Which lines they get is
+  the config's `log` object, read as Xray-core reads it: without `log`,
+  warnings and errors and no access line. For debug and access lines the
+  config sets `"log": {"loglevel": "debug", "access": "on"}`; the adapter does
+  not add it. Each file is capped at 1 MiB with one rotation to `<name>.1`
+  ([the runtime log](../../docs/ffi.md#runtime-log-abi-119)).
 - `XrayVlessUrlImporter`: fail-closed VLESS share-link conversion into a
   self-contained mobile TUN profile.
 - `XrayVpnService`: reference VPN interface setup and lifecycle coordination.

@@ -19,7 +19,9 @@ pub(crate) fn spawn_runtime_stats_logger(
     logger: RuntimeLogger,
     mut shutdown: watch::Receiver<bool>,
 ) -> Option<JoinHandle<()>> {
-    if !logger.is_enabled() {
+    // Every line it writes is a debug line, and it drains the diagnostic
+    // event queues a host may poll, so it runs only while debug lines are.
+    if !logger.debug_enabled() {
         return None;
     }
 

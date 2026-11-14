@@ -756,7 +756,7 @@
       }
     },
     {
-      "name": "inert-log-tun-fields",
+      "name": "inert-tun-fields",
       "config": {
         "inbounds": [
           {
@@ -772,13 +772,117 @@
             "protocol": "freedom",
             "tag": "direct"
           }
-        ],
-        "log": {
-          "output": "ignored"
-        }
+        ]
       },
       "accepted": true,
       "objects": {}
+    },
+    {
+      "name": "log-xray-fields",
+      "config": {
+        "log": {
+          "access": "none",
+          "error": "",
+          "loglevel": "Info",
+          "dnsLog": false,
+          "maskAddress": "half"
+        },
+        "outbounds": [
+          {
+            "protocol": "freedom",
+            "tag": "direct"
+          }
+        ]
+      },
+      "accepted": true,
+      "objects": {
+        "LOG": "/log"
+      }
+    },
+    {
+      "name": "log-null-fields",
+      "base": "log-xray-fields",
+      "set": {
+        "/log": {
+          "access": null,
+          "error": null,
+          "logLevel": null,
+          "dnsLog": null,
+          "maskAddress": null
+        }
+      },
+      "accepted": true
+    },
+    {
+      "name": "log-null",
+      "base": "log-xray-fields",
+      "set": {
+        "/log": null
+      },
+      "accepted": true
+    },
+    {
+      "name": "log-unknown-level-warns",
+      "base": "log-xray-fields",
+      "set": {
+        "/log/loglevel": "warn"
+      },
+      "accepted": true,
+      "warningPath": "$.log.loglevel"
+    },
+    {
+      "name": "log-unknown-field",
+      "base": "log-xray-fields",
+      "set": {
+        "/log/output": "ignored"
+      },
+      "accepted": false,
+      "errorPath": "$.log.output"
+    },
+    {
+      "name": "log-level-not-string",
+      "base": "log-xray-fields",
+      "set": {
+        "/log/loglevel": 3
+      },
+      "accepted": false,
+      "errorPath": "$.log.loglevel"
+    },
+    {
+      "name": "log-level-both-spellings",
+      "base": "log-xray-fields",
+      "set": {
+        "/log/logLevel": "debug"
+      },
+      "accepted": false,
+      "errorPath": "$.log.logLevel"
+    },
+    {
+      "name": "log-access-not-string",
+      "base": "log-xray-fields",
+      "set": {
+        "/log/access": false
+      },
+      "accepted": false,
+      "errorPath": "$.log.access"
+    },
+    {
+      "name": "log-dns-log-not-boolean",
+      "base": "log-xray-fields",
+      "set": {
+        "/log/dnsLog": "true"
+      },
+      "accepted": false,
+      "errorPath": "$.log.dnsLog"
+    },
+    {
+      "name": "log-not-object",
+      "base": "log-xray-fields",
+      "set": {
+        "/log": "warning"
+      },
+      "accepted": false,
+      "errorPath": "$.log"
     },
     {
       "name": "reality-compatible-unknown",

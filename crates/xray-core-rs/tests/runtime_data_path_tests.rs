@@ -74,6 +74,8 @@ use xray_tun::{TunEndpoint, TunError, TunStats};
 #[path = "runtime_data_path_tests/tun_admission.rs"]
 mod tun_admission;
 
+#[path = "runtime_data_path_tests/access_log.rs"]
+mod access_log;
 #[path = "runtime_data_path_tests/blackhole.rs"]
 mod blackhole;
 #[path = "runtime_data_path_tests/dns_use_system.rs"]

@@ -213,6 +213,19 @@ XrayStatus xray_core_set_tun_admission(
     XrayTunAdmissionRelease release, void *user_data, uint32_t timeout_ms,
     int32_t fail_open, XrayError **error);
 
+/* ABI 1.19. Kind of a line handed to the log callback: Xray-core's log
+ * severities, numbered as its Severity, and ACCESS for an access-log line. */
+typedef enum XrayLogLevel {
+  XRAY_LOG_LEVEL_ERROR = 1,
+  XRAY_LOG_LEVEL_WARNING = 2,
+  XRAY_LOG_LEVEL_INFO = 3,
+  XRAY_LOG_LEVEL_DEBUG = 4,
+  XRAY_LOG_LEVEL_ACCESS = 5
+} XrayLogLevel;
+typedef void (*XrayLogCallback)(
+    int32_t level, const char *line, size_t line_len, void *user_data);
+typedef void (*XrayLogRelease)(void *user_data);
+
 
 /* Capability bits are additive within one ABI major. Preserve and ignore
  * unknown bits so a newer library remains usable through its older surface. */
@@ -463,11 +476,40 @@ XrayStatus xray_core_set_socket_protect_callback(
     XraySocketProtectCallback callback,
     void *user_data,
     XrayError **error);
+/* Set before config load. Since ABI 1.19 the files hold what the config's
+ * `log` object asks for: error-log lines from its loglevel (default warning)
+ * up, and access lines only when its access names a log, whose path is not
+ * opened; a file that would get no line is not created. Each file is capped
+ * at 1 MiB, then moved to <name>.1, replacing the previous one. */
 XrayStatus xray_core_set_file_logging(
     XrayCoreHandle *handle,
     const char *log_dir,
     int32_t enabled,
     XrayError **error);
+/* ABI 1.19, no capability bit: check the minor. Register before config load;
+ * lines then go to callback and no log file is opened. The config's `log`
+ * object filters them as it filters the files. callback runs on the core's
+ * log thread, one line at a time and in order, never on a data-path thread;
+ * a log 4096 lines behind drops new lines rather than wait. line is UTF-8 on
+ * one line, control characters escaped, NUL-terminated and borrowed for the
+ * call; line_len excludes the NUL. A line shows a destination by its port
+ * only, as <redacted-ip>:443 or <redacted-domain>:443. On success ownership transfers: release runs exactly once
+ * after the last line, possibly after core_free and on any thread, and
+ * replacing or clearing a registration releases the previous one. On failure
+ * ownership stays with the caller. release is mandatory for a non-null
+ * callback; to clear, pass NULL for callback/release/user_data. Both must
+ * return promptly, never unwind, and never call core lifecycle methods.
+ * xray_core_free (and a config load that fails) can block its caller until
+ * the log thread has handed over every queued line, up to 4096 calls of
+ * callback, and ended. So callback must never wait for a thread that may be
+ * inside a call on this handle: no synchronous dispatch to the thread that
+ * frees the core (DispatchQueue.main.sync while main calls xray_core_free
+ * deadlocks), no lock that thread may hold. Copy the line (it is borrowed),
+ * hand the copy on asynchronously and return.
+ * Lifecycle call: do not race any other handle call. */
+XrayStatus xray_core_set_log_callback(
+    XrayCoreHandle *handle, XrayLogCallback callback,
+    XrayLogRelease release, void *user_data, XrayError **error);
 XrayStatus xray_core_set_startup_probe(
     XrayCoreHandle *handle,
     const char *url,

@@ -9,6 +9,7 @@ mod http_inbound;
 mod http_outbound;
 mod hysteria;
 mod kcp;
+mod log;
 mod loopback;
 mod masque;
 mod noise;
@@ -43,6 +44,7 @@ use serde_json::Value;
 use xray_routing::{DomainMatcherSet, DomainMatcherSetBuilder, IpMatcherSet, IpMatcherSetBuilder};
 
 use crate::model::build_domain_matcher_set;
+use crate::LogConfig;
 use crate::{
     geodata::{default_geodata_dirs, GeodataLoader},
     AddressPortStrategy, CoreConfig, CustomSocketOption, Diagnostic, DnsConfig, DnsFakeIpConfig,
@@ -269,6 +271,9 @@ impl MatcherBudget {
 pub struct ParsedConfig {
     pub config: CoreConfig,
     pub diagnostics: Vec<Diagnostic>,
+    /// The `log` object, for the embedding's runtime log; the core does not
+    /// read it.
+    pub log: LogConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -346,6 +351,7 @@ fn parse_xray_json_with_loader_and_limits(
         parsing_xhttp_download: false,
     };
     let config = parser.parse_config();
+    let log = parser.parse_log();
 
     if parser
         .diagnostics
@@ -359,6 +365,7 @@ fn parse_xray_json_with_loader_and_limits(
         Ok(ParsedConfig {
             config,
             diagnostics: parser.diagnostics,
+            log,
         })
     }
 }
