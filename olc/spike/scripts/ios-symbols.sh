@@ -35,5 +35,8 @@ printf '%s\n' "$dups" | grep . | head -50 | sed 's/^/DUP /' || true
 if [ "$ndup" -gt 0 ] && [ "$(uname)" = Darwin ]; then
   for s in $(printf '%s\n' "$dups" | head -5); do
     echo "DUP_MEMBERS $s: $(nm -gU -A -m "$f" 2>/dev/null | grep -F " $s" | grep -v ' weak external ' | awk -F: '{print $1":"$2}' | sort -u | tr '\n' ' ')"
+    # How ld64 sees each definition (its section and binding: a coalesced C++ inline is in
+    # __TEXT,__text as a weak definition, which -all_load accepts).
+    nm -gU -A -m "$f" 2>/dev/null | grep -F " $s" | sed 's/^/DUP_NM /' | head -3
   done
 fi

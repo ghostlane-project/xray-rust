@@ -24,7 +24,7 @@ for variant in plain all_load; do
   [ "$variant" = all_load ] && extra=(-Wl,-all_load)
   bin="$out/c-$variant"
   if xcrun --sdk "$sdk" clang -target "$triple" -isysroot "$sysroot" "$here/../ios-link/c/main.c" \
-      "${extra[@]}" "$lib" -lc++ -framework Security -framework CoreFoundation -lresolv \
+      ${extra[@]+"${extra[@]}"} "$lib" -lc++ -framework Security -framework CoreFoundation -lresolv \
       -o "$bin" 2> "$out/link-$variant.err"; then
     echo "LINK_OK $variant $(stat -f %z "$bin") bytes"
   else
