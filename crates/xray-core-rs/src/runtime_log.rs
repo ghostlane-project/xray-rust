@@ -1160,7 +1160,10 @@ mod tests {
 
         assert!(!logger.is_enabled());
         logger.error(|| "an error line".to_owned());
-        assert!(receiver.recv().is_err());
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(5)),
+            Err(mpsc::RecvTimeoutError::Disconnected)
+        );
     }
 
     #[cfg(target_vendor = "apple")]
