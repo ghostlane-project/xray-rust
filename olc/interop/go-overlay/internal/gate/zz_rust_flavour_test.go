@@ -155,6 +155,10 @@ func interopServerConfig(ep Endpoint, ring []string) string {
 
 // rustConfig is what the Rust client reads (olc-client's config.rs).
 type rustConfig struct {
+	// Rooms are the room supervisor's rooms after URL (the supervisor
+	// failover e2e, zz_rust_e2e_test.go); none runs the one room.
+	Rooms []string `json:"rooms,omitempty"`
+
 	URL       string `json:"url"`
 	Key       string `json:"key"`
 	Transport string `json:"transport"`
