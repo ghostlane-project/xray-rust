@@ -74,7 +74,10 @@ impl Parser<'_> {
             Value::Null => "",
             Value::String(raw) => raw.as_str(),
             _ => {
-                self.error(field_path, format!("field `{key}` must be a string or null"));
+                self.error(
+                    field_path,
+                    format!("field `{key}` must be a string or null"),
+                );
                 return None;
             }
         };

@@ -14,31 +14,31 @@ use xray_ffi::{
     xray_core_preflight_startup_probe, xray_core_probe_outbound_url,
     xray_core_replace_routing_policy_json, xray_core_routing_policy_snapshot_json,
     xray_core_set_dns_bootstrap_mode, xray_core_set_file_logging, xray_core_set_geodata_search_dir,
-    xray_core_set_log_callback, XrayLogLevel,
-    xray_core_set_geodata_search_dir_exclusive, xray_core_set_outbound_selector_override,
-    xray_core_set_socket_protect_callback, xray_core_set_startup_probe,
-    xray_core_set_tun_collect_tcp_timings, xray_core_set_tun_fd, xray_core_set_tun_runtime_profile,
-    xray_core_start, xray_core_stop, xray_error_code, xray_error_free, xray_error_message,
-    xray_ffi_capabilities, xray_ffi_version_major, xray_ffi_version_minor, xray_tun_poll_packet,
-    xray_tun_poll_packets, xray_tun_poll_tcp_flow_summary_event,
-    xray_tun_poll_tcp_open_error_event, xray_tun_poll_tcp_remote_write_slow_event,
-    xray_tun_poll_tcp_slow_flow_event, xray_tun_poll_udp_quic_blocked_event,
-    xray_tun_poll_udp_response_gap_event, xray_tun_poll_udp_slow_flow_event, xray_tun_push_packet,
-    xray_tun_stats, XrayDnsBootstrapMode, XrayOutboundProbeFailureKind, XrayStatus,
-    XrayTcpFlowSummaryEvent, XrayTcpOpenErrorEvent, XrayTcpRemoteWriteSlowEvent,
-    XrayTcpSlowFlowEvent, XrayTunFdClosePolicy, XrayTunFdPacketFormat, XrayTunRuntimeProfile,
-    XrayTunStats, XrayUdpQuicBlockedEvent, XrayUdpResponseGapEvent, XrayUdpSlowFlowEvent,
-    XRAY_FFI_ABI_MAJOR, XRAY_FFI_ABI_MINOR, XRAY_FFI_CAPABILITIES,
-    XRAY_FFI_CAPABILITY_CONFIG_WARNINGS, XRAY_FFI_CAPABILITY_CONNECTION_MANAGEMENT,
-    XRAY_FFI_CAPABILITY_DNS_BOOTSTRAP_POLICY, XRAY_FFI_CAPABILITY_FILE_LOGGING,
-    XRAY_FFI_CAPABILITY_GEODATA_SEARCH, XRAY_FFI_CAPABILITY_HYSTERIA2_OUTBOUND,
-    XRAY_FFI_CAPABILITY_OUTBOUND_HEALTH, XRAY_FFI_CAPABILITY_OUTBOUND_PROBE,
-    XRAY_FFI_CAPABILITY_OUTBOUND_SELECTION, XRAY_FFI_CAPABILITY_PROFILE_IMPORT,
-    XRAY_FFI_CAPABILITY_ROUTING_POLICY_UPDATE, XRAY_FFI_CAPABILITY_SOCKET_PROTECTION,
-    XRAY_FFI_CAPABILITY_STARTUP_PROBE, XRAY_FFI_CAPABILITY_TUN_BATCH_POLL,
-    XRAY_FFI_CAPABILITY_TUN_DIAGNOSTIC_EVENTS, XRAY_FFI_CAPABILITY_TUN_FD,
-    XRAY_FFI_CAPABILITY_TUN_PACKET_IO, XRAY_FFI_CAPABILITY_TUN_RUNTIME_PROFILES,
-    XRAY_FFI_CAPABILITY_TUN_STATS, XRAY_FFI_CAPABILITY_WIREGUARD_OUTBOUND,
+    xray_core_set_geodata_search_dir_exclusive, xray_core_set_log_callback,
+    xray_core_set_outbound_selector_override, xray_core_set_socket_protect_callback,
+    xray_core_set_startup_probe, xray_core_set_tun_collect_tcp_timings, xray_core_set_tun_fd,
+    xray_core_set_tun_runtime_profile, xray_core_start, xray_core_stop, xray_error_code,
+    xray_error_free, xray_error_message, xray_ffi_capabilities, xray_ffi_version_major,
+    xray_ffi_version_minor, xray_tun_poll_packet, xray_tun_poll_packets,
+    xray_tun_poll_tcp_flow_summary_event, xray_tun_poll_tcp_open_error_event,
+    xray_tun_poll_tcp_remote_write_slow_event, xray_tun_poll_tcp_slow_flow_event,
+    xray_tun_poll_udp_quic_blocked_event, xray_tun_poll_udp_response_gap_event,
+    xray_tun_poll_udp_slow_flow_event, xray_tun_push_packet, xray_tun_stats, XrayDnsBootstrapMode,
+    XrayLogLevel, XrayOutboundProbeFailureKind, XrayStatus, XrayTcpFlowSummaryEvent,
+    XrayTcpOpenErrorEvent, XrayTcpRemoteWriteSlowEvent, XrayTcpSlowFlowEvent, XrayTunFdClosePolicy,
+    XrayTunFdPacketFormat, XrayTunRuntimeProfile, XrayTunStats, XrayUdpQuicBlockedEvent,
+    XrayUdpResponseGapEvent, XrayUdpSlowFlowEvent, XRAY_FFI_ABI_MAJOR, XRAY_FFI_ABI_MINOR,
+    XRAY_FFI_CAPABILITIES, XRAY_FFI_CAPABILITY_CONFIG_WARNINGS,
+    XRAY_FFI_CAPABILITY_CONNECTION_MANAGEMENT, XRAY_FFI_CAPABILITY_DNS_BOOTSTRAP_POLICY,
+    XRAY_FFI_CAPABILITY_FILE_LOGGING, XRAY_FFI_CAPABILITY_GEODATA_SEARCH,
+    XRAY_FFI_CAPABILITY_HYSTERIA2_OUTBOUND, XRAY_FFI_CAPABILITY_OUTBOUND_HEALTH,
+    XRAY_FFI_CAPABILITY_OUTBOUND_PROBE, XRAY_FFI_CAPABILITY_OUTBOUND_SELECTION,
+    XRAY_FFI_CAPABILITY_PROFILE_IMPORT, XRAY_FFI_CAPABILITY_ROUTING_POLICY_UPDATE,
+    XRAY_FFI_CAPABILITY_SOCKET_PROTECTION, XRAY_FFI_CAPABILITY_STARTUP_PROBE,
+    XRAY_FFI_CAPABILITY_TUN_BATCH_POLL, XRAY_FFI_CAPABILITY_TUN_DIAGNOSTIC_EVENTS,
+    XRAY_FFI_CAPABILITY_TUN_FD, XRAY_FFI_CAPABILITY_TUN_PACKET_IO,
+    XRAY_FFI_CAPABILITY_TUN_RUNTIME_PROFILES, XRAY_FFI_CAPABILITY_TUN_STATS,
+    XRAY_FFI_CAPABILITY_WIREGUARD_OUTBOUND,
 };
 
 #[test]
@@ -1525,7 +1525,10 @@ fn ffi_file_logging_follows_the_config_log_object() {
     let dir = unique_temp_dir("xray-ffi-file-logging-default");
     run_failing_startup_probe_with_file_logging(&dir, None);
     let error_log = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
-    assert!(error_log.contains(" error Debug startupProbe fail"), "{error_log}");
+    assert!(
+        error_log.contains(" error Debug startupProbe fail"),
+        "{error_log}"
+    );
     assert!(!error_log.contains("startupProbe start"), "{error_log}");
     assert!(!error_log.contains("127.0.0.1"), "{error_log}");
     assert!(!dir.join("xray-access.log").exists());
@@ -1536,8 +1539,14 @@ fn ffi_file_logging_follows_the_config_log_object() {
         Some(r#"{"loglevel": "debug", "access": "/var/log/xray/access.log"}"#),
     );
     let error_log = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
-    assert!(error_log.contains(" debug Debug startupProbe start"), "{error_log}");
-    assert!(error_log.contains(" error Debug startupProbe fail"), "{error_log}");
+    assert!(
+        error_log.contains(" debug Debug startupProbe start"),
+        "{error_log}"
+    );
+    assert!(
+        error_log.contains(" error Debug startupProbe fail"),
+        "{error_log}"
+    );
     // The access log goes to the host's directory, never to the path named.
     assert!(dir.join("xray-access.log").exists());
 
@@ -1590,10 +1599,7 @@ fn log_lines_user_data(sink: &'static LogLines) -> *mut libc::c_void {
 #[test]
 fn ffi_log_callback_receives_lines_instead_of_files() {
     for (log, expected) in [
-        (
-            None,
-            vec![(XrayLogLevel::Error, "Debug startupProbe fail")],
-        ),
+        (None, vec![(XrayLogLevel::Error, "Debug startupProbe fail")]),
         (
             Some(r#"{"loglevel": "debug"}"#),
             vec![
@@ -1703,9 +1709,8 @@ fn ffi_log_callback_setter_validates_arguments_and_lifecycle() {
         assert_eq!(status, XrayStatus::Ok);
     }
     assert_eq!(sink.releases.load(std::sync::atomic::Ordering::SeqCst), 1);
-    let status = unsafe {
-        xray_core_set_log_callback(core, None, None, std::ptr::null_mut(), &mut err)
-    };
+    let status =
+        unsafe { xray_core_set_log_callback(core, None, None, std::ptr::null_mut(), &mut err) };
     assert_eq!(status, XrayStatus::Ok);
     assert_eq!(sink.releases.load(std::sync::atomic::Ordering::SeqCst), 2);
     unsafe {

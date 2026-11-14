@@ -46,7 +46,10 @@ fn loglevel_names_the_least_severe_line_written() {
         // Xray-core's own struct tag; Go matches either spelling.
         assert_eq!(log(json!({"logLevel": name})).level, level, "{name}");
     }
-    assert_eq!(log(json!({"loglevel": null})).level, Some(LogLevel::Warning));
+    assert_eq!(
+        log(json!({"loglevel": null})).level,
+        Some(LogLevel::Warning)
+    );
     assert!(LogLevel::Debug < LogLevel::Info);
     assert!(LogLevel::Info < LogLevel::Warning);
     assert!(LogLevel::Warning < LogLevel::Error);
@@ -123,7 +126,10 @@ fn malformed_log_objects_are_refused_at_their_path() {
         (json!([]), "$.log"),
         (json!({"loglevel": 4}), "$.log.loglevel"),
         (json!({"logLevel": true}), "$.log.logLevel"),
-        (json!({"loglevel": "info", "logLevel": "debug"}), "$.log.logLevel"),
+        (
+            json!({"loglevel": "info", "logLevel": "debug"}),
+            "$.log.logLevel",
+        ),
         (json!({"access": 1}), "$.log.access"),
         (json!({"error": {}}), "$.log.error"),
         (json!({"dnsLog": "true"}), "$.log.dnsLog"),
