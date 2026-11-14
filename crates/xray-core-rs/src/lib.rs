@@ -38,6 +38,8 @@ mod policy;
 mod reverse;
 mod runtime_log;
 mod runtime_stats_log;
+#[cfg(test)]
+mod size_guard;
 mod sniffing;
 mod socks;
 mod startup_probe;
