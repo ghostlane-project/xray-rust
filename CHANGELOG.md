@@ -20,7 +20,12 @@ long-term supported release series.
   as `warning` with a warning. The paths are not opened. Every line shows a
   destination by its port only, as `<redacted-ip>:443` or
   `<redacted-domain>:443`. A host that relied on file logging for debug
-  or access lines sets `"log": {"loglevel": "debug", "access": "on"}`.
+  or access lines sets `"log": {"loglevel": "debug", "access": "on"}` in the
+  config it loads. The adapters' debug-logging switches only turn the files
+  on and do not add it: the Apple Packet Tunnel provider's `xrayDebugLogging`
+  start option or `debugLogging` provider-configuration key, and Android's
+  `XrayCore.create(fileLoggingDirectory = ...)`, now write warnings and
+  errors and no access line for a config without `log`.
 - Each runtime log file is capped at 1 MiB: the line that would pass the cap
   moves the file to `<name>.1`, replacing the previous one. A file the config
   gives no line is no longer created.
