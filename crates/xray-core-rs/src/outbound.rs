@@ -9110,7 +9110,9 @@ mod tests {
                 xray_config::StreamTransport::Hysteria(_) => {
                     hysteria::hysteria_quic_config(
                         outbound.stream.quic_params.as_ref(),
-                        xray_transport::MemoryClass::Standard,
+                        xray_transport::hysteria::HysteriaWindows::for_class(
+                            xray_transport::MemoryClass::Standard,
+                        ),
                     )
                     .unwrap()
                     .0

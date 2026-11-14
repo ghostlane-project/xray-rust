@@ -200,7 +200,7 @@ fn an_xdns_mask_reaches_the_carrier() {
 
 #[test]
 fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
-    let (quic, receive) = hysteria_quic_config(None, MemoryClass::Standard).unwrap();
+    let (quic, receive) = hysteria_quic_config(None, standard()).unwrap();
     assert_eq!(quic.max_idle_timeout, Duration::from_secs(30));
     assert_eq!(quic.congestion, H3Congestion::BbrStandard);
     assert_eq!(quic.keep_alive_interval, None);
@@ -240,14 +240,13 @@ fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
             congestion,
             ..base.clone()
         };
-        let (quic, receive) = hysteria_quic_config(Some(&settings), MemoryClass::Standard).unwrap();
+        let (quic, receive) = hysteria_quic_config(Some(&settings), standard()).unwrap();
         assert_eq!(quic.congestion, expected, "{congestion:?}");
         assert_eq!(receive, 2_500_000, "brutalDown is announced in every mode");
     }
 
     // Without its own rate the client stays on BBR.
-    let (quic, _) =
-        hysteria_quic_config(Some(&QuicParamsSettings::default()), MemoryClass::Standard).unwrap();
+    let (quic, _) = hysteria_quic_config(Some(&QuicParamsSettings::default()), standard()).unwrap();
     assert_eq!(quic.congestion, H3Congestion::BbrStandard);
 
     // The profile chooses the BBR, directly or when the server announces no
@@ -273,14 +272,14 @@ fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
                 bbr_profile: profile,
                 ..QuicParamsSettings::default()
             };
-            let (quic, _) = hysteria_quic_config(Some(&settings), MemoryClass::Standard).unwrap();
+            let (quic, _) = hysteria_quic_config(Some(&settings), standard()).unwrap();
             assert_eq!(quic.congestion, bbr, "{congestion:?} {profile:?}");
         }
         let settings = QuicParamsSettings {
             bbr_profile: profile,
             ..base.clone()
         };
-        let (quic, _) = hysteria_quic_config(Some(&settings), MemoryClass::Standard).unwrap();
+        let (quic, _) = hysteria_quic_config(Some(&settings), standard()).unwrap();
         assert_eq!(
             quic.congestion,
             H3Congestion::Brutal {
@@ -302,7 +301,7 @@ fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
             brutal_disable_loss_compensation: true,
             ..QuicParamsSettings::default()
         }),
-        MemoryClass::Standard,
+        standard(),
     )
     .unwrap();
     assert_eq!(
@@ -325,66 +324,119 @@ fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
         debug: true,
         ..QuicParamsSettings::default()
     };
-    assert!(hysteria_quic_config(Some(&debug), MemoryClass::Standard).is_err());
+    assert!(hysteria_quic_config(Some(&debug), standard()).is_err());
+}
+
+/// A constrained host's windows from [`HysteriaWindows::for_class`].
+fn constrained() -> HysteriaWindows {
+    HysteriaWindows::for_class(MemoryClass::Constrained)
+}
+
+/// A standard host's windows, xray-rust's QUIC defaults.
+fn standard() -> HysteriaWindows {
+    HysteriaWindows::for_class(MemoryClass::Standard)
 }
 
 #[test]
-fn unset_hysteria_windows_follow_the_memory_class() {
+fn unset_hysteria_windows_follow_the_host() {
     const MIB: u64 = 1024 * 1024;
     let without_parrot = QuicParamsSettings {
         disable_chrome_parrot: true,
         ..QuicParamsSettings::default()
     };
-    for (class, stream, connection) in [
-        (MemoryClass::Standard, 2 * MIB, 3 * MIB),
-        (MemoryClass::Constrained, MIB, 3 * MIB),
-    ] {
-        for settings in [None, Some(&without_parrot)] {
-            let (quic, _) = hysteria_quic_config(settings, class).unwrap();
-            assert_eq!(
-                (
-                    quic.initial_stream_receive_window,
-                    quic.initial_connection_receive_window
-                ),
-                (stream, connection),
-                "{class:?} {settings:?}"
-            );
-            assert_eq!(quic.chrome_parrot, settings.is_none());
-        }
-    }
-
-    // A window the configuration sets is kept on any host; only the other
-    // one follows the class.
-    let (quic, _) = hysteria_quic_config(
-        Some(&QuicParamsSettings {
-            init_stream_receive_window: 8 * MIB,
-            ..without_parrot.clone()
-        }),
-        MemoryClass::Constrained,
-    )
-    .unwrap();
-    assert_eq!(
+    let receive_windows = |settings: QuicParamsSettings, windows| {
+        let (quic, _) = hysteria_quic_config(Some(&settings), windows).unwrap();
+        assert!(!quic.chrome_parrot);
         (
             quic.initial_stream_receive_window,
-            quic.initial_connection_receive_window
+            quic.initial_connection_receive_window,
+        )
+    };
+    for (windows, expected) in [
+        (standard(), (2 * MIB, 3 * MIB)),
+        (constrained(), (MIB, 3 * MIB)),
+    ] {
+        assert_eq!(
+            receive_windows(without_parrot.clone(), windows),
+            expected,
+            "{windows:?}"
+        );
+    }
+    // Without `quicParams` ChromeParrot is on: the config carries the host's
+    // windows, but the connection runs Chrome's 6 MiB and 15 MiB, which
+    // `H3QuicConfig::populated` puts in their place at connect.
+    let (quic, _) = hysteria_quic_config(None, constrained()).unwrap();
+    assert!(quic.chrome_parrot);
+
+    // A window whose start the configuration sets is kept on any host; only
+    // the other one follows the host.
+    assert_eq!(
+        receive_windows(
+            QuicParamsSettings {
+                init_stream_receive_window: 8 * MIB,
+                ..without_parrot.clone()
+            },
+            constrained(),
         ),
         (8 * MIB, 3 * MIB)
     );
-    let (quic, _) = hysteria_quic_config(
-        Some(&QuicParamsSettings {
-            max_connection_receive_window: 20 * MIB,
-            ..without_parrot
-        }),
-        MemoryClass::Constrained,
-    )
-    .unwrap();
     assert_eq!(
-        (
-            quic.initial_stream_receive_window,
-            quic.initial_connection_receive_window
+        receive_windows(
+            QuicParamsSettings {
+                max_connection_receive_window: 20 * MIB,
+                ..without_parrot
+            },
+            constrained(),
         ),
         (MIB, 20 * MIB)
     );
+}
+
+/// What the app runs: the outbound the core builds on a constrained host,
+/// from a config with ChromeParrot off and no window of its own (the
+/// fixture's `"quicParams": {"disableChromeParrot": true}`), hands every
+/// connection the constrained windows and send-window ceiling, and keeps 64
+/// TCP streams and 32 UDP sessions.
+#[test]
+fn the_outbound_takes_its_windows_from_the_hosts_class() {
+    const MIB: u64 = 1024 * 1024;
+    let config = configured();
+    // The class is process-wide, and the cores other tests build set it, so
+    // a build another core's start overlapped is made again.
+    let built_on = |class: MemoryClass| loop {
+        let before = xray_transport::memory_class();
+        xray_transport::set_memory_class(Some(class));
+        let outbound =
+            HysteriaOutbound::with_stream_limits(&config, crate::HysteriaStreamLimits::default())
+                .unwrap();
+        let held = xray_transport::memory_class() == class;
+        xray_transport::set_memory_class(Some(before));
+        if held {
+            break outbound;
+        }
+    };
+    for (class, expected) in [
+        (MemoryClass::Constrained, (MIB, 3 * MIB, 4 * MIB)),
+        (MemoryClass::Standard, (2 * MIB, 3 * MIB, 10_000_000)),
+    ] {
+        let outbound = built_on(class);
+        let (quic, limits) = (&outbound.inner.quic, outbound.inner.limits);
+        assert!(!quic.chrome_parrot);
+        assert_eq!(
+            (
+                quic.initial_stream_receive_window,
+                quic.initial_connection_receive_window,
+                limits.max_send_window
+            ),
+            expected,
+            "{class:?}"
+        );
+        assert_eq!(
+            (limits.max_tcp_streams, limits.max_udp_sessions),
+            (64, 32),
+            "{class:?}"
+        );
+    }
 }
 
 #[tokio::test]

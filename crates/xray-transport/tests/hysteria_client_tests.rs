@@ -15,8 +15,8 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use xray_proxy::hysteria::{decode_tcp_request, decode_udp_message};
 use xray_routing::{Network, Target, TargetAddr};
-use xray_transport::hysteria::{HysteriaClient, HysteriaConfig, HysteriaError};
-use xray_transport::{set_memory_class, MemoryClass, SocketHandle, SocketProtector, TlsConnector};
+use xray_transport::hysteria::{HysteriaClient, HysteriaConfig, HysteriaError, HysteriaWindows};
+use xray_transport::{MemoryClass, SocketHandle, SocketProtector, TlsConnector};
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -172,6 +172,15 @@ impl Mock {
             self.endpoint.local_addr().unwrap(),
             support::tls_settings(),
             AUTH.into(),
+        )
+    }
+    /// A config with the windows of a host of `class`, whatever this one's.
+    fn config_on(&self, class: MemoryClass) -> HysteriaConfig {
+        HysteriaConfig::with_windows(
+            self.endpoint.local_addr().unwrap(),
+            support::tls_settings(),
+            AUTH.into(),
+            HysteriaWindows::for_class(class),
         )
     }
     async fn connection(&mut self) -> quinn::Connection {
@@ -393,23 +402,22 @@ async fn tcp_half_close_keeps_the_receive_direction_open() {
 #[tokio::test]
 async fn a_constrained_host_holds_less_unread_and_still_moves_more_than_its_windows() {
     const MIB: usize = 1024 * 1024;
-    set_memory_class(Some(MemoryClass::Standard));
     let (mut standard, standard_tls) = Mock::start(Mode::Hold);
-    let standard_config = standard.config();
-    set_memory_class(Some(MemoryClass::Constrained));
+    let standard_config = standard.config_on(MemoryClass::Standard);
     let (mut held, held_tls) = Mock::start(Mode::Hold);
-    let mut held_config = held.config();
+    let mut held_config = held.config_on(MemoryClass::Constrained);
     let (echo, echo_tls) = Mock::start(Mode::Echo);
-    let echo_config = echo.config();
-    set_memory_class(None);
+    let echo_config = echo.config_on(MemoryClass::Constrained);
     assert_eq!(
         (
             held_config.quic.initial_stream_receive_window,
             held_config.quic.initial_connection_receive_window,
+            held_config.limits.max_send_window,
             held_config.limits.max_tcp_streams,
             held_config.limits.max_udp_sessions,
         ),
-        (MIB as u64, 3 * MIB as u64, 64, 32)
+        (MIB as u64, 3 * MIB as u64, 4 * MIB as u64, 64, 32),
+        "the stream limits are the same on every host"
     );
 
     // The server can send a stream the client does not read its window less
@@ -418,6 +426,9 @@ async fn a_constrained_host_holds_less_unread_and_still_moves_more_than_its_wind
     let client = HysteriaClient::connect(standard_config, &standard_tls)
         .await
         .unwrap();
+    // The send window grows to 10 MB on a standard host, 4 MiB on a
+    // constrained one: what the connection may hold unacknowledged.
+    assert_eq!(client.send_window_ceiling(), 10_000_000);
     let mut stream = client.open_tcp(&target()).await.unwrap();
     stream.write_all(b"g").await.unwrap();
     let written = timeout(DEADLINE, standard.held.recv()).await.unwrap();
@@ -428,6 +439,7 @@ async fn a_constrained_host_holds_less_unread_and_still_moves_more_than_its_wind
     let client = HysteriaClient::connect(held_config, &held_tls)
         .await
         .unwrap();
+    assert_eq!(client.send_window_ceiling(), 4 * MIB as u64);
     let mut streams = Vec::new();
     let mut written = Vec::new();
     for _ in 0..3 {
@@ -452,6 +464,7 @@ async fn a_constrained_host_holds_less_unread_and_still_moves_more_than_its_wind
     let client = HysteriaClient::connect(echo_config, &echo_tls)
         .await
         .unwrap();
+    assert_eq!(client.send_window_ceiling(), 4 * MIB as u64);
     let mut transfers = tokio::task::JoinSet::new();
     for seed in 0..4u8 {
         let stream = client.open_tcp(&target()).await.unwrap();

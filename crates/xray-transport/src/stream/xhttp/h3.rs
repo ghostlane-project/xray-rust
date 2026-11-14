@@ -706,6 +706,11 @@ impl QuicSendWindow {
         }
     }
 
+    /// The most the window grows to.
+    pub(crate) fn ceiling(&self) -> u64 {
+        self.ceiling
+    }
+
     /// Called after another sample of uploaded bytes, never from an idle
     /// timer, so a quiet connection keeps its small window.
     pub(crate) fn grow(&self, connection: &quinn::Connection) {

@@ -40,36 +40,56 @@ const CONSTRAINED_STREAM_RECEIVE_WINDOW: u64 = 1024 * 1024;
 /// streams may hold unread together. 252 Mbit/s at 100 ms.
 const CONSTRAINED_CONNECTION_RECEIVE_WINDOW: u64 = 3 * 1024 * 1024;
 /// The most a constrained host's send window grows to: the 4 MiB all of its
-/// XHTTP H3 uploads share.
+/// XHTTP H3 uploads share. 335 Mbit/s at 100 ms.
 const CONSTRAINED_MAX_SEND_WINDOW: u64 = 4 * 1024 * 1024;
 
-/// The receive windows of a Hysteria connection whose configuration sets
-/// none. quinn keeps them where the handshake puts them, where quic-go grows
-/// them, so they are also the most the connection holds unread.
+/// The flow-control windows of one Hysteria connection: the receive windows
+/// its handshake announces and the most its send window grows to. quinn
+/// keeps a Hysteria connection's receive windows where the handshake puts
+/// them, where quic-go grows them, and holds written data until it is
+/// acknowledged up to the send window, so these three numbers are what a
+/// connection may hold unread on the way in and unacknowledged on the way
+/// out.
+///
+/// The host's memory class picks them ([`Self::for_class`]), and every
+/// Hysteria number that depends on the class is here. They are plain
+/// inputs: [`HysteriaConfig::with_windows`] takes them as given, so a
+/// process-wide byte budget could hand a connection its share instead. To
+/// move a live connection, such a budget would set the connection receive
+/// window with quinn's `set_receive_window`, and lower the ceiling of the
+/// connection's send window rather than call `set_send_window` itself, as
+/// the window's growth sets it again at the next sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HysteriaReceiveWindows {
-    /// Credit per stream.
-    pub stream: u64,
-    /// Credit per connection, shared by its streams.
-    pub connection: u64,
+pub struct HysteriaWindows {
+    /// Receive credit per stream.
+    pub stream_receive: u64,
+    /// Receive credit per connection, shared by its streams.
+    pub connection_receive: u64,
+    /// The most the send window grows to, from 2 MiB toward twice the
+    /// congestion window: [`HysteriaLimits::max_send_window`].
+    pub max_send: u64,
 }
 
-impl HysteriaReceiveWindows {
-    /// Xray's 2 MiB and 3 MiB on a [`MemoryClass::Standard`] host, 1 MiB and
-    /// 3 MiB on a constrained one. ChromeParrot replaces either with
-    /// Chrome's, which its handshake must carry.
+impl HysteriaWindows {
+    /// xray-rust's QUIC defaults on a [`MemoryClass::Standard`] host: 2 MiB
+    /// and 3 MiB, and a send window that grows to 10 MB. On a constrained
+    /// host 1 MiB and 3 MiB, and 4 MiB. ChromeParrot replaces the receive
+    /// windows with Chrome's 6 MiB and 15 MiB, which its handshake must
+    /// carry; the send window is the client's own on either.
     pub fn for_class(class: MemoryClass) -> Self {
         match class {
             MemoryClass::Standard => {
-                let xray = H3QuicConfig::default();
+                let defaults = H3QuicConfig::default();
                 Self {
-                    stream: xray.initial_stream_receive_window,
-                    connection: xray.initial_connection_receive_window,
+                    stream_receive: defaults.initial_stream_receive_window,
+                    connection_receive: defaults.initial_connection_receive_window,
+                    max_send: QUIC_MAX_SEND_WINDOW,
                 }
             }
             MemoryClass::Constrained => Self {
-                stream: CONSTRAINED_STREAM_RECEIVE_WINDOW,
-                connection: CONSTRAINED_CONNECTION_RECEIVE_WINDOW,
+                stream_receive: CONSTRAINED_STREAM_RECEIVE_WINDOW,
+                connection_receive: CONSTRAINED_CONNECTION_RECEIVE_WINDOW,
+                max_send: CONSTRAINED_MAX_SEND_WINDOW,
             },
         }
     }
@@ -85,12 +105,12 @@ pub struct HysteriaLimits {
     pub fragment_timeout: Duration,
     pub operation_timeout: Duration,
     /// The most the send window grows to, from 2 MiB toward twice the
-    /// congestion window: 2 MiB to 10 MB.
+    /// congestion window: 2 MiB to 10 MB. The default is a
+    /// [`MemoryClass::Standard`] host's 10 MB ([`HysteriaWindows::max_send`]).
     pub max_send_window: u64,
 }
 
 impl Default for HysteriaLimits {
-    /// A [`MemoryClass::Standard`] host's limits.
     fn default() -> Self {
         Self {
             max_tcp_streams: 64,
@@ -108,19 +128,6 @@ impl Default for HysteriaLimits {
 }
 
 impl HysteriaLimits {
-    /// The limits on a host of `class`: a constrained host grows its send
-    /// window to 4 MiB. The stream limits are the same on every host, as
-    /// every flow behind a TUN is a stream on one connection.
-    pub fn for_class(class: MemoryClass) -> Self {
-        match class {
-            MemoryClass::Standard => Self::default(),
-            MemoryClass::Constrained => Self {
-                max_send_window: CONSTRAINED_MAX_SEND_WINDOW,
-                ..Self::default()
-            },
-        }
-    }
-
     fn validate(&self) -> Result<(), HysteriaError> {
         if !(1..=256).contains(&self.max_tcp_streams)
             || !(1..=128).contains(&self.max_udp_sessions)
@@ -157,21 +164,38 @@ pub struct HysteriaConfig {
 }
 
 impl HysteriaConfig {
-    /// Receive windows and limits follow the host's memory class at the time
-    /// of the call.
+    /// The windows follow the host's memory class at the time of the call
+    /// ([`HysteriaWindows::for_class`]).
     pub fn new(remote_addr: SocketAddr, tls: TlsClientConfig, auth: String) -> Self {
-        let class = memory_class();
-        let windows = HysteriaReceiveWindows::for_class(class);
+        Self::with_windows(
+            remote_addr,
+            tls,
+            auth,
+            HysteriaWindows::for_class(memory_class()),
+        )
+    }
+
+    /// A configuration whose receive windows and send-window ceiling are
+    /// `windows`, whatever the host's class.
+    pub fn with_windows(
+        remote_addr: SocketAddr,
+        tls: TlsClientConfig,
+        auth: String,
+        windows: HysteriaWindows,
+    ) -> Self {
         Self {
             remote_addr,
             tls,
             auth: Zeroizing::new(auth),
-            limits: HysteriaLimits::for_class(class),
+            limits: HysteriaLimits {
+                max_send_window: windows.max_send,
+                ..HysteriaLimits::default()
+            },
             carrier: super::HysteriaCarrierConfig::default(),
             quic: H3QuicConfig {
                 max_idle_timeout: Duration::from_secs(30),
-                initial_stream_receive_window: windows.stream,
-                initial_connection_receive_window: windows.connection,
+                initial_stream_receive_window: windows.stream_receive,
+                initial_connection_receive_window: windows.connection_receive,
                 ..H3QuicConfig::default()
             },
             receive_bytes_per_second: 0,
@@ -671,6 +695,12 @@ impl HysteriaClient {
     pub fn active_udp_sessions(&self) -> usize {
         self.shared.udp.len()
     }
+    /// The most this connection's send window grows to
+    /// ([`HysteriaLimits::max_send_window`]). For diagnostics and tests.
+    #[doc(hidden)]
+    pub fn send_window_ceiling(&self) -> u64 {
+        self.shared.send_window.ceiling()
+    }
     /// The congestion controller the connection runs now: `new-reno`,
     /// `quinn-bbr`, `xray-bbr-<profile>` or `brutal`. For diagnostics and
     /// tests.
@@ -728,44 +758,48 @@ mod tests {
     const MIB: u64 = 1024 * 1024;
 
     #[test]
-    fn windows_and_limits_follow_the_memory_class() {
-        let standard = HysteriaReceiveWindows::for_class(MemoryClass::Standard);
-        assert_eq!((standard.stream, standard.connection), (2 * MIB, 3 * MIB));
-        let constrained = HysteriaReceiveWindows::for_class(MemoryClass::Constrained);
-        assert_eq!((constrained.stream, constrained.connection), (MIB, 3 * MIB));
+    fn windows_follow_the_memory_class_and_stream_limits_do_not() {
+        let standard = HysteriaWindows::for_class(MemoryClass::Standard);
+        assert_eq!(
+            (
+                standard.stream_receive,
+                standard.connection_receive,
+                standard.max_send
+            ),
+            (2 * MIB, 3 * MIB, 10_000_000)
+        );
+        let constrained = HysteriaWindows::for_class(MemoryClass::Constrained);
+        assert_eq!(
+            (
+                constrained.stream_receive,
+                constrained.connection_receive,
+                constrained.max_send
+            ),
+            (MIB, 3 * MIB, 4 * MIB)
+        );
 
-        let standard = HysteriaLimits::for_class(MemoryClass::Standard);
-        assert_eq!(standard, HysteriaLimits::default());
+        // The default limits are a standard host's, and 64 TCP streams and
+        // 32 UDP sessions on every host.
+        let limits = HysteriaLimits::default();
         assert_eq!(
             (
-                standard.max_tcp_streams,
-                standard.max_udp_sessions,
-                standard.max_send_window
+                limits.max_tcp_streams,
+                limits.max_udp_sessions,
+                limits.max_send_window
             ),
-            (64, 32, 10_000_000)
+            (64, 32, standard.max_send)
         );
-        let constrained = HysteriaLimits::for_class(MemoryClass::Constrained);
-        assert_eq!(
-            (
-                constrained.max_tcp_streams,
-                constrained.max_udp_sessions,
-                constrained.max_send_window
-            ),
-            (64, 32, 4 * MIB)
-        );
-        assert_eq!(
-            HysteriaLimits {
-                max_send_window: standard.max_send_window,
-                ..constrained
-            },
-            standard,
-            "streams, queues and timeouts stay"
-        );
-        assert!(standard.validate().is_ok() && constrained.validate().is_ok());
+        for max_send_window in [standard.max_send, constrained.max_send] {
+            let limits = HysteriaLimits {
+                max_send_window,
+                ..limits
+            };
+            assert_eq!(limits.validate(), Ok(()));
+        }
         for max_send_window in [2 * MIB - 1, 10_000_001] {
             let limits = HysteriaLimits {
                 max_send_window,
-                ..standard
+                ..limits
             };
             assert_eq!(limits.validate(), Err(HysteriaError::Configuration));
         }
