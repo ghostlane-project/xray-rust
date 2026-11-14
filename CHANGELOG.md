@@ -27,8 +27,9 @@ long-term supported release series.
   `XrayCore.create(fileLoggingDirectory = ...)`, now write warnings and
   errors and no access line for a config without `log`.
 - Each runtime log file is capped at 1 MiB: the line that would pass the cap
-  moves the file to `<name>.1`, replacing the previous one. A file the config
-  gives no line is no longer created.
+  moves the file to `<name>.1`, replacing the previous one. A file already
+  over the cap when it is opened, left by an earlier build, is started anew.
+  A file the config gives no line is no longer created.
 - ABI 1.19 adds `xray_core_set_log_callback`: set before config load, it hands
   each runtime log line and its `XrayLogLevel` to the host on the log thread,
   instead of files, and releases the host's context exactly once. There is no

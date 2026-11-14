@@ -706,7 +706,9 @@ and are dropped when it is full.
 Files: `xray-error.log` and `xray-access.log`, each created only when a line
 can reach it. Each is capped at 1 MiB: the line that would pass the cap first
 moves the file to `<name>.1`, replacing the previous one, so a directory holds
-at most 4 MiB of log. A line longer than the cap is cut to it.
+at most 4 MiB of log. A file already over the cap when the log opens it, left
+by a build without the cap, is started anew. A line longer than the cap is cut
+to it.
 
 Callback: `XrayLogCallback(level, line, line_len, user_data)` runs on the log
 thread, one line at a time and in order. `level` is an `XrayLogLevel`: `ERROR`
