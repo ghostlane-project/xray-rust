@@ -20,6 +20,11 @@ use crate::stream::QUIC_SEND_WINDOW_SAMPLE_BYTES;
 use crate::TransportStream;
 
 const RESPONSE_HEADER_LIMIT: usize = 1 + 8 + MAX_MESSAGE_LENGTH + 8 + MAX_PADDING_LENGTH;
+/// Bytes a stream reads between fits of its connection's windows to the
+/// byte budget ([`Shared::moved`]): 256 KiB, a twelfth of a constrained
+/// connection's 3 MiB, so a share follows the other leases of the process
+/// within a fraction of the window.
+const BUDGET_SAMPLE_BYTES: usize = 256 * 1024;
 
 struct PendingStream {
     streams: Option<(SendStream, RecvStream)>,
@@ -39,6 +44,7 @@ pub struct HysteriaTcpStream {
     prefix: Bytes,
     send_finished: bool,
     bytes_since_window_sample: usize,
+    bytes_since_budget_sample: usize,
     _connection: Arc<Shared>,
     _slot: OwnedSemaphorePermit,
 }
@@ -107,6 +113,7 @@ impl HysteriaClient {
                 prefix,
                 send_finished: false,
                 bytes_since_window_sample: 0,
+                bytes_since_budget_sample: 0,
                 _connection: Arc::clone(&self.shared),
                 _slot: slot,
             })
@@ -132,7 +139,18 @@ impl AsyncRead for HysteriaTcpStream {
             }
             return Poll::Ready(Ok(()));
         }
-        redact_io(AsyncRead::poll_read(Pin::new(&mut this.recv), cx, output))
+        let before = output.filled().len();
+        let result = redact_io(AsyncRead::poll_read(Pin::new(&mut this.recv), cx, output));
+        let read = output.filled().len() - before;
+        if read > 0 {
+            this.bytes_since_budget_sample += read;
+            let sample = this.bytes_since_budget_sample >= BUDGET_SAMPLE_BYTES;
+            if sample {
+                this.bytes_since_budget_sample = 0;
+            }
+            this._connection.moved(read, 0, sample);
+        }
+        result
     }
 }
 
@@ -146,10 +164,12 @@ impl AsyncWrite for HysteriaTcpStream {
         let result = redact_io(AsyncWrite::poll_write(Pin::new(&mut this.send), cx, input));
         if let Poll::Ready(Ok(written)) = result {
             this.bytes_since_window_sample += written;
-            if this.bytes_since_window_sample >= QUIC_SEND_WINDOW_SAMPLE_BYTES {
+            let sample = this.bytes_since_window_sample >= QUIC_SEND_WINDOW_SAMPLE_BYTES;
+            if sample {
                 this.bytes_since_window_sample = 0;
                 this._connection.grow_send_window();
             }
+            this._connection.moved(0, written, sample);
         }
         result
     }

@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use zeroize::Zeroizing;
 
+use crate::memory_budget::{ByteBudget, WindowLease};
 use crate::quic_congestion::ControllerSwitch;
 use crate::stream::{
     configure_quic_datagram_socket, connect_quic_transport_with_datagrams, H3ConnectConfig,
@@ -161,6 +162,13 @@ pub struct HysteriaConfig {
     pub receive_bytes_per_second: u64,
     /// What a `realm` mask in `carrier` takes from the dial.
     pub realm: Option<crate::realm::RealmEnv>,
+    /// The byte budget the connection's windows are held within: the
+    /// process's ([`ByteBudget::process`]) unless set. While the connection
+    /// moves data its receive and send windows run at the flow floor plus
+    /// their parts of one [`WindowLease`], at most as configured; once it
+    /// moved nothing for [`WINDOW_IDLE_FIT`], at the floor. The handshake
+    /// still announces `quic`'s windows.
+    pub byte_budget: &'static ByteBudget,
 }
 
 impl HysteriaConfig {
@@ -200,6 +208,7 @@ impl HysteriaConfig {
             },
             receive_bytes_per_second: 0,
             realm: None,
+            byte_budget: ByteBudget::process(),
         }
     }
 }
@@ -283,9 +292,113 @@ struct RebindRequest {
     wake: Notify,
 }
 
+/// How long a connection whose windows hold bytes of the budget may move
+/// nothing before they fall to the floor: a second, eight round trips of
+/// the 120 ms path the budget is sized for. A connection at the floor sets
+/// no timer.
+pub(super) const WINDOW_IDLE_FIT: Duration = Duration::from_secs(1);
+
+/// Bytes read or written while the last fit left the windows short of what
+/// they want, after which they are fitted again: 64 KiB, a fiftieth of a
+/// constrained connection's 3 MiB, so a short window follows the traffic
+/// without a fit for every read.
+const SHORT_REFIT_BYTES: u64 = 64 * 1024;
+
+/// The bytes one direction of a connection's TCP streams moved, counted in
+/// turns of [`WINDOW_IDLE_FIT`] since the connection opened.
+#[derive(Debug, Default, Clone, Copy)]
+struct Moved {
+    turn: u64,
+    current: u64,
+    previous: u64,
+}
+
+impl Moved {
+    /// What moved in this turn and the one before: within the last one to
+    /// two [`WINDOW_IDLE_FIT`]s.
+    fn recent(&self, turn: u64) -> u64 {
+        match turn.saturating_sub(self.turn) {
+            0 => self.current.saturating_add(self.previous),
+            1 => self.current,
+            _ => 0,
+        }
+    }
+
+    /// Counts `bytes` moved in `turn`; returns whether the direction had
+    /// been quiet, its window perhaps at the floor.
+    fn add(&mut self, turn: u64, bytes: u64) -> bool {
+        let quiet = self.recent(turn) == 0;
+        match turn.saturating_sub(self.turn) {
+            0 => {}
+            1 => self.previous = std::mem::take(&mut self.current),
+            _ => {
+                self.previous = 0;
+                self.current = 0;
+            }
+        }
+        self.turn = self.turn.max(turn);
+        self.current = self.current.saturating_add(bytes);
+        quiet
+    }
+}
+
+/// What a connection's TCP streams moved lately.
+#[derive(Debug, Default)]
+struct Activity {
+    received: Moved,
+    sent: Moved,
+    /// Bytes moved since a fit that left the windows short of what they
+    /// want; `None` after one that gave them all of it.
+    unfitted: Option<u64>,
+}
+
+/// Splits `held` bytes between the receive and the send window: in
+/// proportion to what each direction moved lately, each at most what it
+/// wants, and what one cannot use to the other.
+fn split_windows(held: u64, want: [u64; 2], moved: [u64; 2]) -> [u64; 2] {
+    if held >= want[0].saturating_add(want[1]) {
+        return want;
+    }
+    let total = u128::from(moved[0]) + u128::from(moved[1]);
+    let receive = if total == 0 {
+        held / 2
+    } else {
+        (u128::from(held) * u128::from(moved[0]) / total) as u64
+    };
+    let send = (held - receive.min(want[0])).min(want[1]);
+    [(held - send).min(want[0]), send]
+}
+
+/// Whether a fit moves the receive window from `now` to `next`: to the floor
+/// at once, otherwise by an eighth of the window or more, the step at which
+/// quinn's reads announce credit, so that a fit that hardly changes the
+/// window sends the peer no `MAX_DATA` of its own.
+fn resizes(now: u64, next: u64, floor: u64) -> bool {
+    next != now && (next == floor || now.abs_diff(next) >= now.max(next) / 8)
+}
+
+/// A Hysteria connection's windows within a byte budget.
+struct HysteriaBudget {
+    lease: WindowLease<'static>,
+    /// The connection receive window the handshake announced.
+    announced_receive: u64,
+    /// The receive window set on the connection last.
+    receive_window: u64,
+}
+
 pub(super) struct Shared {
     connection: Mutex<Option<Connection>>,
     send_window: QuicSendWindow,
+    budget: Mutex<HysteriaBudget>,
+    /// What the TCP streams moved, in turns since `opened`.
+    opened: std::time::Instant,
+    activity: Mutex<Activity>,
+    /// Fits the windows when the budget changes or another lease falls
+    /// short, and once they hold bytes, after [`WINDOW_IDLE_FIT`].
+    window_driver: Mutex<Option<JoinHandle<()>>>,
+    /// Told when a fit makes the windows hold bytes, so the driver starts
+    /// its idle timer.
+    window_wake: Arc<Notify>,
     endpoint: Mutex<Option<Endpoint>>,
     // Last h3 SendRequest drop closes its connection. Retain it after auth.
     auth_sender: Mutex<Option<AuthSender>>,
@@ -307,6 +420,41 @@ pub(super) struct Shared {
     pub udp_enabled: bool,
 }
 
+/// Fits a connection's windows again whenever the budget asks
+/// ([`ByteBudget::window_events`]: it changed, or another lease fell short
+/// or gave bytes back), and [`WINDOW_IDLE_FIT`] after each fit that left
+/// them holding bytes, so that a connection that went quiet gives them back.
+/// A connection at the floor waits for budget events only.
+async fn drive_windows(
+    owner: std::sync::Weak<Shared>,
+    budget: &'static ByteBudget,
+    holds: Arc<Notify>,
+) {
+    let mut holding = false;
+    let mut seen = budget.window_generation();
+    loop {
+        let events = budget.window_events();
+        tokio::pin!(events);
+        events.as_mut().enable();
+        if budget.window_generation() == seen {
+            if holding {
+                tokio::select! {
+                    () = &mut events => {}
+                    () = tokio::time::sleep(WINDOW_IDLE_FIT) => {}
+                }
+            } else {
+                tokio::select! {
+                    () = &mut events => {}
+                    () = holds.notified() => {}
+                }
+            }
+        }
+        seen = budget.window_generation();
+        let Some(shared) = owner.upgrade() else { break };
+        holding = shared.fit_windows();
+    }
+}
+
 impl Shared {
     // Called only after another MiB has been written, never from an idle timer.
     // Keep local queues small, but allow high-BDP paths to use the previous cap.
@@ -315,6 +463,105 @@ impl Shared {
         if let Some(connection) = guard.as_ref() {
             self.send_window.grow(connection);
         }
+    }
+
+    /// A TCP stream read `received` bytes and wrote `sent`. The windows are
+    /// fitted again at once when a direction moves after a quiet turn (its
+    /// window may sit at the floor), after [`SHORT_REFIT_BYTES`] while the
+    /// last fit left them short of what they want, or when `force`d.
+    pub(super) fn moved(&self, received: usize, sent: usize, force: bool) {
+        let turn = self.turn();
+        let fit = {
+            let mut activity = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+            let mut fit = force;
+            if received > 0 && activity.received.add(turn, received as u64) {
+                fit = true;
+            }
+            if sent > 0 && activity.sent.add(turn, sent as u64) {
+                fit = true;
+            }
+            if let Some(unfitted) = activity.unfitted.as_mut() {
+                *unfitted = unfitted.saturating_add((received + sent) as u64);
+                if *unfitted >= SHORT_REFIT_BYTES {
+                    fit = true;
+                }
+            }
+            fit
+        };
+        if fit {
+            self.fit_windows();
+        }
+    }
+
+    /// The turn of [`WINDOW_IDLE_FIT`] the connection is in.
+    fn turn(&self) -> u64 {
+        let turn = self.opened.elapsed().as_millis() / WINDOW_IDLE_FIT.as_millis();
+        u64::try_from(turn).unwrap_or(u64::MAX)
+    }
+
+    /// Sizes the connection's windows within the byte budget, as one lease:
+    /// each direction that moved bytes in this turn of [`WINDOW_IDLE_FIT`]
+    /// or the last wants its whole window, the receive window as the
+    /// handshake announced it and the send window as far as it has grown;
+    /// one that moved nothing wants only the floor. The lease takes what its
+    /// share allows and the windows run at the floor plus their parts of it,
+    /// split by what each direction moved ([`split_windows`]): a download's
+    /// requests leave its receive window nearly all of a short lease.
+    /// Returns whether the lease holds bytes, which then wait for an idle
+    /// fit.
+    ///
+    /// A smaller receive window takes back no credit the peer has: quinn
+    /// keeps it as debt that reads pay back, and a later growth pays the debt
+    /// before it grants more (`vendor/quinn-proto/XRAY-PATCH.md`), so idle and
+    /// busy turns never leave the peer more than the announced window.
+    pub(super) fn fit_windows(&self) -> bool {
+        let turn = self.turn();
+        let (received, sent) = {
+            let activity = self.activity.lock().unwrap_or_else(|e| e.into_inner());
+            (activity.received.recent(turn), activity.sent.recent(turn))
+        };
+        let closed = self.closed.load(Ordering::Acquire);
+        let guard = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let mut budget = self.budget.lock().unwrap_or_else(|e| e.into_inner());
+        let floor = budget.lease.budget().floor() as u64;
+        let receive_want = if received > 0 && !closed {
+            budget.announced_receive.saturating_sub(floor)
+        } else {
+            0
+        };
+        let send_want = if sent > 0 && !closed {
+            self.send_window.grown().saturating_sub(floor)
+        } else {
+            0
+        };
+        let want = receive_want.saturating_add(send_want);
+        let held_before = budget.lease.held();
+        let held = budget
+            .lease
+            .fit(usize::try_from(want).unwrap_or(usize::MAX)) as u64;
+        if held_before == 0 && held > 0 {
+            // The driver's idle timer starts.
+            self.window_wake.notify_one();
+        }
+        let fitted = held >= want && !budget.lease.is_short();
+        self.activity
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .unfitted = (!fitted).then_some(0);
+        let [receive_part, send_part] =
+            split_windows(held, [receive_want, send_want], [received, sent]);
+        let receive = floor
+            .saturating_add(receive_part)
+            .min(budget.announced_receive);
+        let send = floor.saturating_add(send_part);
+        if let Some(connection) = guard.as_ref() {
+            if resizes(budget.receive_window, receive, floor) {
+                budget.receive_window = receive;
+                connection.set_receive_window(VarInt::from_u64(receive).unwrap_or(VarInt::MAX));
+            }
+            self.send_window.limit(connection, send);
+        }
+        held > 0
     }
 
     pub fn is_live(&self) -> bool {
@@ -358,7 +605,17 @@ impl Shared {
         {
             task.abort();
         }
+        if let Some(task) = self
+            .window_driver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            task.abort();
+        }
         self.tcp_slots.close();
+        // Closed: the windows give their bytes of the budget back.
+        self.fit_windows();
         self.h3_driver.abort();
         if let Some(task) = self
             .udp_driver
@@ -601,6 +858,15 @@ impl HysteriaClient {
         let shared = Arc::new(Shared {
             connection: Mutex::new(Some(pending.connection.clone())),
             send_window: QuicSendWindow::new(config.limits.max_send_window),
+            budget: Mutex::new(HysteriaBudget {
+                lease: WindowLease::new(config.byte_budget),
+                announced_receive: config.quic.populated().initial_connection_receive_window,
+                receive_window: config.quic.populated().initial_connection_receive_window,
+            }),
+            opened: std::time::Instant::now(),
+            activity: Mutex::new(Activity::default()),
+            window_driver: Mutex::new(None),
+            window_wake: Arc::new(Notify::new()),
             endpoint: Mutex::new(pending.endpoint.take()),
             auth_sender: Mutex::new(Some(sender)),
             h3_driver: pending.driver.take().expect("started H3 driver"),
@@ -648,6 +914,15 @@ impl HysteriaClient {
         });
         *shared
             .rebind_driver
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(task);
+        let task = tokio::spawn(drive_windows(
+            Arc::downgrade(&shared),
+            config.byte_budget,
+            Arc::clone(&shared.window_wake),
+        ));
+        *shared
+            .window_driver
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(task);
         if udp_enabled {
@@ -841,5 +1116,47 @@ mod tests {
             parse_auth_headers(&headers),
             Err(HysteriaError::AuthenticationHeaders)
         );
+    }
+
+    #[test]
+    fn a_short_lease_goes_to_the_direction_that_moves_the_bytes() {
+        let want = [3 * MIB, 2 * MIB];
+        // Enough for both: each its whole window.
+        assert_eq!(split_windows(6 * MIB, want, [1, 1]), want);
+        // A download and its requests: the receive window takes nearly all.
+        let [receive, send] = split_windows(2 * MIB, want, [25_000_000, 50_000]);
+        assert_eq!(receive + send, 2 * MIB);
+        assert!(send < 8 * 1024, "{send}");
+        // An upload: the send window takes what it wants, the rest receives.
+        assert_eq!(
+            split_windows(4 * MIB, want, [10_000, 25_000_000]),
+            [2 * MIB, 2 * MIB]
+        );
+        // A quiet direction wants nothing and gets nothing.
+        assert_eq!(split_windows(MIB, [0, 2 * MIB], [0, 5]), [0, MIB]);
+    }
+
+    #[test]
+    fn a_direction_is_recent_for_one_or_two_turns_and_then_quiet() {
+        let mut moved = Moved::default();
+        assert_eq!(moved.recent(0), 0);
+        assert!(moved.add(0, 10), "the first bytes come after quiet");
+        assert!(!moved.add(0, 5));
+        assert_eq!(moved.recent(0), 15);
+        assert!(!moved.add(1, 7), "still recent in the next turn");
+        assert_eq!((moved.recent(1), moved.recent(2), moved.recent(3)), (22, 7, 0));
+        assert!(moved.add(3, 1), "two turns without bytes are quiet");
+        assert_eq!(moved.recent(3), 1);
+    }
+
+    #[test]
+    fn the_receive_window_moves_by_an_eighth_or_to_the_floor() {
+        const FLOOR: u64 = 4096;
+        assert!(!resizes(3 * MIB, 3 * MIB, FLOOR));
+        assert!(!resizes(3 * MIB, 3 * MIB - MIB / 4, FLOOR));
+        assert!(resizes(3 * MIB, 2 * MIB, FLOOR));
+        assert!(resizes(2 * MIB, 3 * MIB, FLOOR));
+        assert!(resizes(3 * MIB, FLOOR, FLOOR));
+        assert!(resizes(FLOOR, 64 * 1024, FLOOR));
     }
 }

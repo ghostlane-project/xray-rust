@@ -16,6 +16,7 @@ use tokio::time::timeout;
 use xray_proxy::hysteria::{decode_tcp_request, decode_udp_message};
 use xray_routing::{Network, Target, TargetAddr};
 use xray_transport::hysteria::{HysteriaClient, HysteriaConfig, HysteriaError, HysteriaWindows};
+use xray_transport::memory_budget::{ByteBudget, ByteBudgetSettings};
 use xray_transport::{MemoryClass, SocketHandle, SocketProtector, TlsConnector};
 
 #[derive(Clone, Copy)]
@@ -497,6 +498,131 @@ async fn a_constrained_host_holds_less_unread_and_still_moves_more_than_its_wind
 }
 
 #[tokio::test]
+async fn a_connection_holds_its_windows_within_a_byte_budget_while_it_moves_data() {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * KIB;
+    let budget: &'static ByteBudget =
+        Box::leak(Box::new(ByteBudget::with_settings(ByteBudgetSettings {
+            capacity: 320 * KIB,
+            floor: 4 * KIB,
+        })));
+    let (echo, echo_tls) = Mock::start(Mode::Echo);
+    let mut config = echo.config_on(MemoryClass::Constrained);
+    config.byte_budget = budget;
+    let client = HysteriaClient::connect(config, &echo_tls).await.unwrap();
+    assert_eq!(budget.in_use(), 0, "nothing moves: nothing held");
+
+    for turn in 0..3 {
+        let stream = client.open_tcp(&target()).await.unwrap();
+        assert_eq!(budget.in_use(), 0, "turn {turn}: an open stream alone holds nothing");
+        // Through the windows 2 MiB go out and come back whole.
+        let data: Vec<u8> = (0..2 * MIB).map(|i| (i % 251) as u8).collect();
+        let (mut reader, mut writer) = tokio::io::split(stream);
+        let sent = data.clone();
+        let writing = async move {
+            writer.write_all(&sent).await.unwrap();
+            writer.shutdown().await.unwrap();
+            writer
+        };
+        let mut echoed = Vec::new();
+        let (writer, read) = timeout(Duration::from_secs(60), async {
+            tokio::join!(writing, reader.read_to_end(&mut echoed))
+        })
+        .await
+        .unwrap();
+        read.unwrap();
+        assert!(echoed == data, "turn {turn}: {} of {} bytes", echoed.len(), data.len());
+        let usage = budget.usage();
+        assert!(usage.window_bytes > 0, "turn {turn}: the busy connection held a lease");
+        assert!(
+            usage.peak <= budget.window_cap(),
+            "turn {turn}: the lease held {} of the leases' {}",
+            usage.peak,
+            budget.window_cap()
+        );
+        drop(reader.unsplit(writer));
+        // A second without traffic: the windows fall to the floor.
+        timeout(Duration::from_secs(5), async {
+            while budget.in_use() > 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("turn {turn}: the idle lease kept {} bytes", budget.in_use()));
+        assert_eq!(budget.usage().windows, 0);
+        budget.reset_peak();
+    }
+    client.close();
+    assert_eq!(budget.in_use(), 0);
+}
+
+/// Windows that fall to the floor when the connection goes quiet and grow
+/// again when it moves data leave the server no more connection credit than
+/// the handshake announced, however many such turns there were: after four,
+/// streams nobody reads take at most the announced 3 MiB, as on a connection
+/// that never went quiet.
+#[tokio::test]
+async fn idle_and_busy_turns_leave_the_server_no_more_credit_than_announced() {
+    const MIB: usize = 1024 * 1024;
+    const TURNS: usize = 4;
+    const MOST_STREAMS: usize = 6;
+    let budget: &'static ByteBudget = Box::leak(Box::new(ByteBudget::with_settings(
+        ByteBudgetSettings::for_class(MemoryClass::Constrained),
+    )));
+    let (mut held, held_tls) = Mock::start(Mode::Hold);
+    let mut config = held.config_on(MemoryClass::Constrained);
+    config.byte_budget = budget;
+    config.limits.operation_timeout = Duration::from_secs(2);
+    let announced = config.quic.initial_connection_receive_window as usize;
+    let client = HysteriaClient::connect(config, &held_tls).await.unwrap();
+
+    for turn in 0..TURNS {
+        // Busy: a MiB comes in and is read.
+        let mut stream = client.open_tcp(&target()).await.unwrap();
+        stream.write_all(b"g").await.unwrap();
+        let mut bytes = vec![0; MIB];
+        timeout(DEADLINE, stream.read_exact(&mut bytes))
+            .await
+            .unwrap()
+            .unwrap();
+        drop(stream);
+        timeout(DEADLINE, held.held.recv()).await.unwrap().unwrap();
+        // Quiet: the windows fall to the floor.
+        timeout(Duration::from_secs(5), async {
+            while budget.in_use() > 0 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("turn {turn}: the idle lease kept {} bytes", budget.in_use()));
+    }
+
+    // Streams nobody reads take what credit the server has.
+    let mut streams = Vec::new();
+    let mut taken = 0;
+    while streams.len() < MOST_STREAMS {
+        match client.open_tcp(&target()).await {
+            Ok(mut stream) => {
+                stream.write_all(b"g").await.unwrap();
+                // The 3-byte response came through the same credit.
+                taken += 3 + timeout(DEADLINE, held.held.recv()).await.unwrap().unwrap();
+                streams.push(stream);
+            }
+            Err(HysteriaError::Timeout) => break,
+            Err(error) => panic!("{error:?}"),
+        }
+    }
+    assert!(
+        taken <= announced,
+        "after {TURNS} idle and busy turns {} unread streams took {taken} B; the handshake \
+         announced {announced} B",
+        streams.len()
+    );
+    drop(streams);
+    client.close();
+}
+
+#[tokio::test]
 async fn tcp_failure_status_and_malformed_headers_fail_without_server_text() {
     for (mode, expected) in [
         (Mode::TcpRejected, HysteriaError::TcpRejected),
@@ -684,4 +810,109 @@ async fn rebind_protection_failure_closes_live_connection() {
     assert!(client.local_addr().is_err());
     assert!(!client.rebind());
     assert_eq!(protector.0.load(Ordering::SeqCst), 2);
+}
+
+/// A UDP relay that holds every datagram `one_way` in each direction: the
+/// client sends to its address, and it speaks to `server` from one socket.
+async fn delay_relay(
+    server: std::net::SocketAddr,
+    one_way: Duration,
+) -> (std::net::SocketAddr, support::Task) {
+    use tokio::net::UdpSocket;
+    use tokio::time::{sleep_until, Instant};
+
+    let front = Arc::new(UdpSocket::bind(support::localhost()).await.unwrap());
+    let back = Arc::new(UdpSocket::bind(support::localhost()).await.unwrap());
+    back.connect(server).await.unwrap();
+    let address = front.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (to_server, mut for_server) = mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+        let (to_client, mut for_client) = mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+        let client = Arc::new(std::sync::Mutex::new(None));
+        let mut tasks = tokio::task::JoinSet::new();
+        let (socket, peer) = (Arc::clone(&front), Arc::clone(&client));
+        tasks.spawn(async move {
+            let mut buffer = vec![0; 65_536];
+            while let Ok((read, from)) = socket.recv_from(&mut buffer).await {
+                *peer.lock().unwrap() = Some(from);
+                let _ = to_server.send((Instant::now() + one_way, buffer[..read].to_vec()));
+            }
+        });
+        let socket = Arc::clone(&back);
+        tasks.spawn(async move {
+            let mut buffer = vec![0; 65_536];
+            while let Ok(read) = socket.recv(&mut buffer).await {
+                let _ = to_client.send((Instant::now() + one_way, buffer[..read].to_vec()));
+            }
+        });
+        let socket = Arc::clone(&back);
+        tasks.spawn(async move {
+            while let Some((due, datagram)) = for_server.recv().await {
+                sleep_until(due).await;
+                let _ = socket.send(&datagram).await;
+            }
+        });
+        tasks.spawn(async move {
+            while let Some((due, datagram)) = for_client.recv().await {
+                sleep_until(due).await;
+                let peer = *client.lock().unwrap();
+                if let Some(peer) = peer {
+                    let _ = front.send_to(&datagram, peer).await;
+                }
+            }
+        });
+        while tasks.join_next().await.is_some() {}
+    });
+    (address, support::Task(task))
+}
+
+/// The windows a phone runs with, within a phone's byte budget.
+fn phone_budget(config: &mut HysteriaConfig) {
+    config.byte_budget = Box::leak(Box::new(ByteBudget::with_settings(
+        ByteBudgetSettings::for_class(MemoryClass::Constrained),
+    )));
+}
+
+/// Mbit/s of `flows` downloads of `each` bytes at once, through a 120 ms
+/// round trip with a phone's windows.
+async fn download_at_120ms(flows: usize, each: usize) -> f64 {
+    let (server, tls) = Mock::start(Mode::Hold);
+    let mut config = server.config_on(MemoryClass::Constrained);
+    phone_budget(&mut config);
+    let (relay, _relay) = delay_relay(config.remote_addr, Duration::from_millis(60)).await;
+    config.remote_addr = relay;
+    let client = HysteriaClient::connect(config, &tls).await.unwrap();
+    let mut streams = Vec::new();
+    for _ in 0..flows {
+        let mut stream = client.open_tcp(&target()).await.unwrap();
+        stream.write_all(b"g").await.unwrap();
+        streams.push(stream);
+    }
+    let started = std::time::Instant::now();
+    futures_util::future::join_all(streams.iter_mut().map(|stream| async move {
+        let mut bytes = vec![0; each];
+        stream.read_exact(&mut bytes).await.unwrap();
+    }))
+    .await;
+    let elapsed = started.elapsed();
+    drop(streams);
+    client.close();
+    (flows * each) as f64 * 8.0 / elapsed.as_secs_f64() / 1e6
+}
+
+/// Hysteria2 downloads at a simulated 120 ms round trip with a phone's
+/// windows, one stream and then 32 at once: numbers for the tables, run by
+/// hand with `--ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "a benchmark: prints Mbit/s at a simulated 120 ms round trip"]
+async fn hysteria_downloads_at_a_120ms_round_trip() {
+    const MIB: usize = 1024 * 1024;
+    for (flows, each) in [(1, 16 * MIB), (32, 2 * MIB)] {
+        let mut runs = Vec::new();
+        for _ in 0..3 {
+            runs.push(download_at_120ms(flows, each).await);
+        }
+        let best = runs.iter().copied().fold(0.0, f64::max);
+        eprintln!("HYSTERIA-RTT120 flows {flows}: best {best:.0} Mbit/s of {runs:.0?}");
+    }
 }
