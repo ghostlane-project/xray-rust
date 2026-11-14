@@ -1776,6 +1776,9 @@ name = "olc-net"
 version = "0.10.0"
 dependencies = [
  "base64 0.23.1",
+ "bytes",
+ "h2",
+ "http",
  "libc",
  "rand 0.8.6",
  "sha1",

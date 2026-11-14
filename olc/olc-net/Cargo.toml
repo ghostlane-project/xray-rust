@@ -9,6 +9,9 @@ publish = false
 
 [dependencies]
 base64.workspace = true
+bytes.workspace = true
+h2.workspace = true
+http.workspace = true
 libc.workspace = true
 rand.workspace = true
 sha1.workspace = true

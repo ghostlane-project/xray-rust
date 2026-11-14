@@ -11,7 +11,7 @@
 
 use std::time::Duration;
 
-use olc_net::http::{self, HttpRequest};
+use olc_net::http::HttpRequest;
 use serde::Serialize;
 
 use crate::session::{Error, WEB_ORIGIN, WEB_USER_AGENT};
@@ -147,9 +147,6 @@ pub async fn issue(api_base: &str, room_ref: &str) -> Result<Credentials, Error>
         olc_net::stream::parse_url(&url).map_err(|e| Error::Auth(format!("preconnect: {e}")))?;
     let body = preconnect_body(password);
     let call = async {
-        let mut stream = olc_net::stream::dial(&target)
-            .await
-            .map_err(|e| Error::Auth(format!("preconnect: {e}")))?;
         let req = HttpRequest {
             method: "POST",
             host: &target.authority,
@@ -163,7 +160,8 @@ pub async fn issue(api_base: &str, room_ref: &str) -> Result<Credentials, Error>
             max_body: PRECONNECT_MAX_BODY,
             timeout: PRECONNECT_TIMEOUT,
         };
-        http::request(&mut stream, &req)
+        // A browser's fetch: h2 when the server picks it (Chrome's hello).
+        olc_net::fetch::fetch(&target, &req)
             .await
             .map_err(|e| Error::Auth(format!("preconnect: {e}")))
     };

@@ -351,6 +351,19 @@ impl TlsConnector {
             .await
     }
 
+    /// [`connect_stream`](Self::connect_stream), with the application
+    /// protocol the server picked: a client that offers `h2` and
+    /// `http/1.1`, as a browser's `fetch` does, speaks what the server chose.
+    pub async fn connect_stream_with_alpn(
+        &self,
+        stream: BoxedTransportStream,
+        config: &TlsClientConfig,
+    ) -> Result<(BoxedTransportStream, Option<Vec<u8>>), TransportError> {
+        let prepared = self.prepare_stream(config, TlsAlpnPolicy::Raw)?;
+        self.connect_prepared_stream_with_alpn(stream, prepared)
+            .await
+    }
+
     pub(crate) fn prepare_stream(
         &self,
         config: &TlsClientConfig,
