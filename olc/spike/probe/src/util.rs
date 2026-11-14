@@ -57,6 +57,15 @@ pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
+/// The inverse of [`hex`].
+pub fn unhex(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        return Err("hex: odd length".into());
+    }
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| format!("hex: {e}"))).collect()
+}
+
 /// The address of the interface the default route leaves by (a connected UDP socket sends
 /// nothing; it only asks the kernel for a route).
 pub fn default_ipv4() -> Option<IpAddr> {
@@ -93,5 +102,15 @@ impl Args {
     pub fn flag(&self, name: &str) -> bool {
         let key = format!("--{name}");
         self.0.iter().any(|a| *a == key)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn hex_round_trip() {
+        let b = b"v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\n";
+        assert_eq!(super::unhex(&super::hex(b)).unwrap(), b);
+        assert!(super::unhex("abc").is_err());
     }
 }

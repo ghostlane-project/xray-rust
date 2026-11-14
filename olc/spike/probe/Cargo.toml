@@ -27,3 +27,7 @@ path = "src/bin/sfu-probe.rs"
 [[bin]]
 name = "loopback"
 path = "src/bin/loopback.rs"
+
+[[bin]]
+name = "sdp-bridge"
+path = "src/bin/sdp-bridge.rs"

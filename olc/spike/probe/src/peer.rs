@@ -38,10 +38,17 @@ pub fn rtc_config(provider: &Arc<CryptoProvider>, version: DtlsVersion, creds: &
 impl Peer {
     /// A connection whose one host candidate is `ip` on a fresh port.
     pub fn new(name: &'static str, ip: IpAddr, provider: &Arc<CryptoProvider>, version: DtlsVersion, creds: IceCreds) -> io::Result<Self> {
+        let cfg = rtc_config(provider, version, &creds);
+        Self::with_config(name, ip, cfg, creds)
+    }
+
+    /// The same with a configuration of the caller's (codecs, ICE lite, ...); `creds` must be
+    /// the ones `cfg` was given.
+    pub fn with_config(name: &'static str, ip: IpAddr, cfg: RtcConfig, creds: IceCreds) -> io::Result<Self> {
         let sock = UdpSocket::bind(SocketAddr::new(ip, 0))?;
         sock.set_nonblocking(true)?;
         let local = sock.local_addr()?;
-        let rtc = rtc_config(provider, version, &creds).build(Instant::now());
+        let rtc = cfg.build(Instant::now());
         Ok(Peer {
             name,
             rtc,

@@ -835,9 +835,11 @@ impl<'a> Attributes<'a> {
     }
 
     fn to_bytes(self, out: &mut dyn Write, trans_id: &TransId) -> io::Result<()> {
-        // olcRTC fork: under the Chrome profile the leading attributes go in libwebrtc's
-        // order; everything after PRIORITY is written as before.
-        let chrome = stun_profile() == StunProfile::Chrome;
+        // olcRTC fork: a message carrying GOOG-NETWORK-INFO is one the Chrome profile made
+        // (upstream never writes it), and its leading attributes go in libwebrtc's order;
+        // everything after PRIORITY is written as before. Decided by the message, not the
+        // process-wide profile, so serialising never depends on when the profile changed.
+        let chrome = self.network_cost.is_some();
         if let Some(v) = self.username {
             out.write_all(&Self::USERNAME.to_be_bytes())?;
             encode_str(Self::USERNAME, v, out)?;
@@ -881,14 +883,6 @@ impl<'a> Attributes<'a> {
             out.write_all(&Self::PRIORITY.to_be_bytes())?;
             out.write_all(&4_u16.to_be_bytes())?;
             out.write_all(&v.to_be_bytes())?;
-        }
-        if !chrome {
-            if let Some((id, cost)) = self.network_cost {
-                out.write_all(&Self::NETWORK_COST.to_be_bytes())?;
-                out.write_all(&4_u16.to_be_bytes())?;
-                out.write_all(&id.to_be_bytes())?;
-                out.write_all(&cost.to_be_bytes())?;
-            }
         }
         if let Some(v) = self.xor_mapped_address {
             let mut buf = [0_u8; 20];
@@ -1582,6 +1576,57 @@ mod test {
         let packet = PACKET.to_vec();
         let message = StunMessage::parse(&packet).unwrap();
         assert!(message.verify(b"xJcE9AQAR7kczUDVOXRUCl", sha1_hmac));
+    }
+
+    // olcRTC fork: `parse_stun_message`'s PACKET is a binding request Chrome sent (USERNAME,
+    // GOOG-NETWORK-INFO {1, 10}, ICE-CONTROLLING, USE-CANDIDATE, PRIORITY, MESSAGE-INTEGRITY,
+    // FINGERPRINT). With network cost set, the builder writes it again byte for byte.
+    #[test]
+    fn chrome_profile_rebuilds_chromes_binding_request() {
+        const PACKET: &[u8] = &[
+            0x00, 0x01, 0x00, 0x50, 0x21, 0x12, 0xa4, 0x42, 0x6a, 0x75, 0x63, 0x31, 0x35, 0x75,
+            0x78, 0x55, 0x6e, 0x67, 0x47, 0x63, 0x00, 0x06, 0x00, 0x09, 0x70, 0x39, 0x4b, 0x41,
+            0x3a, 0x53, 0x51, 0x41, 0x74, 0x00, 0x00, 0x00, 0xc0, 0x57, 0x00, 0x04, 0x00, 0x01,
+            0x00, 0x0a, 0x80, 0x2a, 0x00, 0x08, 0x6e, 0xee, 0xc6, 0xe9, 0x7d, 0x18, 0x39, 0x5c,
+            0x00, 0x25, 0x00, 0x00, 0x00, 0x24, 0x00, 0x04, 0x6e, 0x7f, 0x1e, 0xff, 0x00, 0x08,
+            0x00, 0x14, 0x5d, 0x04, 0x25, 0xa0, 0x20, 0x7a, 0xb1, 0xe0, 0x54, 0x10, 0x22, 0x99,
+            0xaa, 0xf9, 0x83, 0x9c, 0xa0, 0x76, 0xc6, 0xd5, 0x80, 0x28, 0x00, 0x04, 0x36, 0x0e,
+            0x21, 0x9f,
+        ];
+        let trans_id = TransId::from_slice(&PACKET[8..20]);
+        let msg = StunMessageBuilder::new()
+            .binding()
+            .request()
+            .username("p9KA:SQAt")
+            .prio(0x6e7f1eff)
+            .use_candidate()
+            .ice_controlling(0x6eeec6e97d18395c)
+            .network_cost(1, 10)
+            .build(trans_id);
+        let mut buf = vec![0u8; 256];
+        let n = msg.to_bytes(Some(b"xJcE9AQAR7kczUDVOXRUCl"), &mut buf, sha1_hmac).unwrap();
+        assert_eq!(&buf[..n], PACKET);
+
+        // Without network cost the order is upstream's: ICE-CONTROLLING before PRIORITY,
+        // USE-CANDIDATE after it.
+        let msg = StunMessageBuilder::new()
+            .binding()
+            .request()
+            .username("p9KA:SQAt")
+            .prio(0x6e7f1eff)
+            .use_candidate()
+            .ice_controlling(0x6eeec6e97d18395c)
+            .build(trans_id);
+        let n = msg.to_bytes(Some(b"xJcE9AQAR7kczUDVOXRUCl"), &mut buf, sha1_hmac).unwrap();
+        let order: Vec<u16> = {
+            let (mut i, mut v) = (20, vec![]);
+            while i + 4 <= n {
+                v.push(u16::from_be_bytes([buf[i], buf[i + 1]]));
+                i += 4 + ((u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize + 3) & !3);
+            }
+            v
+        };
+        assert_eq!(order, [0x0006, 0x802a, 0x0024, 0x0025, 0x0008, 0x8028]);
     }
 
     #[test]

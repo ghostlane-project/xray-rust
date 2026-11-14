@@ -7,7 +7,8 @@
 #   vendor/is-0.12.0/  str0m's ICE crate, forked for Chrome's STUN attribute order (StunProfile in src/stun.rs)
 [workspace]
 resolver = "2"
-members = ["probe", "dtls-boring", "ios-link"]
+# The vendored `is` is a member so `cargo test -p is` runs its tests with the fork's.
+members = ["probe", "dtls-boring", "ios-link", "vendor/is-0.12.0"]
 default-members = ["probe"]
 
 [workspace.package]
