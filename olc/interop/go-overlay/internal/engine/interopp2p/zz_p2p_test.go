@@ -27,10 +27,11 @@ import (
 
 const testBudget = 30 * time.Second
 
-// TestOffersRTXForVP8: the engine's offer names VP8's retransmissions (rtx,
-// apt=96), as the mtslink engine registers them, so a sender that resends
-// only on an RTX stream (str0m) answers the NACKs pion sends.
-func TestOffersRTXForVP8(t *testing.T) {
+// TestOffersVP8Alone: the engine offers VP8 with NACK feedback and no RTX,
+// as it did before R2 added RTX, so the pair repairs a lost packet the way
+// pion and libwebrtc do where no RTX is negotiated: a NACK answered on the
+// packet's own SSRC.
+func TestOffersVP8Alone(t *testing.T) {
 	api, err := newAPI()
 	if err != nil {
 		t.Fatal(err)
@@ -50,12 +51,14 @@ func TestOffersRTXForVP8(t *testing.T) {
 	}
 	for _, line := range []string{
 		fmt.Sprintf("a=rtpmap:%d VP8/90000", VP8PayloadType),
-		fmt.Sprintf("a=rtpmap:%d rtx/90000", RTXPayloadType),
-		fmt.Sprintf("a=fmtp:%d apt=%d", RTXPayloadType, VP8PayloadType),
+		fmt.Sprintf("a=rtcp-fb:%d nack", VP8PayloadType),
 	} {
 		if !strings.Contains(offer.SDP, line+"\r\n") {
 			t.Errorf("the offer has no %q:\n%s", line, offer.SDP)
 		}
+	}
+	if strings.Contains(offer.SDP, "rtx/90000") || strings.Contains(offer.SDP, "a=ssrc-group:FID") {
+		t.Errorf("the offer names RTX:\n%s", offer.SDP)
 	}
 }
 

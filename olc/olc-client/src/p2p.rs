@@ -45,9 +45,10 @@ use std::time::{Duration, Instant};
 
 use olc_rtc::peer::{Peer, PeerConfig, PeerEvent};
 use olc_rtc::str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
-use olc_rtc::str0m::format::Codec;
-use olc_rtc::str0m::media::{Direction, MediaKind, Mid, Pt};
+use olc_rtc::str0m::format::{Codec, FormatParams};
+use olc_rtc::str0m::media::{Direction, Frequency, MediaKind, Mid, Pt};
 use olc_rtc::str0m::rtp::{RtpPacket, RtpWrite, SeqNo};
+use olc_rtc::str0m::RtcConfig;
 use olc_rtc::turn::{udp_servers, TurnServer, MAX_ALLOCATIONS};
 use olc_rtc::DtlsVersion;
 use olc_vp8channel::channel::Carrier;
@@ -74,6 +75,28 @@ const SCTP_BUFFERED: usize = 64 << 10;
 /// How long an offer or an answer waits for its relayed candidates before
 /// it goes with what it has (the Go side's `gatherBudget`).
 pub const GATHER_BUDGET: Duration = Duration::from_secs(10);
+
+/// The one codec's payload type, as the Go side registers it
+/// (`VP8PayloadType`).
+pub const VP8_PAYLOAD_TYPE: u8 = 96;
+
+/// The peer's codecs are the Go side's: VP8 at [`VP8_PAYLOAD_TYPE`] with
+/// NACK, PLI and FIR feedback, and no RTX (the engine's `newAPI` registers
+/// VP8 with that feedback and nothing else). So an SDP from this end names
+/// what one from the Go end names, and a lost packet comes back on its own
+/// SSRC (the vendored str0m's `ResendPlain`).
+fn lab_codecs(config: RtcConfig) -> RtcConfig {
+    let mut config = config.clear_codecs();
+    config.codec_config().add_config(
+        VP8_PAYLOAD_TYPE.into(),
+        None,
+        Codec::Vp8,
+        Frequency::NINETY_KHZ,
+        None,
+        FormatParams::default(),
+    );
+    config
+}
 
 /// The engine's news for the transport above it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -499,7 +522,7 @@ impl P2pLink {
     /// added, its TURN allocations started) and its driver's events watched;
     /// the old one closed. Returns it with its generation.
     fn start_peer(self: &Arc<Self>, st: &mut State, remote: &str) -> Option<(Peer, u64)> {
-        let (peer, rx) = match Peer::start(&self.peer_config()) {
+        let (peer, rx) = match Peer::start_tuned(&self.peer_config(), lab_codecs) {
             Ok(p) => p,
             Err(e) => {
                 crate::info!("interop-p2p: peer connection: {e}");
@@ -1305,9 +1328,10 @@ mod tests {
 
     /// A lost packet is resent: both ends relay-only through a hop that
     /// drops every tenth VP8 packet on its way to the TURN server, and every
-    /// sample `a` writes still arrives whole at `b`. The writes are
-    /// nackable and str0m negotiates RTX between the two, so a NACK brings
-    /// the packet back; without resends a sample that lost one is gone.
+    /// sample `a` writes still arrives whole at `b`. No RTX is negotiated
+    /// (the lab codecs), so `b` NACKs on the main SSRC and `a` answers with
+    /// the packet itself (the vendored str0m's `ResendPlain`); without
+    /// resends a sample that lost one is gone.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_packet_lost_on_the_way_is_resent() {
         crate::testing::bounded_for(Duration::from_secs(20), async {

@@ -58,10 +58,6 @@ const Name = "interop-p2p"
 // VP8PayloadType is the one codec's payload type.
 const VP8PayloadType = 96
 
-// RTXPayloadType is VP8's retransmissions (apt=96), as the mtslink engine
-// registers RTX beside its video codec.
-const RTXPayloadType = 97
-
 const (
 	// gatherBudget bounds the wait for ICE gathering before an SDP goes
 	// out with what it has.
@@ -204,14 +200,6 @@ func newAPI() (*webrtc.API, error) {
 		PayloadType: VP8PayloadType,
 	}, webrtc.RTPCodecTypeVideo); err != nil {
 		return nil, fmt.Errorf("interop-p2p: register vp8: %w", err)
-	}
-	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
-		RTPCodecCapability: webrtc.RTPCodecCapability{
-			MimeType: webrtc.MimeTypeRTX, ClockRate: 90000, SDPFmtpLine: fmt.Sprintf("apt=%d", VP8PayloadType),
-		},
-		PayloadType: RTXPayloadType,
-	}, webrtc.RTPCodecTypeVideo); err != nil {
-		return nil, fmt.Errorf("interop-p2p: register rtx: %w", err)
 	}
 	reg := &interceptor.Registry{}
 	if err := webrtc.RegisterDefaultInterceptorsWithOptions(me, reg, engine.DefaultInterceptorOptions()...); err != nil {
