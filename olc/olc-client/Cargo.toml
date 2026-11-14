@@ -35,6 +35,10 @@ shaped-tls = ["olc-net/shaped-tls"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+# An in-process TURN server for the interop-p2p relay test (webrtc-rs, as
+# olc-rtc's relay tests run it; tests only).
+turn = "=0.17.3"
+webrtc-util = { version = "=0.17.3", default-features = false, features = ["conn", "vnet"] }
 
 [[bin]]
 name = "olc-client"

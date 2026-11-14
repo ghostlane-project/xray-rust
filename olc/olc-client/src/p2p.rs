@@ -8,9 +8,12 @@
 //! pion; both keep the same contract:
 //!
 //! - the URL is the hub's, `tcp://host:port/room`, with an optional query
-//!   (`turn=`, `turn_user=`, `turn_pass=`, `policy=`) this side does not
-//!   read yet: it gathers host candidates only, and the server's side relays
-//!   (T2(a) runs the server relay-only through coturn);
+//!   (`turn=` once per URL of one ICE server, `turn_user=`, `turn_pass=`,
+//!   `policy=relay|all`) read as Go's `url.Query` reads it
+//!   ([`parse_settings`]): the `turn:` URLs over UDP become the peer
+//!   connection's TURN servers (olc-rtc's client; `turns:` and TCP ones are
+//!   left out until it has them), and `policy=relay` gathers relayed
+//!   candidates only;
 //! - signalling is JSON text in the hub's DATA frames: `hello` (broadcast
 //!   right after the join, then directed as a reply), `offer`, `answer`,
 //!   `bye`; every participant names itself by 16 random hex characters at
@@ -20,7 +23,9 @@
 //!   our own unanswered offer to X (both hellos crossed, so each took the
 //!   other for the newcomer): then the greater id's offer stands and the
 //!   lower id answers it;
-//! - no trickle: the offer and the answer carry every candidate;
+//! - no trickle: the offer and the answer wait for the relayed candidates
+//!   (at most [`GATHER_BUDGET`], the Go side's `gatherBudget`) and carry
+//!   every candidate;
 //! - one video line, `sendrecv`, VP8: what the remote sends goes to the
 //!   frame handler through [`olc_vp8channel::rtp_reader::TrackReader`];
 //!   what the transport writes goes out packetized as pion would
@@ -43,6 +48,7 @@ use olc_rtc::str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
 use olc_rtc::str0m::format::Codec;
 use olc_rtc::str0m::media::{Direction, MediaKind, Mid, Pt};
 use olc_rtc::str0m::rtp::{RtpPacket, RtpWrite, SeqNo};
+use olc_rtc::turn::{udp_servers, TurnServer, MAX_ALLOCATIONS};
 use olc_rtc::DtlsVersion;
 use olc_vp8channel::channel::Carrier;
 use olc_vp8channel::rtp::{Packetizer, Payloader, Vp8Payloader};
@@ -64,6 +70,10 @@ pub const ID_LEN: usize = 16;
 /// What its channels may hold unacknowledged: the peer has none (media
 /// only), so str0m's floor.
 const SCTP_BUFFERED: usize = 64 << 10;
+
+/// How long an offer or an answer waits for its relayed candidates before
+/// it goes with what it has (the Go side's `gatherBudget`).
+pub const GATHER_BUDGET: Duration = Duration::from_secs(10);
 
 /// The engine's news for the transport above it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,14 +112,103 @@ pub struct Signal {
     pub sdp: String,
 }
 
-/// Splits the engine's URL into the hub's address and the room, the query
-/// dropped (this side reads none of it).
+/// The engine's URL as the Go side reads it (`ParseSettings`): the hub,
+/// the room, one ICE server's `turn=` URLs and credential, and the policy.
+/// Its `Debug` shows no password.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Settings {
+    /// The hub's `host:port`.
+    pub addr: String,
+    /// The room.
+    pub room: String,
+    /// The `turn=` values, in order (one ICE server's URLs).
+    pub turn: Vec<String>,
+    /// `turn_user=`.
+    pub turn_user: String,
+    /// `turn_pass=`.
+    pub turn_pass: String,
+    /// `policy=relay` (`all` or none is every candidate).
+    pub relay_only: bool,
+}
+
+impl std::fmt::Debug for Settings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Settings")
+            .field("addr", &self.addr)
+            .field("room", &self.room)
+            .field("turn", &self.turn)
+            .field("turn_user", &self.turn_user)
+            .field("turn_pass_len", &self.turn_pass.len())
+            .field("relay_only", &self.relay_only)
+            .finish()
+    }
+}
+
+/// Reads the engine's URL, `tcp://host:port/room[?turn=..&turn_user=..&
+/// turn_pass=..&policy=relay|all]`, as Go's `url.Query` does: pairs split
+/// on `&`, each part unescaped (`+` is a space); a pair that does not
+/// unescape, or holds a `;`, is dropped.
 ///
 /// # Errors
-/// [`P2pError::BadUrl`].
-pub fn split_url(raw: &str) -> Result<(String, String), P2pError> {
-    let base = raw.split_once('?').map_or(raw, |(b, _)| b);
-    parse_url(base).map_err(|_| P2pError::BadUrl)
+/// [`P2pError::BadUrl`]: not a hub URL, or a policy neither `relay` nor
+/// `all`.
+pub fn parse_settings(raw: &str) -> Result<Settings, P2pError> {
+    let (base, query) = raw.split_once('?').unwrap_or((raw, ""));
+    let (addr, room) = parse_url(base).map_err(|_| P2pError::BadUrl)?;
+    let mut s = Settings {
+        addr,
+        room,
+        turn: Vec::new(),
+        turn_user: String::new(),
+        turn_pass: String::new(),
+        relay_only: false,
+    };
+    let mut policy = None;
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        if pair.contains(';') {
+            continue;
+        }
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let (Some(k), Some(v)) = (query_unescape(k), query_unescape(v)) else {
+            continue;
+        };
+        match k.as_str() {
+            "turn" => s.turn.push(v),
+            // url.Values.Get: the first value.
+            "turn_user" if s.turn_user.is_empty() => s.turn_user = v,
+            "turn_pass" if s.turn_pass.is_empty() => s.turn_pass = v,
+            "policy" if policy.is_none() => policy = Some(v),
+            _ => {}
+        }
+    }
+    s.relay_only = match policy.as_deref() {
+        None | Some("" | "all") => false,
+        Some("relay") => true,
+        Some(_) => return Err(P2pError::BadUrl),
+    };
+    Ok(s)
+}
+
+/// Go's `url.QueryUnescape`: `+` is a space, `%XX` a byte; `None` on a bad
+/// escape or bytes that are not UTF-8.
+fn query_unescape(s: &str) -> Option<String> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => out.push(b' '),
+            b'%' => {
+                let hex = b.get(i + 1..i + 3)?;
+                let hex = std::str::from_utf8(hex).ok()?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 2;
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    String::from_utf8(out).ok()
 }
 
 /// A fresh id: 16 lowercase hex characters.
@@ -172,6 +271,10 @@ struct State {
 pub struct P2pLink {
     addr: String,
     room: String,
+    /// The URL's TURN servers over UDP.
+    turn: Vec<TurnServer>,
+    /// The URL's `policy=relay`.
+    relay_only: bool,
     host_ip: IpAddr,
     frame_ns: i64,
     st: tokio::sync::Mutex<State>,
@@ -184,6 +287,9 @@ pub struct P2pLink {
     /// When the current peer connection came up (its DTLS and SRTP in
     /// place, so samples go out); `None` while there is none.
     up_since: watch::Sender<Option<tokio::time::Instant>>,
+    /// The current peer connection's generation and the relayed candidates
+    /// it has gathered.
+    gathered: watch::Sender<(u64, usize)>,
     rejoining: AtomicBool,
     /// RTP packets the remote sent.
     pub rtp_in: AtomicU64,
@@ -216,11 +322,19 @@ impl P2pLink {
         frame_interval: Duration,
         events: mpsc::Sender<P2pEvent>,
     ) -> Result<Arc<Self>, P2pError> {
-        let (addr, room) = split_url(url)?;
+        let set = parse_settings(url)?;
+        let turn = udp_servers(&set.turn, &set.turn_user, &set.turn_pass);
+        if set.relay_only && turn.is_empty() {
+            crate::info!(
+                "interop-p2p: relay-only with no TURN server over UDP in the URL: no candidate to offer"
+            );
+        }
         olc_rtc::init();
         let link = Arc::new(Self {
-            addr,
-            room,
+            addr: set.addr,
+            room: set.room,
+            turn,
+            relay_only: set.relay_only,
             host_ip,
             frame_ns: i64::try_from(frame_interval.as_nanos()).unwrap_or(i64::MAX),
             st: tokio::sync::Mutex::new(State {
@@ -244,6 +358,7 @@ impl P2pLink {
             connected: AtomicBool::new(false),
             gen: AtomicU64::new(0),
             up_since: watch::Sender::new(None),
+            gathered: watch::Sender::new((0, 0)),
             rejoining: AtomicBool::new(false),
             rtp_in: AtomicU64::new(0),
             rtp_out: AtomicU64::new(0),
@@ -375,14 +490,15 @@ impl P2pLink {
             dtls_version: DtlsVersion::Dtls12,
             host_ip: self.host_ip,
             sctp_max_buffered: SCTP_BUFFERED,
-            turn: Vec::new(),
-            relay_only: false,
+            turn: self.turn.clone(),
+            relay_only: self.relay_only,
         }
     }
 
-    /// A fresh peer connection for `remote`, its host candidate added and
-    /// its driver's events watched; the old one closed.
-    fn start_peer(self: &Arc<Self>, st: &mut State, remote: &str) -> Option<Peer> {
+    /// A fresh peer connection for `remote`, gathering (its host candidate
+    /// added, its TURN allocations started) and its driver's events watched;
+    /// the old one closed. Returns it with its generation.
+    fn start_peer(self: &Arc<Self>, st: &mut State, remote: &str) -> Option<(Peer, u64)> {
         let (peer, rx) = match Peer::start(&self.peer_config()) {
             Ok(p) => p,
             Err(e) => {
@@ -390,7 +506,7 @@ impl P2pLink {
                 return None;
             }
         };
-        if let Err(e) = peer.add_host_candidate() {
+        if let Err(e) = peer.gather() {
             crate::info!("interop-p2p: host candidate: {e}");
             peer.close();
             return None;
@@ -398,6 +514,7 @@ impl P2pLink {
         let gen = self.gen.fetch_add(1, Ordering::AcqRel) + 1;
         st.remote = Some((remote.to_owned(), gen));
         self.line_down();
+        self.gathered.send_replace((gen, 0));
         let old = {
             let mut m = locked(&self.media);
             m.mid = None;
@@ -409,14 +526,42 @@ impl P2pLink {
             old.close();
         }
         tokio::spawn(self.clone().watch(rx, gen));
-        Some(peer)
+        Some((peer, gen))
+    }
+
+    /// Waits until connection `gen` has a relayed candidate from each TURN
+    /// server, or [`GATHER_BUDGET`] (the Go side's `GatheringCompletePromise`
+    /// under its budget: no trickle, so the SDP carries what is there then);
+    /// whether `gen` is still the current connection.
+    async fn wait_gathered(&self, gen: u64) -> bool {
+        let want = self.turn.len().min(MAX_ALLOCATIONS);
+        if want > 0 {
+            let mut rx = self.gathered.subscribe();
+            let gathered = rx.wait_for(|&(g, n)| g != gen || n >= want);
+            if tokio::time::timeout(GATHER_BUDGET, gathered).await.is_err() {
+                crate::info!(
+                    "interop-p2p: gathering still running after {GATHER_BUDGET:?}; sending what it has"
+                );
+            }
+        }
+        self.gen.load(Ordering::Acquire) == gen
     }
 
     async fn offer(self: &Arc<Self>, me: &str, remote: &str) {
-        let mut st = self.st.lock().await;
-        let Some(peer) = self.start_peer(&mut st, remote) else {
+        let started = {
+            let mut st = self.st.lock().await;
+            self.start_peer(&mut st, remote)
+        };
+        let Some((peer, gen)) = started else {
             return;
         };
+        if !self.wait_gathered(gen).await {
+            return;
+        }
+        let mut st = self.st.lock().await;
+        if self.gen.load(Ordering::Acquire) != gen {
+            return;
+        }
         let made = peer.with_rtc(|rtc| {
             let mut api = rtc.sdp_api();
             let mid = api.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
@@ -477,16 +622,21 @@ impl P2pLink {
             crate::info!("interop-p2p: offer from {remote} has no video line");
             return;
         };
-        let mut st = self.st.lock().await;
-        if crossed_offer_stands(st.pending.as_ref().map(|(to, _)| to.as_str()), me, remote) {
-            crate::debug!("interop-p2p: the offer from {remote} crossed ours; ours stands");
-            return;
-        }
-        st.pending = None;
-        let Some(peer) = self.start_peer(&mut st, remote) else {
+        let started = {
+            let mut st = self.st.lock().await;
+            if crossed_offer_stands(st.pending.as_ref().map(|(to, _)| to.as_str()), me, remote) {
+                crate::debug!("interop-p2p: the offer from {remote} crossed ours; ours stands");
+                return;
+            }
+            st.pending = None;
+            self.start_peer(&mut st, remote)
+        };
+        let Some((peer, gen)) = started else {
             return;
         };
-        drop(st);
+        if !self.wait_gathered(gen).await {
+            return;
+        }
         let answer = match peer.with_rtc(|rtc| rtc.sdp_api().accept_offer(offer)) {
             Ok(a) => a,
             Err(e) => {
@@ -559,6 +709,15 @@ impl P2pLink {
                     if current {
                         crate::info!("interop-p2p: peer connection up");
                     }
+                }
+                PeerEvent::LocalCandidate(_) => {
+                    self.gathered.send_if_modified(|(g, n)| {
+                        if *g != gen {
+                            return false;
+                        }
+                        *n += 1;
+                        true
+                    });
                 }
                 PeerEvent::Closed(why) => {
                     if self.gen.load(Ordering::Acquire) == gen && !self.st.lock().await.closed {
@@ -745,14 +904,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_url_drops_its_query_and_keeps_the_room() {
+    fn the_url_reads_as_the_go_side_reads_it() {
+        let set = parse_settings(
+            "tcp://127.0.0.1:9/gate-x?turn=turn%3A127.0.0.1%3A3478&turn=turns%3Alocalhost%3A5349%3Ftransport%3Dtcp\
+             &turn_user=1763100000%3Aolc&turn_pass=p%2Bq+r&policy=relay&x=%zz&turn=a;b",
+        )
+        .unwrap();
+        assert_eq!(set.addr, "127.0.0.1:9");
+        assert_eq!(set.room, "gate-x");
         assert_eq!(
-            split_url("tcp://127.0.0.1:9/gate-x?turn=turn%3A127.0.0.1%3A3478&policy=relay")
-                .unwrap(),
-            ("127.0.0.1:9".to_owned(), "gate-x".to_owned())
+            set.turn,
+            ["turn:127.0.0.1:3478", "turns:localhost:5349?transport=tcp"]
         );
-        assert_eq!(split_url("tcp://127.0.0.1:9/gate-x").unwrap().1, "gate-x");
-        assert!(split_url("ws://x/y").is_err());
+        assert_eq!(set.turn_user, "1763100000:olc");
+        assert_eq!(set.turn_pass, "p+q r");
+        assert!(set.relay_only);
+        assert!(!format!("{set:?}").contains("p+q r"), "{set:?}");
+        let plain = parse_settings("tcp://127.0.0.1:9/gate-x").unwrap();
+        assert_eq!((plain.room.as_str(), plain.turn.len()), ("gate-x", 0));
+        assert!(!plain.relay_only);
+        assert!(!parse_settings("tcp://h:1/r?policy=all").unwrap().relay_only);
+        assert!(matches!(
+            parse_settings("tcp://h:1/r?policy=none"),
+            Err(P2pError::BadUrl)
+        ));
+        assert!(parse_settings("ws://x/y").is_err());
     }
 
     #[test]
@@ -811,12 +987,15 @@ mod tests {
         }
     }
 
+    /// What [`relay_hub`] read: how many DATA frames, and their bodies.
+    type Relayed = (Arc<AtomicU64>, Arc<Mutex<Vec<Vec<u8>>>>);
+
     /// A hub room that relays DATA frames to the other members, as the
-    /// overlay's interoppipe hub does (no PEERS, no END), and counts the
-    /// frames it read. With `hold_until` members it holds every frame until
-    /// that many have joined, so each one's broadcast hello reaches the
-    /// others (participants that joined at once).
-    async fn relay_hub(hold_until: usize) -> (String, tokio::task::JoinHandle<()>, Arc<AtomicU64>) {
+    /// overlay's interoppipe hub does (no PEERS, no END), and counts and
+    /// keeps the frames it read. With `hold_until` members it holds every
+    /// frame until that many have joined, so each one's broadcast hello
+    /// reaches the others (participants that joined at once).
+    async fn relay_hub(hold_until: usize) -> (String, tokio::task::JoinHandle<()>, Relayed) {
         use tokio::io::AsyncReadExt;
         let ln = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = ln.local_addr().unwrap();
@@ -825,7 +1004,9 @@ mod tests {
             ..Room::default()
         }));
         let read_frames = Arc::new(AtomicU64::new(0));
+        let bodies = Arc::new(Mutex::new(Vec::new()));
         let counted = read_frames.clone();
+        let kept = bodies.clone();
         let task = tokio::spawn(async move {
             let mut next = 0usize;
             loop {
@@ -844,6 +1025,7 @@ mod tests {
                 }
                 let room = room.clone();
                 let counted = counted.clone();
+                let kept = kept.clone();
                 tokio::spawn(async move {
                     let mut hdr = [0u8; 5];
                     loop {
@@ -858,6 +1040,7 @@ mod tests {
                         if hdr[4] != KIND_DATA {
                             continue;
                         }
+                        locked(&kept).push(body.clone());
                         let mut frame = hdr.to_vec();
                         frame.extend_from_slice(&body);
                         let mut r = room.lock().await;
@@ -870,18 +1053,20 @@ mod tests {
                 });
             }
         });
-        (
-            format!("tcp://{addr}/room?turn=ignored&policy=relay"),
-            task,
-            read_frames,
-        )
+        (format!("tcp://{addr}/room"), task, (read_frames, bodies))
     }
 
     /// Two participants meet in a room of `hub` (both joined first when
-    /// `at_once`) and a sample written on either side arrives whole on the
-    /// other.
-    async fn meet_and_move_samples(at_once: bool) {
-        let (url, hub, read_frames) = relay_hub(if at_once { 2 } else { 0 }).await;
+    /// `at_once`), the URL carrying `query` when it is not empty, and a
+    /// sample written on either side arrives whole on the other. Returns the
+    /// signalling the hub relayed.
+    async fn meet_and_move_samples(at_once: bool, query: &str) -> Vec<Vec<u8>> {
+        let (url, hub, (read_frames, bodies)) = relay_hub(if at_once { 2 } else { 0 }).await;
+        let url = if query.is_empty() {
+            url
+        } else {
+            format!("{url}?{query}")
+        };
         let lo = IpAddr::from([127, 0, 0, 1]);
         let tick = Duration::from_millis(16);
         let (a_tx, _a_rx) = mpsc::channel(4);
@@ -925,6 +1110,8 @@ mod tests {
         a.close().await;
         b.close().await;
         hub.abort();
+        let relayed = locked(&bodies).clone();
+        relayed
     }
 
     /// The wait before the first hello: not while the room holds nobody,
@@ -933,7 +1120,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_peer_settles_once_its_line_has_been_up_for_the_settle_time() {
         crate::testing::bounded_for(Duration::from_secs(20), async {
-            let (url, hub, read_frames) = relay_hub(0).await;
+            let (url, hub, (read_frames, _)) = relay_hub(0).await;
             let lo = IpAddr::from([127, 0, 0, 1]);
             let tick = Duration::from_millis(16);
             let (a_tx, _a_rx) = mpsc::channel(4);
@@ -975,14 +1162,88 @@ mod tests {
     /// The second is the newcomer and offers, the first answers.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn two_participants_meet_and_move_samples_both_ways() {
-        crate::testing::bounded_for(Duration::from_secs(20), meet_and_move_samples(false)).await;
+        crate::testing::bounded_for(Duration::from_secs(20), meet_and_move_samples(false, ""))
+            .await;
     }
 
     /// Both hellos cross, so each takes the other for the newcomer and both
     /// offer: the greater id's offer stands and the lower id answers it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn participants_that_join_at_once_still_meet() {
-        crate::testing::bounded_for(Duration::from_secs(20), meet_and_move_samples(true)).await;
+        crate::testing::bounded_for(Duration::from_secs(20), meet_and_move_samples(true, "")).await;
+    }
+
+    const TURN_USER: &str = "1763100000:olc";
+    const TURN_PASS: &str = "turn-test-password";
+
+    /// A TURN server on loopback relaying from 127.0.0.1 (webrtc-rs's,
+    /// tests only, as olc-rtc's relay tests run it), and its `turn:` URL.
+    async fn turn_server() -> (turn::server::Server, String) {
+        use turn::relay::relay_static::RelayAddressGeneratorStatic;
+        use turn::server::config::{ConnConfig, ServerConfig};
+        let conn = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = conn.local_addr().unwrap();
+        let server = turn::server::Server::new(ServerConfig {
+            conn_configs: vec![ConnConfig {
+                conn,
+                relay_addr_generator: Box::new(RelayAddressGeneratorStatic {
+                    relay_address: IpAddr::from([127, 0, 0, 1]),
+                    address: "127.0.0.1".to_owned(),
+                    net: Arc::new(webrtc_util::vnet::net::Net::new(None)),
+                }),
+            }],
+            realm: "olc.test".to_owned(),
+            auth_handler: Arc::new(
+                turn::auth::StaticAuthHandler::new(
+                    [(TURN_USER.to_owned(), TURN_PASS.to_owned())].into(),
+                )
+                .unwrap(),
+            ),
+            channel_bind_timeout: Duration::from_secs(0),
+            alloc_close_notify: None,
+        })
+        .await
+        .unwrap();
+        (server, format!("turn:{addr}"))
+    }
+
+    /// The `a=candidate` lines of the offers and answers the hub relayed.
+    fn signalled_candidates(signals: &[Vec<u8>]) -> Vec<String> {
+        signals
+            .iter()
+            .filter_map(|raw| serde_json::from_slice::<Signal>(raw).ok())
+            .filter(|s| s.t == "offer" || s.t == "answer")
+            .flat_map(|s| {
+                s.sdp
+                    .lines()
+                    .filter(|l| l.starts_with("a=candidate:"))
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Both participants read the URL's TURN server and relay-only policy,
+    /// as the Go side does: every candidate either one signals is a relayed
+    /// one, and samples still move both ways.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn relay_only_participants_meet_through_the_urls_turn_server() {
+        crate::testing::bounded_for(Duration::from_secs(20), async {
+            let (server, turn) = turn_server().await;
+            let query = format!(
+                "turn={}&turn_user={}&turn_pass={TURN_PASS}&policy=relay",
+                turn.replace(':', "%3A"),
+                TURN_USER.replace(':', "%3A"),
+            );
+            let signals = meet_and_move_samples(false, &query).await;
+            let candidates = signalled_candidates(&signals);
+            assert!(
+                !candidates.is_empty() && candidates.iter().all(|c| c.contains(" typ relay")),
+                "{candidates:?}"
+            );
+            server.close().await.unwrap();
+        })
+        .await;
     }
 
     #[test]
