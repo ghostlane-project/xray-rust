@@ -171,6 +171,12 @@ type rustConfig struct {
 	// Provider is the auth provider: salutejazz reads URL as the room
 	// reference "<code>:<password>" (zz_rust_live_test.go).
 	Provider string `json:"provider,omitempty"`
+	// Channel, VP8FPS and VP8Batch are the p2p target's vp8channel
+	// (zz_rust_p2p_test.go): the binding channel both ends set and the
+	// transport's numbers; the endpoint's, empty on the interop target.
+	Channel  string `json:"channel,omitempty"`
+	VP8FPS   int    `json:"vp8_fps,omitempty"`
+	VP8Batch int    `json:"vp8_batch,omitempty"`
 	// Liveness and LivenessFallbackMS shorten the client's liveness for the
 	// e2e scenarios (zz_rust_e2e_test.go).
 	Liveness           *rustLiveness `json:"liveness,omitempty"`
@@ -231,7 +237,7 @@ func startRust(ctx context.Context, bin string, ep Endpoint, extra func(*rustCon
 		return nil, fmt.Errorf("rust client: %w", err)
 	}
 	cfg := rustConfig{URL: ep.Room, Key: ep.Key, Transport: ep.Transport, DNS: ep.DNS, Socks: "127.0.0.1:0",
-		DeviceID: "gate-rust"}
+		DeviceID: "gate-rust", Channel: ep.Channel, VP8FPS: ep.VP8FPS, VP8Batch: ep.VP8Batch}
 	if extra != nil {
 		extra(&cfg)
 	}
