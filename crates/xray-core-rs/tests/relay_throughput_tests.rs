@@ -52,9 +52,12 @@ fn one_flow_moves_as_fast_with_the_default_budget_as_without_a_limit() {
         floor: DEFAULT_FLOW_FLOOR,
     };
 
+    // One flow never reaches B, so both arms run the same code: what differs
+    // between them is the shared build host's noise (±15 % a run). The best
+    // of five interleaved runs keeps that under the 10 % the test allows.
     send_seconds(&far, socks, 16 * MIB);
     let (mut budgeted, mut free) = (f64::MAX, f64::MAX);
-    for _ in 0..3 {
+    for _ in 0..5 {
         set_byte_budget(None);
         budgeted = budgeted.min(send_seconds(&far, socks, BYTES));
         set_byte_budget(Some(unlimited));
@@ -64,7 +67,7 @@ fn one_flow_moves_as_fast_with_the_default_budget_as_without_a_limit() {
     near.block_on(core.stop()).unwrap();
 
     eprintln!(
-        "one Vision flow, best of 3 × 64 MiB: {:.0} Mbit/s with B = {} B, {:.0} Mbit/s without a limit",
+        "one Vision flow, best of 5 × 64 MiB: {:.0} Mbit/s with B = {} B, {:.0} Mbit/s without a limit",
         mbit_per_second(BYTES, budgeted),
         byte_budget().capacity,
         mbit_per_second(BYTES, free),
