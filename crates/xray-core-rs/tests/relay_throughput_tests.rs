@@ -1,7 +1,10 @@
-//! What the byte budget costs a relay in speed: one Vision flow over TLS on
-//! loopback with a phone's default budget against one without a limit, and
-//! 32 flows sharing the default budget. The tests take turns: the budget is
-//! the process's.
+//! What the byte budget costs a relay in speed: 32 Vision flows over TLS on
+//! loopback share a phone's default budget and none starves. The tests take
+//! turns: the budget is the process's.
+//!
+//! One flow with the default budget against one without a limit is a
+//! benchmark, not a test (`--ignored`): one flow never reaches `B`, so both
+//! arms run the same code and the run measures the host.
 //!
 //! Every test prints its numbers (`--nocapture`).
 
@@ -37,6 +40,7 @@ fn mbit_per_second(bytes: usize, seconds: f64) -> f64 {
 }
 
 #[test]
+#[ignore = "a benchmark of the host: both arms run the same code"]
 fn one_flow_moves_as_fast_with_the_default_budget_as_without_a_limit() {
     const BYTES: usize = 64 * MIB;
     let _turn = take_turn();
@@ -53,8 +57,8 @@ fn one_flow_moves_as_fast_with_the_default_budget_as_without_a_limit() {
     };
 
     // One flow never reaches B, so both arms run the same code: what differs
-    // between them is the shared build host's noise (±15 % a run). The best
-    // of five interleaved runs keeps that under the 10 % the test allows.
+    // between them is the host's noise (±15 % a run on a shared one). The
+    // best of five interleaved runs keeps that near the 10 % allowed.
     send_seconds(&far, socks, 16 * MIB);
     let (mut budgeted, mut free) = (f64::MAX, f64::MAX);
     for _ in 0..5 {
