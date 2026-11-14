@@ -14,6 +14,7 @@ members = [
     "crates/xray-cli",
     "crates/xray-bench",
     "fuzz",
+    "olc/interop/oracle-client",
 ]
 resolver = "2"
 # `.claude` holds agent worktrees, each a checkout with its own workspace.
