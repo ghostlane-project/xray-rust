@@ -9,6 +9,8 @@ publish = false
 
 [dependencies]
 olc-muxconn = { path = "../olc-muxconn" }
+olc-net = { path = "../olc-net" }
+olc-salutejazz = { path = "../olc-salutejazz" }
 olc-smux = { path = "../olc-smux" }
 olc-wire = { path = "../olc-wire" }
 rand.workspace = true
@@ -17,6 +19,15 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { version = "0.7.19", default-features = false }
+
+[features]
+# The binary counts its heap (a wrapper over the system allocator) and says
+# "heap now <n> KiB peak <n> KiB" every 10 s and at its end: the plan's
+# section 9 gauges, measured under the gate's load.
+heap-stats = []
+# wss:// and https:// (the SaluteJazz connector and its auth) over the
+# fork's shaped-rustls, Chrome's ClientHello; without it a TLS URL fails.
+shaped-tls = ["olc-net/shaped-tls"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
