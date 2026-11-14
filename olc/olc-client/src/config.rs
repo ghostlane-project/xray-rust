@@ -12,12 +12,49 @@ use serde::Deserialize;
 /// The transport the client runs: the only one the port has so far.
 pub const TRANSPORT_DATACHANNEL: &str = "datachannel";
 
+/// The interop hub's engine (`interop-pipe`, the default).
+pub const ENGINE_INTEROP_PIPE: &str = "interop-pipe";
+/// The SaluteJazz carrier's engine.
+pub const ENGINE_SALUTEJAZZ: &str = "salutejazz";
+
+/// No auth provider: the engine joins `url` with `token` and `room_id` as
+/// given (Go's `none`, the default).
+pub const PROVIDER_NONE: &str = "none";
+/// SaluteJazz's auth provider: `url` is the room reference
+/// `<code>:<password>`, and the connector comes from its preconnect.
+pub const PROVIDER_SALUTEJAZZ: &str = "salutejazz";
+
 /// One run of the client.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// The engine's URL: `tcp://host:port/room` for the interop hub.
+    /// The engine's URL: `tcp://host:port/room` for the interop hub, the
+    /// connector's `ws://` or `wss://` URL for SaluteJazz.
     pub url: String,
+    /// The engine (`engine.name`): [`ENGINE_INTEROP_PIPE`] when empty, or
+    /// [`ENGINE_SALUTEJAZZ`]; a provider's own engine when it names one.
+    #[serde(default)]
+    pub engine: String,
+    /// The auth provider (`auth.provider`): [`PROVIDER_NONE`] when empty, or
+    /// [`PROVIDER_SALUTEJAZZ`].
+    #[serde(default)]
+    pub provider: String,
+    /// The room's secret the engine joins with (`cfg.Token`): the
+    /// SaluteJazz room's password.
+    #[serde(default)]
+    pub token: String,
+    /// The room's code (`Extra["roomID"]`).
+    #[serde(default)]
+    pub room_id: String,
+    /// The name the engine shows in the room; a fresh
+    /// [`crate::names::generate`] when empty, as Go's client and server
+    /// always take one (`tunnelcore/transport.go:55`).
+    #[serde(default)]
+    pub name: String,
+    /// The address the engine's ICE host candidates name (Go's
+    /// `net.ice_local_ip`); the default route's when empty.
+    #[serde(default)]
+    pub ice_local_ip: String,
     /// More rooms to fail over to, in order (the supervisor's profiles).
     #[serde(default)]
     pub rooms: Vec<String>,
@@ -138,6 +175,16 @@ pub enum ConfigError {
     /// A direct rule that does not parse (`route.ErrRule`).
     #[error("{0}")]
     Rule(String),
+    /// An engine the port does not carry.
+    #[error("unsupported engine {0:?}: the Rust client carries interop-pipe and salutejazz")]
+    Engine(String),
+    /// A provider the port does not carry, or one whose engine is not the
+    /// one named.
+    #[error("unsupported auth provider {0:?}: the Rust client carries none and salutejazz")]
+    Provider(String),
+    /// `ice_local_ip` is not an address.
+    #[error("ice_local_ip {0:?} is not an IP address")]
+    IceLocalIp(String),
 }
 
 impl Config {
@@ -147,6 +194,47 @@ impl Config {
     /// [`ConfigError::Parse`].
     pub fn from_json(raw: &[u8]) -> Result<Self, ConfigError> {
         serde_json::from_slice(raw).map_err(|e| ConfigError::Parse(e.to_string()))
+    }
+
+    /// The engine the link runs: the provider's for a provider that has one
+    /// (`Provider.Engine()`), else `engine`, else the interop pipe.
+    ///
+    /// # Errors
+    /// [`ConfigError::Provider`] for an unknown provider, or an `engine`
+    /// that is not the provider's.
+    pub fn engine_name(&self) -> Result<&str, ConfigError> {
+        match self.provider.as_str() {
+            "" | PROVIDER_NONE if self.engine.is_empty() => Ok(ENGINE_INTEROP_PIPE),
+            "" | PROVIDER_NONE => Ok(&self.engine),
+            PROVIDER_SALUTEJAZZ if self.engine.is_empty() || self.engine == ENGINE_SALUTEJAZZ => {
+                Ok(ENGINE_SALUTEJAZZ)
+            }
+            other => Err(ConfigError::Provider(other.to_owned())),
+        }
+    }
+
+    /// The display name the engine joins with.
+    #[must_use]
+    pub fn participant_name(&self) -> String {
+        if self.name.is_empty() {
+            crate::names::generate()
+        } else {
+            self.name.clone()
+        }
+    }
+
+    /// The ICE host address, if one is set.
+    ///
+    /// # Errors
+    /// [`ConfigError::IceLocalIp`].
+    pub fn host_ip(&self) -> Result<Option<std::net::IpAddr>, ConfigError> {
+        if self.ice_local_ip.is_empty() {
+            return Ok(None);
+        }
+        self.ice_local_ip
+            .parse()
+            .map(Some)
+            .map_err(|_| ConfigError::IceLocalIp(self.ice_local_ip.clone()))
     }
 
     /// The liveness fallback's first pause.
@@ -179,6 +267,62 @@ mod tests {
         let min = Config::from_json(br#"{"url":"u","key":"k"}"#).unwrap();
         assert_eq!(min.transport, "datachannel");
         assert_eq!(min.socks, "127.0.0.1:0");
+    }
+
+    #[test]
+    fn a_salutejazz_config_names_its_room() {
+        let cfg = Config::from_json(
+            br#"{"url":"ws://127.0.0.1:9/connector","key":"k","engine":"salutejazz","token":"passw0rd","room_id":"abc123","ice_local_ip":"192.0.2.7"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                cfg.engine.as_str(),
+                cfg.token.as_str(),
+                cfg.room_id.as_str()
+            ),
+            ("salutejazz", "passw0rd", "abc123")
+        );
+        // No name: a generated one, as Go's (never the fallback a room
+        // would see on every tunnel).
+        let name = cfg.participant_name();
+        assert_ne!(name, crate::names::FALLBACK);
+        assert!(name.split(' ').count() >= 2, "{name:?}");
+        let named = Config::from_json(br#"{"url":"u","key":"k","name":"Anna K"}"#).unwrap();
+        assert_eq!(named.participant_name(), "Anna K");
+        assert_eq!(cfg.host_ip().unwrap(), Some("192.0.2.7".parse().unwrap()));
+        let bad = Config::from_json(br#"{"url":"u","key":"k","ice_local_ip":"nope"}"#).unwrap();
+        assert!(matches!(bad.host_ip(), Err(ConfigError::IceLocalIp(_))));
+    }
+
+    #[test]
+    fn a_provider_picks_its_engine() {
+        let cfg = |raw: &[u8]| Config::from_json(raw).unwrap();
+        assert_eq!(
+            cfg(br#"{"url":"u","key":"k"}"#).engine_name().unwrap(),
+            ENGINE_INTEROP_PIPE
+        );
+        assert_eq!(
+            cfg(br#"{"url":"u","key":"k","engine":"salutejazz"}"#)
+                .engine_name()
+                .unwrap(),
+            ENGINE_SALUTEJAZZ
+        );
+        assert_eq!(
+            cfg(br#"{"url":"abc123:passw0rd","key":"k","provider":"salutejazz"}"#)
+                .engine_name()
+                .unwrap(),
+            ENGINE_SALUTEJAZZ
+        );
+        assert!(matches!(
+            cfg(br#"{"url":"u","key":"k","provider":"salutejazz","engine":"interop-pipe"}"#)
+                .engine_name(),
+            Err(ConfigError::Provider(_))
+        ));
+        assert!(matches!(
+            cfg(br#"{"url":"u","key":"k","provider":"telemost"}"#).engine_name(),
+            Err(ConfigError::Provider(_))
+        ));
     }
 
     #[test]

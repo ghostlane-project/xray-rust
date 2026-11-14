@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 olc-muxconn = { path = "../olc-muxconn" }
 olc-net = { path = "../olc-net" }
+olc-salutejazz = { path = "../olc-salutejazz" }
 olc-smux = { path = "../olc-smux" }
 olc-wire = { path = "../olc-wire" }
 rand.workspace = true

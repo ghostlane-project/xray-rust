@@ -40,7 +40,8 @@ use crate::control::{self, End, Hooks};
 use crate::direct::Rules;
 use crate::hello::{self, HelloError, DEFAULT_TIMEOUT};
 use crate::lane::{Lane, DATACHANNEL};
-use crate::pipe::{LinkEvent, PipeLink, EVENT_QUEUE};
+use crate::link::Link;
+use crate::pipe::{LinkEvent, EVENT_QUEUE};
 use crate::udp::Flows;
 
 /// `reconnectProvider`: the engine rejoined.
@@ -91,7 +92,11 @@ pub enum RunError {
     Config(#[from] ConfigError),
     /// The engine did not join (`failed to connect link`).
     #[error("failed to connect link: {0}")]
-    Link(#[from] crate::pipe::LinkError),
+    Link(#[from] crate::link::LinkError),
+    /// The server the welcome named could not be bound, or the room
+    /// held no peer (`confirmPeer`, `waitForPeer`).
+    #[error("{0}")]
+    Peer(std::io::Error),
     /// The first handshake failed, classified.
     #[error("handshake: {0}")]
     Handshake(Classified),
@@ -207,7 +212,7 @@ impl Client {
         // runtime's `protect.NewResolver(dns)`).
         crate::resolver::set_servers(&cfg.dns);
         let (ev_tx, mut ev_rx) = mpsc::channel(EVENT_QUEUE);
-        let link = PipeLink::connect(&cfg.url, ev_tx).await?;
+        let link = Link::connect(&cfg, ev_tx).await?;
         let run = stop.child_token();
         let device_id = if cfg.device_id.is_empty() {
             random_device_id()
@@ -303,7 +308,7 @@ pub(crate) struct Inner {
     pub(crate) cfg: Config,
     pub(crate) keys: Arc<KeySet>,
     pub(crate) device_id: String,
-    pub(crate) link: Arc<PipeLink>,
+    pub(crate) link: Link,
     /// The run: cancelled when it ends.
     pub(crate) run: CancellationToken,
     pub(crate) sess: Mutex<Sess>,
@@ -486,11 +491,22 @@ impl Inner {
                     return Err(RunError::Handshake(classified));
                 }
             };
+        if let Err(e) = self.bind_peer(&opened.welcome.peer_id).await {
+            let _ = session.close();
+            lane.close();
+            return Err(RunError::Peer(e));
+        }
         let sid = opened.welcome.session_id.clone();
         crate::info!("session {sid} opened (device={})", self.device_id);
         self.install(session, sid.clone(), opened.stream);
         self.notify_session_open(&sid);
         Ok(())
+    }
+
+    /// `confirmPeer` then `waitForPeer`, as the bring-up runs them.
+    async fn bind_peer(&self, peer_id: &str) -> std::io::Result<()> {
+        self.link.confirm_peer(peer_id).await?;
+        self.link.wait_for_peer().await
     }
 
     /// `notifySessionOpen`.
@@ -584,6 +600,7 @@ impl Inner {
                 }
             }
             crate::info!("client reconnect reason={reason} - tearing down smux session");
+            self.link.reset_peer();
             s.session_id.clear();
             s.control_done = None;
             (s.lane.take(), s.session.take(), s.control_stop.take())
@@ -812,6 +829,16 @@ impl Inner {
                     };
                 }
             };
+        if let Err(e) = self.link.confirm_peer(&opened.welcome.peer_id).await {
+            crate::info!("peer confirmation on reconnect failed (attempt {attempt}): {e}");
+            let _ = session.close();
+            return Round::Silent;
+        }
+        if let Err(e) = self.link.wait_for_peer().await {
+            crate::info!("wait for peer on reconnect failed (attempt {attempt}): {e}");
+            let _ = session.close();
+            return Round::Silent;
+        }
         if run.is_cancelled() {
             let _ = session.close();
             return Round::Stopped;

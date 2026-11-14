@@ -1685,6 +1685,7 @@ version = "0.10.0"
 dependencies = [
  "olc-muxconn",
  "olc-net",
+ "olc-salutejazz",
  "olc-smux",
  "olc-wire",
  "rand 0.8.6",

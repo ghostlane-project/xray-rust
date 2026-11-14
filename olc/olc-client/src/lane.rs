@@ -34,7 +34,7 @@ use olc_wire::record::{KeySet, Lane as RecordLane};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::Notify;
 
-use crate::pipe::PipeLink;
+use crate::link::Link;
 
 /// The datachannel transport's features (`datachannel/transport.go`):
 /// messages of at most 12 KiB, small frames batched 5 ms apart.
@@ -56,7 +56,7 @@ pub enum LaneError {
 #[derive(Debug)]
 pub struct Lane {
     keys: Arc<KeySet>,
-    link: Arc<PipeLink>,
+    link: Link,
     stats: Arc<Stats>,
     st: Mutex<State>,
     /// The receiver has room again (for [`Lane::push`]).
@@ -85,7 +85,7 @@ impl Lane {
     /// # Errors
     /// [`LaneError::NoBatching`].
     pub fn new(
-        link: Arc<PipeLink>,
+        link: Link,
         keys: Arc<KeySet>,
         features: &Features,
     ) -> Result<(Arc<Lane>, LaneIo), LaneError> {

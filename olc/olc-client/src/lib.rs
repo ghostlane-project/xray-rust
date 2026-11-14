@@ -36,6 +36,8 @@ pub mod dns;
 pub mod frames;
 pub mod hello;
 pub mod lane;
+pub mod link;
+pub mod names;
 pub mod pipe;
 pub mod sizes;
 pub mod socks;
