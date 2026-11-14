@@ -24,12 +24,38 @@ impl<T: AsyncRead + AsyncWrite + Send + Unpin> Stream for T {}
 /// A boxed [`Stream`].
 pub type BoxStream = Box<dyn Stream>;
 
+/// What a dial's TLS offers in ALPN: what Chrome offers on that kind of
+/// connection (port plan section 8: the observer sees Chrome's hello).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Offer {
+    /// A WebSocket's own connection: `http/1.1` alone.
+    WebSocket,
+    /// A `fetch` (the auth's REST calls): `h2` and `http/1.1`.
+    Fetch,
+}
+
+/// A dialed stream, and whether its TLS picked `h2`.
+pub struct Dialed {
+    /// The stream: TCP, or TLS over it.
+    pub stream: BoxStream,
+    /// The server picked `h2` in ALPN (only ever for [`Offer::Fetch`]).
+    pub h2: bool,
+}
+
+impl std::fmt::Debug for Dialed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Dialed")
+            .field("h2", &self.h2)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The future a TLS connector returns.
-pub type TlsFuture = Pin<Box<dyn Future<Output = io::Result<BoxStream>> + Send>>;
+pub type TlsFuture = Pin<Box<dyn Future<Output = io::Result<Dialed>> + Send>>;
 
 /// Wraps a connected TCP stream in TLS for a server name (SNI and the
-/// certificate check), ALPN `http/1.1`.
-pub type TlsConnector = Arc<dyn Fn(TcpStream, String) -> TlsFuture + Send + Sync>;
+/// certificate check), offering the ALPN of an [`Offer`].
+pub type TlsConnector = Arc<dyn Fn(TcpStream, String, Offer) -> TlsFuture + Send + Sync>;
 
 static TLS: RwLock<Option<TlsConnector>> = RwLock::new(None);
 
@@ -110,11 +136,21 @@ pub fn parse_url(url: &str) -> io::Result<Target> {
     })
 }
 
-/// Dials `t`: a protected TCP connection, in TLS when the URL asks.
+/// Dials `t` for a WebSocket: a protected TCP connection, in TLS offering
+/// `http/1.1` alone when the URL asks.
 ///
 /// # Errors
 /// The dial's, the TLS's, or `Unsupported` for TLS with no connector.
 pub async fn dial(t: &Target) -> io::Result<BoxStream> {
+    dial_for(t, Offer::WebSocket).await.map(|d| d.stream)
+}
+
+/// Dials `t`: a protected TCP connection, in TLS offering `offer`'s ALPN
+/// when the URL asks.
+///
+/// # Errors
+/// The dial's, the TLS's, or `Unsupported` for TLS with no connector.
+pub async fn dial_for(t: &Target, offer: Offer) -> io::Result<Dialed> {
     let host_port = if t.host.contains(':') {
         format!("[{}]:{}", t.host, t.port)
     } else {
@@ -123,11 +159,14 @@ pub async fn dial(t: &Target) -> io::Result<BoxStream> {
     let tcp = crate::net::dial_tcp_host(&host_port).await?;
     let _ = tcp.set_nodelay(true);
     if !t.tls {
-        return Ok(Box::new(tcp));
+        return Ok(Dialed {
+            stream: Box::new(tcp),
+            h2: false,
+        });
     }
     let tls = TLS.read().unwrap_or_else(PoisonError::into_inner).clone();
     match tls {
-        Some(connect) => connect(tcp, t.host.clone()).await,
+        Some(connect) => connect(tcp, t.host.clone(), offer).await,
         None => Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "no TLS connector installed for a TLS URL",
