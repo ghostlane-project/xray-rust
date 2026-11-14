@@ -83,6 +83,7 @@ This establishes the listed tests on the combined tree, not NAT or device proof.
 | #79: HTTP outbound | HTTP/1.1 and HTTP/2 CONNECT, optional Basic auth and custom headers, flat or legacy settings, every transport with none/TLS/REALITY since 0.10.0, TCP only | Tested subset of the pinned Xray client; status 200 only, one try, bounded head, early bytes kept, HTTP/2 tunnels end with `END_STREAM` |
 | #86: mobile SOCKS bootstrap | Android and Apple prepare SOCKS carrier hosts/literals before VPN setup; Apple excludes carrier routes | Integration gap fixed; destination DNS remains at the proxy |
 | SOCKS inbound `udp` | `"udp": false` refuses `UDP ASSOCIATE` without a relay; an absent `udp` keeps it enabled | Explicit `false` matches the reference; the absent default differs and is an open question below |
+| SOCKS inbound `FWD_UDP` | hev-socks5's UDP in the control connection, served while `udp` is on | An extension: the reference answers the command `REP = 0x07`; see below |
 | Policy half-close timeouts | SOCKS and HTTP relays switch from `connIdle` to `downlinkOnly` after the client finished sending and to `uplinkOnly` after the server did; both default to 1 s | Source-derived from the outbound timers (`proxy/freedom/freedom.go`, `proxy/vless/outbound/outbound.go`) and `SessionDefault` in `features/policy/policy.go`; covered by paused-clock unit tests, not by interop. Stricter: the inbound level also bounds each phase, while the reference SOCKS/HTTP inbounds run no timer of their own |
 
 ## Password-protected SOCKS UDP: deliberate restriction
@@ -153,6 +154,37 @@ read, before the address. One difference remains: an absent `udp` keeps
 `UDP ASSOCIATE` enabled; Xray-core refuses it. Adopting the reference default
 would turn UDP off for existing profiles that omit the field, so it is left
 for a maintainer decision rather than changed silently.
+
+## SOCKS inbound `FWD_UDP` (hev-socks5)
+
+hev-socks5-tunnel, a tun-to-SOCKS client, has two UDP modes. With
+`udp: 'udp'` it sends `UDP ASSOCIATE` for `0.0.0.0:0` and opens its UDP
+socket only after the reply, which a password inbound here refuses (above).
+With `udp: 'tcp'` it sends its own command `FWD_UDP` (`0x05`, not in RFC 1928
+or Xray-core) and carries the datagrams on the authenticated control
+connection. Xray-core treats `0x05` as an unknown command and answers
+`REP = 0x07`; xray-rust serves it while `udp` is on, so the password-UDP
+restriction holds without a relay socket another process could reach.
+
+Source-derived from hev-socks5-core at `162dd996` (the submodule of
+hev-socks5-tunnel `941c7581`): `hev-socks5-client.c` sends the command with an
+all-zero IPv4 or IPv6 address and reads a reply of either family;
+`hev-socks5-udp.c` writes and reads `HevSocks5UDPHdr`, the frame described in
+[configuration compatibility](config-compatibility.md#inbounds), reading each
+frame into a 1,500-byte buffer (`UDP_BUF_SIZE`) and failing on a larger one;
+hev-socks5-tunnel's `hev-socks5-session-udp.c` then stops reading the
+association, and its `hev_socks5_addr_into_lwip` refuses a reply that names a
+domain. Its lwIP refuses to send from an address of the other family than the
+app's socket (`udp.c`, `ERR_VAL`), after which `hev-socks5-session-udp.c`
+writes no more replies to that socket. The server here therefore drops a reply
+larger than that buffer, truncates DNS-outbound answers to fit it, and names
+the client's destination on a reply that would name a domain or an address of
+the other family. The frame codec tests in
+[inbound_parser_tests.rs](../crates/xray-proxy/tests/inbound_parser_tests.rs)
+and the runtime tests in
+[socks_inbound_udp_in_tcp.rs](../crates/xray-core-rs/tests/runtime_data_path_tests/socks_inbound_udp_in_tcp.rs)
+cover the framing, routing, the DNS outbound with fake IP, the size limit and
+the refusals; no test runs hev-socks5-tunnel itself yet.
 
 ## SOCKS inbound handshake deadline
 

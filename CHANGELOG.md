@@ -50,6 +50,22 @@ long-term supported release series.
   in Xray-core, rather than at debug.
 - The TUN TCP timing lines and the periodic runtime stats lines, both debug
   lines, are collected only when the log writes debug lines.
+- The SOCKS inbound serves hev-socks5's `FWD_UDP` (command `0x05`), the UDP
+  that hev-socks5-tunnel carries in the control connection with
+  `udp: 'tcp'`, whenever the inbound has UDP on. Its datagrams are framed on
+  the authenticated connection, so a password inbound serves them although
+  the request declares `0.0.0.0:0`, which `UDP ASSOCIATE` there refuses on
+  purpose; no relay socket is opened. Each datagram is routed as a
+  `UDP ASSOCIATE` datagram is, and the association ends with the connection.
+  A reply larger than the 1,500 bytes of address and data hev reads is
+  dropped, DNS-outbound answers are truncated to fit, and a reply that would
+  name a domain, or an address of the other family than the one the client
+  sent to, names the address the client sent to. Xray-core answers the
+  command `REP = 0x07`. In `xray-proxy`, the exhaustive enums
+  `SocksCommand` and `SocksParseError` gain the variants `UdpInTcp` and
+  `InvalidUdpFrame`, so a downstream exhaustive `match` on either must handle
+  them; the frame codec is `encode_socks5_udp_in_tcp_frame`,
+  `decode_socks5_udp_in_tcp_frame` and `socks5_udp_in_tcp_max_reply`.
 
 ## 0.10.0 - 2026-11-13
 

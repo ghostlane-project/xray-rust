@@ -1,7 +1,7 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes, BytesMut};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use xray_routing::{Network, Target, TargetAddr};
@@ -21,6 +21,8 @@ const REPLY_GENERAL_FAILURE: u8 = 0x01;
 const REPLY_COMMAND_NOT_SUPPORTED: u8 = 0x07;
 const SOCKS5_CONNECT: u8 = 0x01;
 const SOCKS5_UDP_ASSOCIATE: u8 = 0x03;
+/// hev-socks5's `FWD_UDP`: UDP carried in the control connection.
+const SOCKS5_FWD_UDP: u8 = 0x05;
 /// Tor's `RESOLVE` and `RESOLVE_PTR`, which Xray-core takes for `CONNECT`.
 const SOCKS5_TOR_RESOLVE: u8 = 0xf0;
 const SOCKS5_TOR_RESOLVE_PTR: u8 = 0xf1;
@@ -41,6 +43,10 @@ pub enum SocksParseError {
     TruncatedUdpDatagram,
     #[error("socks udp payload is too large")]
     PayloadTooLarge,
+    /// A `FWD_UDP` frame whose header does not end where its address does,
+    /// or a frame asked for a target that is not UDP.
+    #[error("invalid socks udp-in-tcp frame")]
+    InvalidUdpFrame,
     #[error("no acceptable socks authentication methods")]
     NoAcceptableMethods,
     #[error("socks username/password authentication failed")]
@@ -53,6 +59,10 @@ pub enum SocksParseError {
 pub enum SocksCommand {
     Connect,
     UdpAssociate,
+    /// hev-socks5's `FWD_UDP` (`0x05`), which neither RFC 1928 nor Xray-core
+    /// has: the association's datagrams travel on the control connection
+    /// itself, framed as [`encode_socks5_udp_in_tcp_frame`] frames them.
+    UdpInTcp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -286,7 +296,8 @@ pub async fn parse_socks5_request_message<R: AsyncRead + Unpin>(
 
 /// Reads the `VER | CMD | RSV` that opens a SOCKS5 request, as Xray-core
 /// v26.10.31 reads it: only the command is checked, and Tor's `RESOLVE` and
-/// `RESOLVE_PTR` are taken for `CONNECT`. Any other command is
+/// `RESOLVE_PTR` are taken for `CONNECT`. hev-socks5's `FWD_UDP` is
+/// [`SocksCommand::UdpInTcp`]. Any other command is
 /// [`SocksParseError::UnsupportedCommand`], which Xray-core refuses before
 /// reading the address.
 pub async fn read_socks5_command<R: AsyncRead + Unpin>(
@@ -300,6 +311,7 @@ pub async fn read_socks5_command<R: AsyncRead + Unpin>(
     match head[1] {
         SOCKS5_CONNECT | SOCKS5_TOR_RESOLVE | SOCKS5_TOR_RESOLVE_PTR => Ok(SocksCommand::Connect),
         SOCKS5_UDP_ASSOCIATE => Ok(SocksCommand::UdpAssociate),
+        SOCKS5_FWD_UDP => Ok(SocksCommand::UdpInTcp),
         other => Err(SocksParseError::UnsupportedCommand(other)),
     }
 }
@@ -313,19 +325,24 @@ pub async fn read_socks5_target<R: AsyncRead + Unpin>(
     let (addr, port) = read_socks5_address(&mut reader, address_type).await?;
     let network = match command {
         SocksCommand::Connect => Network::Tcp,
-        SocksCommand::UdpAssociate => Network::Udp,
+        SocksCommand::UdpAssociate | SocksCommand::UdpInTcp => Network::Udp,
     };
     Ok(Target::new(addr, port, network))
 }
 
+/// Reads a SOCKS5 `CONNECT` request's target. Any other command is
+/// [`SocksParseError::UnsupportedCommand`] with the command that was read.
 pub async fn parse_socks5_request<R: AsyncRead + Unpin>(
     reader: R,
 ) -> Result<Target, SocksParseError> {
     let request = parse_socks5_request_message(reader).await?;
-    if request.command != SocksCommand::Connect {
-        return Err(SocksParseError::UnsupportedCommand(3));
+    match request.command {
+        SocksCommand::Connect => Ok(request.target),
+        SocksCommand::UdpAssociate => {
+            Err(SocksParseError::UnsupportedCommand(SOCKS5_UDP_ASSOCIATE))
+        }
+        SocksCommand::UdpInTcp => Err(SocksParseError::UnsupportedCommand(SOCKS5_FWD_UDP)),
     }
-    Ok(request.target)
 }
 
 pub async fn parse_socks5_connect<S>(mut stream: S) -> Result<Target, SocksParseError>
@@ -424,6 +441,89 @@ pub fn parse_socks5_udp_datagram(raw: &[u8]) -> Result<SocksUdpDatagram, SocksPa
         target: Target::new(addr, port, Network::Udp),
         payload: Bytes::copy_from_slice(&raw[offset + 2..]),
     })
+}
+
+/// hev-socks5's `UDP_BUF_SIZE`. Its client reads the address of a `FWD_UDP`
+/// frame, with its type and port, and the frame's data into a buffer of this
+/// size. It refuses a larger frame, and hev-socks5-tunnel then stops reading
+/// the association, so a server must not send one.
+pub const SOCKS5_UDP_IN_TCP_CLIENT_BUFFER: usize = 1500;
+
+/// The `DATLEN | HDRLEN` that opens a `FWD_UDP` frame.
+const UDP_IN_TCP_LENGTHS: usize = 3;
+
+/// Frames a datagram as hev-socks5's `FWD_UDP` carries it on the control
+/// connection, in both directions:
+/// `DATLEN (2, big-endian) | HDRLEN (1) | ATYP | ADDR | PORT | DATA`.
+/// `HDRLEN` counts the three length bytes and the address with its type and
+/// port, so a domain longer than 248 bytes cannot be framed, nor data longer
+/// than 65,535 bytes. The address is where the datagram goes from the client
+/// and where it comes from to the client.
+pub fn encode_socks5_udp_in_tcp_frame(
+    target: &Target,
+    payload: &[u8],
+) -> Result<Vec<u8>, SocksParseError> {
+    if target.network != Network::Udp {
+        return Err(SocksParseError::InvalidUdpFrame);
+    }
+    let data_len = u16::try_from(payload.len()).map_err(|_| SocksParseError::PayloadTooLarge)?;
+    let mut frame = Vec::with_capacity(UDP_IN_TCP_LENGTHS + 19 + payload.len());
+    frame.extend_from_slice(&data_len.to_be_bytes());
+    frame.push(0);
+    encode_target_addr(&mut frame, &target.addr)?;
+    frame.extend_from_slice(&target.port.to_be_bytes());
+    frame[2] = u8::try_from(frame.len()).map_err(|_| SocksParseError::InvalidDomain)?;
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+/// Takes the first `FWD_UDP` frame off `buffer`, which holds what the control
+/// connection has delivered so far, however its reads split or joined the
+/// frames. `Ok(None)` means the frame has not arrived whole: its bytes stay,
+/// and the buffer reserves room for the rest. A whole frame leaves the buffer,
+/// and the next one may follow at once. An address that cannot be read, or a
+/// header that does not end where its address does, is an error after which
+/// nothing more on the connection can be read as frames; it is found once
+/// the header is in, without waiting for the data the header announces.
+pub fn decode_socks5_udp_in_tcp_frame(
+    buffer: &mut BytesMut,
+) -> Result<Option<SocksUdpDatagram>, SocksParseError> {
+    let Some(&[high, low, header_len]) = buffer.get(..UDP_IN_TCP_LENGTHS) else {
+        return Ok(None);
+    };
+    let header_len = usize::from(header_len);
+    let frame_len = header_len + usize::from(u16::from_be_bytes([high, low]));
+    let Some(header) = buffer.get(..header_len) else {
+        buffer.reserve(frame_len - buffer.len());
+        return Ok(None);
+    };
+    let (addr, offset) = parse_target_addr(header, UDP_IN_TCP_LENGTHS)?;
+    if offset + 2 != header_len {
+        return Err(SocksParseError::InvalidUdpFrame);
+    }
+    if buffer.len() < frame_len {
+        buffer.reserve(frame_len - buffer.len());
+        return Ok(None);
+    }
+    let port = u16::from_be_bytes([buffer[offset], buffer[offset + 1]]);
+    let payload = Bytes::copy_from_slice(&buffer[header_len..frame_len]);
+    buffer.advance(frame_len);
+    Ok(Some(SocksUdpDatagram {
+        target: Target::new(addr, port, Network::Udp),
+        payload,
+    }))
+}
+
+/// The most data a hev-socks5 client reads in one `FWD_UDP` frame that names
+/// `source`: [`SOCKS5_UDP_IN_TCP_CLIENT_BUFFER`] less the address with its
+/// type and port, so 1,493 bytes from an IPv4 address and 1,481 from IPv6.
+pub fn socks5_udp_in_tcp_max_reply(source: &Target) -> usize {
+    let address_len = match &source.addr {
+        TargetAddr::Ip(IpAddr::V4(_)) => 1 + 4 + 2,
+        TargetAddr::Ip(IpAddr::V6(_)) => 1 + 16 + 2,
+        TargetAddr::Domain(domain) => 1 + 1 + domain.len() + 2,
+    };
+    SOCKS5_UDP_IN_TCP_CLIENT_BUFFER.saturating_sub(address_len)
 }
 
 /// Why a SOCKS5 `ADDR | PORT` field could not be read.

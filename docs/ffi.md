@@ -553,7 +553,7 @@ idempotent only while that entry remains registered; callers should refresh the
 snapshot rather than retrying a disappeared ID. The current registry covers
 routed SOCKS TCP/UDP, HTTP TCP, and TUN TCP/UDP sessions. Each SOCKS UDP
 `(client, target)` flow owns a separate ID; closing the TCP `UDP ASSOCIATE`
-control connection still removes all of its child flows.
+or `FWD_UDP` control connection still removes all of its child flows.
 
 ## Threading
 

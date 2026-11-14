@@ -104,6 +104,8 @@ mod routing_protocol;
 mod socket_options;
 #[path = "runtime_data_path_tests/socks_inbound_udp.rs"]
 mod socks_inbound_udp;
+#[path = "runtime_data_path_tests/socks_inbound_udp_in_tcp.rs"]
+mod socks_inbound_udp_in_tcp;
 #[path = "runtime_data_path_tests/socks_inbound_wire.rs"]
 mod socks_inbound_wire;
 #[path = "runtime_data_path_tests/socks_outbound.rs"]

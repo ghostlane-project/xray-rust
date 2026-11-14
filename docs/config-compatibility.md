@@ -760,7 +760,7 @@ previous one.
 
 | Protocol | Supported behavior | Unsupported or constrained behavior |
 | --- | --- | --- |
-| `socks` (alias `mixed`) | SOCKS5 `CONNECT` (and Tor's `RESOLVE`, as `CONNECT`), `UDP ASSOCIATE` unless `"udp": false`, SOCKS 4/4a `CONNECT`, HTTP `CONNECT` and plain HTTP forwarding on the same port, `userLevel`, sniffing; `auth` `noauth` or `password` with RFC 1929 `accounts` (or `users`) | GSSAPI; SOCKS5 and SOCKS 4 `BIND`; `accounts` with `noauth`; an `auth` other than `noauth` or `password`; an absent `udp` keeps `UDP ASSOCIATE` enabled, unlike Xray-core |
+| `socks` (alias `mixed`) | SOCKS5 `CONNECT` (and Tor's `RESOLVE`, as `CONNECT`), `UDP ASSOCIATE` and hev-socks5's `FWD_UDP` unless `"udp": false`, SOCKS 4/4a `CONNECT`, HTTP `CONNECT` and plain HTTP forwarding on the same port, `userLevel`, sniffing; `auth` `noauth` or `password` with RFC 1929 `accounts` (or `users`) | GSSAPI; SOCKS5 and SOCKS 4 `BIND`; `accounts` with `noauth`; an `auth` other than `noauth` or `password`; an absent `udp` keeps `UDP ASSOCIATE` and `FWD_UDP` enabled, unlike Xray-core, which has no `FWD_UDP` |
 | `http` | HTTP `CONNECT` and plain HTTP forwarding, `accounts` (Basic), timeout-shaped policy, `userLevel`, sniffing | Transparent proxy mode |
 | `tun` | Platform packet boundary or registered fd; port may be omitted | Platform interface creation and routes are host responsibilities |
 
@@ -790,6 +790,33 @@ The pinned Xray-core v26.7.28 SOCKS client itself sends `0.0.0.0:0` for UDP
 association, so it cannot use this password-protected UDP path. See the
 [compatibility consequence and evidence](xray-core-differences.md#password-protected-socks-udp-deliberate-restriction).
 
+hev-socks5's `FWD_UDP` (command `0x05`, which hev-socks5-tunnel sends with
+`udp: 'tcp'`) carries UDP in the authenticated control connection instead, so
+a password inbound serves it whatever address the request declares (hev sends
+`0.0.0.0:0`). The reply is `05 00 00 01` with a zero address and port; then
+each datagram travels in both directions as
+`DATLEN (2, big-endian) | HDRLEN (1) | ATYP | ADDR | PORT | DATA`, `HDRLEN`
+counting the three length bytes and the address with its type and port. No
+relay socket is opened. Each datagram is routed as a `UDP ASSOCIATE` datagram
+is, under the inbound's tag and the login's user, with sniffing, the DNS
+outbound and fake IP, one flow per destination with the same budgets and
+60-second flow idle; the association and its flows end when the client closes
+the connection, a write to it fails, or it sends a frame whose header does
+not match its address. A reply names its source only when that is an address
+of the family of the address the client sent to, an IPv4-mapped one as IPv4.
+A reply that names a domain, as one to a sniffed destination can, or an
+address of the other family, as a sniffed name dialed over IPv6 can, names the
+address the client sent to instead, since hev can answer from neither. A
+reply from another address of the same family (a sniffed name dialed to
+another of its addresses) keeps that address, which an app's connected socket
+drops. hev reads
+at most 1,500 bytes of address and data per frame (1,493 bytes of data from an
+IPv4 address) and stops reading the association at a larger one, so a larger
+reply is dropped and a DNS-outbound answer is truncated to fit. `"udp": false`
+refuses `FWD_UDP` as it refuses `UDP ASSOCIATE`. Xray-core answers the command
+with `REP = 0x07`; see
+[the difference](xray-core-differences.md#socks-inbound-fwd_udp-hev-socks5).
+
 `"udp": false` refuses `UDP ASSOCIATE` as Xray-core does: the reply is
 `REP = 0x07` (command not supported) with a `0.0.0.0:0` bind address, no relay
 socket is created, nothing is dialed, and the control connection is closed.
@@ -817,8 +844,8 @@ handshake timeout from the accepted connection to the end of the request
 
 - Only the command byte is checked, not the version or reserved byte. Tor's
   `RESOLVE` (`0xF0`) and `RESOLVE_PTR` (`0xF1`) connect, as `CONNECT` does.
-  `BIND`, an unknown command, and `UDP ASSOCIATE` while `udp` is false get
-  `REP = 0x07` before the address is read.
+  `BIND`, an unknown command, and `UDP ASSOCIATE` or `FWD_UDP` while `udp`
+  is false get `REP = 0x07` before the address is read.
 - A domain that starts with a digit or `[` and is an IP literal to Go's
   `net.ParseAddress` is that IP, so `ip` rules match it: `127.0.0.1`,
   `[::1]` and `127.0.0.1 ` are addresses. The brackets go, and white space

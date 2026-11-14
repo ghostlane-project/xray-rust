@@ -8,8 +8,9 @@ use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::sync::{mpsc, watch, OwnedSemaphorePermit, Semaphore};
 use tokio::task::{AbortHandle, Id as TaskId, JoinSet};
@@ -17,8 +18,9 @@ use xray_config::{
     CoreConfig, DomainStrategy, InboundSniffingConfig, RouteContext, SocksInboundSettings,
 };
 use xray_proxy::inbound::{
-    encode_socks5_udp_datagram, negotiate_socks5, parse_socks4_connect, parse_socks5_udp_datagram,
-    read_socks5_command, read_socks5_target, write_socks5_command_not_supported,
+    decode_socks5_udp_in_tcp_frame, encode_socks5_udp_datagram, encode_socks5_udp_in_tcp_frame,
+    negotiate_socks5, parse_socks4_connect, parse_socks5_udp_datagram, read_socks5_command,
+    read_socks5_target, socks5_udp_in_tcp_max_reply, write_socks5_command_not_supported,
     write_socks5_failure, write_socks5_success, write_socks5_success_with_bind,
     HttpInboundAccounts, InboundUser, SocksCommand, SocksInboundAuth, SocksParseError,
     SOCKS4_GRANTED, SOCKS4_REJECTED, SOCKS4_VERSION,
@@ -65,6 +67,14 @@ const SOCKS_VLESS_UDP_FLUSH_BATCH: usize = 16;
 const SOCKS_VLESS_UDP_FLUSH_INTERVAL: Duration = Duration::from_millis(2);
 const SOCKS_TCP_SNIFF_BUFFER_SIZE: usize = 8 * 1024;
 const SOCKS_TCP_SNIFF_TIMEOUT: Duration = Duration::from_millis(250);
+/// Free room a `FWD_UDP` association keeps in its read buffer: a frame of a
+/// datagram that fits a 1,500-byte path, with its header. A larger frame
+/// reserves the rest of itself once its header is in.
+const SOCKS_UDP_IN_TCP_READ_RESERVE: usize = 2048;
+/// Frames waiting for a `FWD_UDP` control connection's writer.
+const SOCKS_UDP_IN_TCP_REPLY_QUEUE: usize = 32;
+/// Frames that wait together are written together, up to this many bytes.
+const SOCKS_UDP_IN_TCP_WRITE_BATCH: usize = 16 * 1024;
 static SOCKS_UDP_GLOBAL_FLOWS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static SOCKS_UDP_GLOBAL_PENDING_OPENS: OnceLock<Arc<Semaphore>> = OnceLock::new();
 static SOCKS_UDP_BUDGET_EXHAUSTION_LOG: OnceLock<Arc<SocksUdpBudgetExhaustionLog>> =
@@ -147,6 +157,12 @@ enum UdpReply {
         session: crate::reverse::Session,
         source: Option<SocketAddr>,
     },
+    /// hev-socks5's `FWD_UDP`: whole frames for the control connection's
+    /// writer, and the destination the flow's client addressed.
+    Stream {
+        frames: mpsc::Sender<Vec<u8>>,
+        client_target: Target,
+    },
 }
 impl SocksUdpFlowContext {
     async fn deliver(&self, source: &Target, payload: &[u8]) -> std::io::Result<()> {
@@ -161,6 +177,33 @@ impl SocksUdpFlowContext {
                 socket.send_to(payload, self.client_addr).await.map(|_| ())
             }
             UdpReply::Reverse { session, .. } => session.send_datagram(source, payload).await,
+            UdpReply::Stream {
+                frames,
+                client_target,
+            } => match socks_udp_in_tcp_reply(client_target, source, payload) {
+                Ok(frame) => frames
+                    .send(frame)
+                    .await
+                    .map_err(|_| std::io::ErrorKind::BrokenPipe.into()),
+                Err(max_payload) => {
+                    crate::outbound::datagram::log_oversize_udp_datagram(
+                        &self.runtime_logger,
+                        "socks",
+                        payload.len(),
+                        max_payload,
+                    );
+                    Ok(())
+                }
+            },
+        }
+    }
+
+    /// The most a DNS answer to `client_target` may take on the way back,
+    /// which the answer is truncated to fit.
+    fn dns_path_payload_cap(&self, client_target: &Target) -> usize {
+        match &self.reply {
+            UdpReply::Stream { .. } => socks5_udp_in_tcp_max_reply(client_target),
+            _ => SOCKS_DNS_UDP_PATH_PAYLOAD_CAP,
         }
     }
 
@@ -468,7 +511,7 @@ async fn handle_socks_connection(
     // is false, before reading the address. A request it cannot read is
     // closed without a reply.
     let command = match tokio::time::timeout_at(deadline, read_socks5_command(&mut inbound)).await {
-        Ok(Ok(SocksCommand::UdpAssociate)) if !settings.udp => None,
+        Ok(Ok(SocksCommand::UdpAssociate | SocksCommand::UdpInTcp)) if !settings.udp => None,
         Ok(Ok(command)) => Some(command),
         Ok(Err(SocksParseError::UnsupportedCommand(_))) => None,
         _ => return,
@@ -520,6 +563,24 @@ async fn handle_socks_connection(
                 inbound,
                 settings.udp_address,
                 client_lock,
+                user,
+                inbound_tag,
+                config,
+                outbound_router,
+                dns_resolvers,
+                transport_dialer,
+                sniffing,
+                runtime_logger,
+                connection_registry,
+                shutdown,
+                udp_budgets,
+            )
+            .await;
+        }
+        // The declared address names no socket, since none is opened.
+        SocksCommand::UdpInTcp => {
+            handle_socks_udp_in_tcp(
+                inbound,
                 user,
                 inbound_tag,
                 config,
@@ -1163,75 +1224,28 @@ async fn handle_socks_udp_associate(
                 if datagram.payload.is_empty() {
                     continue;
                 }
-                let flow_key = (client_addr, datagram.target.clone());
-                activity_sequence = activity_sequence.wrapping_add(1);
-
-                let payload = match flows.get_mut(&flow_key) {
-                    Some(entry) => {
-                        entry.last_activity = activity_sequence;
-                        match entry.sender.try_send(datagram.payload) {
-                            Ok(()) => continue,
-                            Err(mpsc::error::TrySendError::Full(_)) => continue,
-                            Err(mpsc::error::TrySendError::Closed(payload)) => {
-                                if let Some(entry) = flows.remove(&flow_key) {
-                                    entry.abort_handle.abort();
-                                }
-                                payload
-                            }
-                        }
-                    }
-                    None => datagram.payload,
-                };
-
-                let Some(SocksUdpFlowPermits {
-                    global: global_permit,
-                    pending_open: pending_open_permit,
-                }) = admit_socks_udp_flow(&mut flows, &budgets, &runtime_logger)
-                else {
-                    continue;
-                };
-
-                let (sender, receiver) = mpsc::channel(SOCKS_UDP_FLOW_QUEUE);
-                if sender.try_send(payload).is_err() {
-                    continue;
-                }
-                let context = SocksUdpFlowContext {
-                    reply: UdpReply::Socks(Arc::clone(&socket)),
-                    client_addr,
-                    local_addr: Some(bind),
-                    user: user.clone(),
-                    inbound_tag: inbound_tag.clone(),
-                    config: Arc::clone(&config),
-                    outbound_router: Arc::clone(&outbound_router),
-                    dns_resolvers: dns_resolvers.clone(),
-                    transport_dialer: Arc::clone(&transport_dialer),
-                    sniffing: sniffing.clone(),
-                    runtime_logger: runtime_logger.clone(),
-                    connection_registry: Arc::clone(&connection_registry),
-                };
-                let target = datagram.target;
-                let completion_key = flow_key.clone();
-                let flow_shutdown = shutdown.clone();
-                let abort_handle = flow_tasks.spawn(async move {
-                    bridge_socks_udp_flow(
-                        target,
-                        context,
-                        receiver,
-                        flow_shutdown,
-                        pending_open_permit,
-                    )
-                    .await;
-                    completion_key
-                });
-                let task_id = abort_handle.id();
-                flows.insert(
-                    flow_key,
-                    SocksUdpFlowEntry {
-                        sender,
-                        abort_handle,
-                        task_id,
-                        last_activity: activity_sequence,
-                        global_permit,
+                dispatch_socks_udp_datagram(
+                    &mut flows,
+                    &mut flow_tasks,
+                    &mut activity_sequence,
+                    &budgets,
+                    &runtime_logger,
+                    &shutdown,
+                    (client_addr, datagram.target),
+                    datagram.payload,
+                    || SocksUdpFlowContext {
+                        reply: UdpReply::Socks(Arc::clone(&socket)),
+                        client_addr,
+                        local_addr: Some(bind),
+                        user: user.clone(),
+                        inbound_tag: inbound_tag.clone(),
+                        config: Arc::clone(&config),
+                        outbound_router: Arc::clone(&outbound_router),
+                        dns_resolvers: dns_resolvers.clone(),
+                        transport_dialer: Arc::clone(&transport_dialer),
+                        sniffing: sniffing.clone(),
+                        runtime_logger: runtime_logger.clone(),
+                        connection_registry: Arc::clone(&connection_registry),
                     },
                 );
             }
@@ -1243,6 +1257,260 @@ async fn handle_socks_udp_associate(
     }
     flow_tasks.abort_all();
     while flow_tasks.join_next().await.is_some() {}
+}
+
+/// hev-socks5's `FWD_UDP`: an association whose datagrams arrive and leave
+/// framed on the control connection itself. No relay socket is opened, so no
+/// other local process can send into the association, and a login the
+/// inbound demands covers every datagram; the declared address is ignored.
+/// Each datagram is routed as a `UDP ASSOCIATE` datagram is, one flow per
+/// destination, and the association, with all its flows, ends when the
+/// client closes the connection, a write to it fails, or the client sends
+/// what cannot be read as a frame.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "connection tasks receive shared runtime dependencies explicitly"
+)]
+async fn handle_socks_udp_in_tcp(
+    mut control: TcpStream,
+    user: Option<InboundUser>,
+    inbound_tag: Option<String>,
+    config: Arc<CoreConfig>,
+    outbound_router: Arc<OutboundRouter>,
+    dns_resolvers: RuntimeDnsResolvers,
+    transport_dialer: Arc<TransportDialer>,
+    sniffing: Option<InboundSniffingConfig>,
+    runtime_logger: RuntimeLogger,
+    connection_registry: Arc<ConnectionRegistry>,
+    mut shutdown: watch::Receiver<bool>,
+    budgets: SocksUdpBudgets,
+) {
+    let (Ok(client_addr), Ok(local_addr)) = (control.peer_addr(), control.local_addr()) else {
+        let _ = write_socks5_failure(&mut control).await;
+        return;
+    };
+    // Each frame is a datagram: none waits for the one before to be acked.
+    let _ = control.set_nodelay(true);
+    // hev-socks5 reads an IPv4 or IPv6 bind address and ignores it.
+    if write_socks5_success(&mut control).await.is_err() {
+        return;
+    }
+    let (mut reader, writer) = control.into_split();
+    let (frames, queued) = mpsc::channel(SOCKS_UDP_IN_TCP_REPLY_QUEUE);
+    let writer = write_socks_udp_in_tcp_frames(writer, queued);
+    tokio::pin!(writer);
+
+    let mut received = BytesMut::new();
+    let mut flows = HashMap::<(SocketAddr, Target), SocksUdpFlowEntry>::new();
+    let mut flow_tasks = JoinSet::new();
+    let mut activity_sequence = 0u64;
+    'association: loop {
+        received.reserve(SOCKS_UDP_IN_TCP_READ_RESERVE);
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    break;
+                }
+            }
+            () = &mut writer => break,
+            joined = flow_tasks.join_next_with_id(), if !flow_tasks.is_empty() => {
+                match joined {
+                    Some(Ok((task_id, flow_key))) => {
+                        remove_socks_udp_flow_by_task_id(&mut flows, task_id, Some(&flow_key));
+                    }
+                    Some(Err(error)) => {
+                        remove_socks_udp_flow_by_task_id(&mut flows, error.id(), None);
+                    }
+                    None => {}
+                }
+            }
+            // A read that loses the race takes nothing, so no frame is torn.
+            read = reader.read_buf(&mut received) => {
+                if !matches!(read, Ok(len) if len > 0) {
+                    break;
+                }
+                loop {
+                    let datagram = match decode_socks5_udp_in_tcp_frame(&mut received) {
+                        Ok(Some(datagram)) => datagram,
+                        Ok(None) => break,
+                        Err(_) => break 'association,
+                    };
+                    if datagram.payload.is_empty() {
+                        continue;
+                    }
+                    let client_target = datagram.target.clone();
+                    dispatch_socks_udp_datagram(
+                        &mut flows,
+                        &mut flow_tasks,
+                        &mut activity_sequence,
+                        &budgets,
+                        &runtime_logger,
+                        &shutdown,
+                        (client_addr, datagram.target),
+                        datagram.payload,
+                        || SocksUdpFlowContext {
+                            reply: UdpReply::Stream {
+                                frames: frames.clone(),
+                                client_target,
+                            },
+                            client_addr,
+                            local_addr: Some(local_addr),
+                            user: user.clone(),
+                            inbound_tag: inbound_tag.clone(),
+                            config: Arc::clone(&config),
+                            outbound_router: Arc::clone(&outbound_router),
+                            dns_resolvers: dns_resolvers.clone(),
+                            transport_dialer: Arc::clone(&transport_dialer),
+                            sniffing: sniffing.clone(),
+                            runtime_logger: runtime_logger.clone(),
+                            connection_registry: Arc::clone(&connection_registry),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    for (_, entry) in flows.drain() {
+        entry.abort_handle.abort();
+    }
+    flow_tasks.abort_all();
+    while flow_tasks.join_next().await.is_some() {}
+}
+
+/// The frame that carries `payload` from `source` to a `FWD_UDP` client whose
+/// flow went to `client_target`, or else the most data that client reads from
+/// the address the frame would name.
+///
+/// hev-socks5-tunnel writes a reply to the app's socket from the address its
+/// frame names. It cannot from a domain, which a reply to a sniffed
+/// destination may name. Nor can it from an address of the other family,
+/// which a name dialed for an IPv4 destination may answer from: lwIP refuses
+/// that write, and hev then writes no more replies to that socket. So a
+/// reply names its source only when that is an address of the family of
+/// `client_target`, an IPv4-mapped one as IPv4; any other comes from where
+/// the client sent, the address Xray-core's SOCKS inbound gives a reply that
+/// names no source of its own. A frame the client cannot read would end its
+/// reading of the association, so it is dropped alone, as a router drops a
+/// datagram larger than the path.
+fn socks_udp_in_tcp_reply(
+    client_target: &Target,
+    source: &Target,
+    payload: &[u8],
+) -> Result<Vec<u8>, usize> {
+    let source = match (&client_target.addr, &source.addr) {
+        (TargetAddr::Ip(client), TargetAddr::Ip(ip))
+            if client.is_ipv4() == ip.to_canonical().is_ipv4() =>
+        {
+            let ip = if client.is_ipv4() {
+                ip.to_canonical()
+            } else {
+                *ip
+            };
+            Target::new(TargetAddr::Ip(ip), source.port, xray_routing::Network::Udp)
+        }
+        _ => client_target.clone(),
+    };
+    let max_payload = socks5_udp_in_tcp_max_reply(&source);
+    if payload.len() > max_payload {
+        return Err(max_payload);
+    }
+    encode_socks5_udp_in_tcp_frame(&source, payload).map_err(|_| max_payload)
+}
+
+/// Writes the frames of a `FWD_UDP` association, those that wait together in
+/// one write, until a write fails. Flows hand over whole frames, so a flow
+/// that ends mid-send cannot tear one.
+async fn write_socks_udp_in_tcp_frames(
+    mut writer: OwnedWriteHalf,
+    mut frames: mpsc::Receiver<Vec<u8>>,
+) {
+    while let Some(mut batch) = frames.recv().await {
+        while batch.len() < SOCKS_UDP_IN_TCP_WRITE_BATCH {
+            let Ok(frame) = frames.try_recv() else {
+                break;
+            };
+            batch.extend_from_slice(&frame);
+        }
+        if writer.write_all(&batch).await.is_err() {
+            return;
+        }
+    }
+}
+
+/// Hands a datagram to the flow its key names, opening one through
+/// [`admit_socks_udp_flow`] when there is none or it ended. A datagram the
+/// flow has no room for is dropped, as a full socket buffer drops it.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an association's flow table, budgets and new flow's context travel together"
+)]
+fn dispatch_socks_udp_datagram(
+    flows: &mut HashMap<(SocketAddr, Target), SocksUdpFlowEntry>,
+    flow_tasks: &mut JoinSet<(SocketAddr, Target)>,
+    activity_sequence: &mut u64,
+    budgets: &SocksUdpBudgets,
+    runtime_logger: &RuntimeLogger,
+    shutdown: &watch::Receiver<bool>,
+    flow_key: (SocketAddr, Target),
+    payload: Bytes,
+    context: impl FnOnce() -> SocksUdpFlowContext,
+) {
+    *activity_sequence = activity_sequence.wrapping_add(1);
+    let payload = match flows.get_mut(&flow_key) {
+        Some(entry) => {
+            entry.last_activity = *activity_sequence;
+            match entry.sender.try_send(payload) {
+                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => return,
+                Err(mpsc::error::TrySendError::Closed(payload)) => {
+                    if let Some(entry) = flows.remove(&flow_key) {
+                        entry.abort_handle.abort();
+                    }
+                    payload
+                }
+            }
+        }
+        None => payload,
+    };
+
+    let Some(SocksUdpFlowPermits {
+        global: global_permit,
+        pending_open: pending_open_permit,
+    }) = admit_socks_udp_flow(flows, budgets, runtime_logger)
+    else {
+        return;
+    };
+
+    let (sender, receiver) = mpsc::channel(SOCKS_UDP_FLOW_QUEUE);
+    if sender.try_send(payload).is_err() {
+        return;
+    }
+    let context = context();
+    let target = flow_key.1.clone();
+    let completion_key = flow_key.clone();
+    let flow_shutdown = shutdown.clone();
+    let abort_handle = flow_tasks.spawn(async move {
+        bridge_socks_udp_flow(
+            target,
+            context,
+            receiver,
+            flow_shutdown,
+            pending_open_permit,
+        )
+        .await;
+        completion_key
+    });
+    let task_id = abort_handle.id();
+    flows.insert(
+        flow_key,
+        SocksUdpFlowEntry {
+            sender,
+            abort_handle,
+            task_id,
+            last_activity: *activity_sequence,
+            global_permit,
+        },
+    );
 }
 
 /// Relays a UDP session the portal of a VLESS reverse proxy opened. A
@@ -1865,7 +2133,7 @@ async fn bridge_socks_udp_dns_flow(
                 &routed_target,
                 payload,
                 crate::dns_outbound_runtime::DnsClientTransport::Udp {
-                    path_payload_cap: SOCKS_DNS_UDP_PATH_PAYLOAD_CAP,
+                    path_payload_cap: context.dns_path_payload_cap(&client_target),
                 },
             ) => outcome,
         };
@@ -2414,10 +2682,11 @@ mod tests {
 
     use super::{
         admit_socks_udp_flow, apply_fake_ip_sniffed_dial_precedence, evict_oldest_socks_udp_flow,
-        should_sniff_socks_tcp, socks_udp_relay_bind, write_socks_vless_udp_payload,
-        BoxedSocksDnsStreamFuture, FakeIpTargetProvenance, SocksUdpBudgetExhaustionLog,
-        SocksUdpBudgets, SocksUdpClientLock, SocksUdpFlowEntry, SocksUdpSniffedTarget,
-        VlessUdpFraming, SOCKS_UDP_FLOW_QUEUE, SOCKS_UDP_MAX_FLOWS_PER_ASSOCIATION,
+        should_sniff_socks_tcp, socks_udp_in_tcp_reply, socks_udp_relay_bind,
+        write_socks_vless_udp_payload, BoxedSocksDnsStreamFuture, FakeIpTargetProvenance,
+        SocksUdpBudgetExhaustionLog, SocksUdpBudgets, SocksUdpClientLock, SocksUdpFlowEntry,
+        SocksUdpSniffedTarget, VlessUdpFraming, SOCKS_UDP_FLOW_QUEUE,
+        SOCKS_UDP_MAX_FLOWS_PER_ASSOCIATION,
     };
     use crate::{RuntimeLogConfig, RuntimeLogger};
 
@@ -2595,6 +2864,77 @@ mod tests {
             sender.try_send(Bytes::from_static(b"second")),
             Err(mpsc::error::TrySendError::Full(_))
         ));
+    }
+
+    #[test]
+    fn fwd_udp_reply_names_an_address_and_fits_the_client_buffer() {
+        let udp = |addr: IpAddr, port| Target::new(TargetAddr::Ip(addr), port, Network::Udp);
+        let client_target = udp(Ipv4Addr::new(198, 18, 0, 7).into(), 443);
+        let to_client_target = [0, 2, 10, 1, 198, 18, 0, 7, 1, 187, b'h', b'i'];
+        let sniffed = Target::new(
+            TargetAddr::Domain("fwd-udp.example".to_owned()),
+            443,
+            Network::Udp,
+        );
+        let v4_source = udp(Ipv4Addr::new(192, 0, 2, 9).into(), 4433);
+        let v6_source = udp(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x35).into(), 53);
+
+        // hev writes a reply to the app's socket from the address its frame
+        // names, so the frame names one of that socket's family: a domain or
+        // an address of the other family (a name dialed for an IPv4
+        // destination may answer from IPv6) names the client's target.
+        for source in [&sniffed, &v6_source] {
+            assert_eq!(
+                socks_udp_in_tcp_reply(&client_target, source, b"hi"),
+                Ok(to_client_target.to_vec()),
+                "{source:?}"
+            );
+        }
+        let from_v4_source = [0, 2, 10, 1, 192, 0, 2, 9, 0x11, 0x51, b'h', b'i'];
+        assert_eq!(
+            socks_udp_in_tcp_reply(&client_target, &v4_source, b"hi"),
+            Ok(from_v4_source.to_vec())
+        );
+        let mapped = udp(Ipv4Addr::new(192, 0, 2, 9).to_ipv6_mapped().into(), 4433);
+        assert_eq!(
+            socks_udp_in_tcp_reply(&client_target, &mapped, b"hi"),
+            Ok(from_v4_source.to_vec()),
+            "an IPv4-mapped source is named as the IPv4 address it is"
+        );
+        let v6_client = udp(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 7).into(), 443);
+        let frame = socks_udp_in_tcp_reply(&v6_client, &v4_source, b"hi").unwrap();
+        assert_eq!(frame[..4], [0, 2, 22, 4]);
+        assert_eq!(
+            frame[4..20],
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 7).octets()
+        );
+        let frame = socks_udp_in_tcp_reply(&v6_client, &v6_source, b"hi").unwrap();
+        assert_eq!(
+            frame[4..20],
+            Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0x35).octets()
+        );
+
+        // hev reads ATYP, the address, the port and the data into 1,500 bytes.
+        let largest = vec![0; 1500 - (1 + 4 + 2)];
+        assert_eq!(
+            socks_udp_in_tcp_reply(&client_target, &sniffed, &largest).map(|frame| frame.len()),
+            Ok(3 + 1500)
+        );
+        for source in [&sniffed, &v4_source, &v6_source] {
+            assert_eq!(
+                socks_udp_in_tcp_reply(&client_target, source, &[0; 1494]),
+                Err(1493),
+                "{source:?}"
+            );
+        }
+        assert_eq!(
+            socks_udp_in_tcp_reply(&v6_client, &v6_source, &[0; 1481]).map(|frame| frame.len()),
+            Ok(3 + 1500)
+        );
+        assert_eq!(
+            socks_udp_in_tcp_reply(&v6_client, &v6_source, &[0; 1482]),
+            Err(1481)
+        );
     }
 
     #[tokio::test]

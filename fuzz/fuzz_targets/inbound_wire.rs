@@ -4,9 +4,9 @@ use libfuzzer_sys::fuzz_target;
 use tokio::io::BufReader;
 use tokio::runtime::Builder;
 use xray_proxy::inbound::{
-    copy_body_chunked, encode_socks5_udp_datagram, parse_http_connect,
-    parse_socks5_request_message, parse_socks5_udp_datagram, read_http_request_head,
-    read_http_response, PlainHttpRequest,
+    copy_body_chunked, decode_socks5_udp_in_tcp_frame, encode_socks5_udp_datagram,
+    encode_socks5_udp_in_tcp_frame, parse_http_connect, parse_socks5_request_message,
+    parse_socks5_udp_datagram, read_http_request_head, read_http_response, PlainHttpRequest,
 };
 
 fuzz_target!(|data: &[u8]| {
@@ -40,6 +40,12 @@ fuzz_target!(|data: &[u8]| {
 
         if let Ok(datagram) = parse_socks5_udp_datagram(data) {
             let _ = encode_socks5_udp_datagram(&datagram.target, &datagram.payload);
+        }
+
+        // hev-socks5's FWD_UDP frames, as many as the bytes hold.
+        let mut frames = bytes::BytesMut::from(data);
+        while let Ok(Some(datagram)) = decode_socks5_udp_in_tcp_frame(&mut frames) {
+            let _ = encode_socks5_udp_in_tcp_frame(&datagram.target, &datagram.payload);
         }
 
         // Reach successful domain parsing on every bounded campaign.

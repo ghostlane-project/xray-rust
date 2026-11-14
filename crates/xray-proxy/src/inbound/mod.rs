@@ -12,13 +12,14 @@ pub use http_message::{
     PlainHttpError, PlainHttpRequest,
 };
 pub use socks::{
-    encode_socks5_udp_datagram, negotiate_socks5, negotiate_socks5_no_auth, parse_socks4_connect,
-    parse_socks5_connect, parse_socks5_request, parse_socks5_request_message,
-    parse_socks5_udp_datagram, read_socks5_command, read_socks5_target,
+    decode_socks5_udp_in_tcp_frame, encode_socks5_udp_datagram, encode_socks5_udp_in_tcp_frame,
+    negotiate_socks5, negotiate_socks5_no_auth, parse_socks4_connect, parse_socks5_connect,
+    parse_socks5_request, parse_socks5_request_message, parse_socks5_udp_datagram,
+    read_socks5_command, read_socks5_target, socks5_udp_in_tcp_max_reply,
     write_socks5_command_not_supported, write_socks5_failure, write_socks5_success,
     write_socks5_success_with_bind, InboundUser, SocksAccount, SocksCommand, SocksInboundAuth,
     SocksParseError, SocksRequest, SocksUdpDatagram, MAX_SOCKS_CREDENTIAL_LENGTH, SOCKS4_GRANTED,
-    SOCKS4_REJECTED, SOCKS4_VERSION,
+    SOCKS4_REJECTED, SOCKS4_VERSION, SOCKS5_UDP_IN_TCP_CLIENT_BUFFER,
 };
 pub(crate) use socks::{
     encode_target_addr, read_socks5_address, AddressReadError, METHOD_NONE_ACCEPTABLE,
