@@ -28,6 +28,14 @@
 // A participant that joined with kind 1 is sent kinds 2 and 3 whoever sent
 // them, so the Rust side (olc-client's pipe module), which speaks kinds 1-5,
 // can be in a room with a server in peer mode.
+//
+// A test build (olcrtc_testhooks) started with OLCRTC_TEST_BRIDGE_DELAY opens
+// its bridge late, as the jitsi engine does for the gate's S6: on each join,
+// once another participant is in the room (Jicofo's session-initiate), it
+// waits testhooks.BeforeBridgeOpen out (jitsi/negotiate.go:60) and drops
+// every message it is sent until then, as the bridge drops what is sent to an
+// endpoint whose own bridge is not open. The others see it in the room all
+// along (PEERS), as they see a participant in the MUC.
 
 package interoppipe
 
@@ -40,12 +48,14 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/engine"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
+	"github.com/openlibrecommunity/olcrtc/internal/testhooks"
 )
 
 // Name is the engine's name in a config (engine: { name: interop-pipe }).
@@ -272,10 +282,14 @@ func (s *Session) join(ctx context.Context) (net.Conn, error) {
 
 func (s *Session) read(conn net.Conn) {
 	br := bufio.NewReaderSize(conn, MaxPayload+5)
+	bridge := newBridge()
 	for {
 		kind, payload, err := ReadFrame(br)
 		if err != nil {
 			break
+		}
+		if isMessage(kind) && !bridge.open() {
+			continue
 		}
 		switch kind {
 		case KindData:
@@ -315,6 +329,7 @@ func (s *Session) read(conn net.Conn) {
 				s.mu.Lock()
 				s.seen = true
 				s.mu.Unlock()
+				bridge.start()
 			}
 		case KindEnd:
 			s.mu.Lock()
@@ -331,6 +346,59 @@ func (s *Session) read(conn net.Conn) {
 		}
 	}
 	s.lost(conn)
+}
+
+// isMessage is a kind that carries a participant's message.
+func isMessage(kind byte) bool {
+	switch kind {
+	case KindData, KindDgram, KindDataFrom, KindDgramFrom:
+		return true
+	}
+	return false
+}
+
+// bridgeDelayEnv is what testhooks.BeforeBridgeOpen reads.
+const bridgeDelayEnv = "OLCRTC_TEST_BRIDGE_DELAY"
+
+// bridge is one join's bridge: open at once, or, in a test build started
+// with a positive OLCRTC_TEST_BRIDGE_DELAY, once BeforeBridgeOpen returns
+// after another participant came.
+type bridge struct {
+	late   bool
+	once   sync.Once
+	opened chan struct{}
+}
+
+func newBridge() *bridge {
+	b := &bridge{opened: make(chan struct{})}
+	d, err := time.ParseDuration(os.Getenv(bridgeDelayEnv))
+	b.late = testhooks.Enabled && err == nil && d > 0
+	if !b.late {
+		close(b.opened)
+	}
+	return b
+}
+
+// start is the session-initiate: the bridge opens BeforeBridgeOpen later.
+func (b *bridge) start() {
+	if !b.late {
+		return
+	}
+	b.once.Do(func() {
+		go func() {
+			testhooks.BeforeBridgeOpen()
+			close(b.opened)
+		}()
+	})
+}
+
+func (b *bridge) open() bool {
+	select {
+	case <-b.opened:
+		return true
+	default:
+		return false
+	}
 }
 
 // lost rejoins after the hub connection went away, then tells the upper
