@@ -9,6 +9,51 @@ use crc::{CRC_32_ISO_HDLC, Crc};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
+// olcRTC fork (Ghostlane M2 spike): the shape our binding requests are written in. Upstream
+// writes USERNAME, ICE-CONTROLLED/-CONTROLLING, PRIORITY, USE-CANDIDATE and never writes
+// GOOG-NETWORK-INFO; libwebrtc writes USERNAME, GOOG-NETWORK-INFO, ICE-CONTROLLING,
+// USE-CANDIDATE (or ICE-CONTROLLED), PRIORITY. The Chrome profile writes the latter.
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+
+/// The attribute set and order binding requests are written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StunProfile {
+    /// str0m's own: USERNAME, ICE-CONTROLLED/ICE-CONTROLLING, PRIORITY, USE-CANDIDATE.
+    Str0m,
+    /// libwebrtc's (Chrome, `Connection::...Prepare`): USERNAME, GOOG-NETWORK-INFO,
+    /// ICE-CONTROLLING (+ USE-CANDIDATE) or ICE-CONTROLLED, PRIORITY.
+    Chrome,
+}
+
+static STUN_PROFILE: AtomicU8 = AtomicU8::new(0);
+// Network id 1, cost 10: what a Chrome on one Wi-Fi or Ethernet adapter puts in
+// GOOG-NETWORK-INFO (`network_info = id << 16 | cost`).
+static NETWORK_INFO: AtomicU32 = AtomicU32::new(1 << 16 | 10);
+
+/// Sets the profile for every binding request this process writes from now on.
+pub fn set_stun_profile(profile: StunProfile) {
+    STUN_PROFILE.store(matches!(profile, StunProfile::Chrome) as u8, Ordering::Relaxed);
+}
+
+/// The profile binding requests are written in.
+pub fn stun_profile() -> StunProfile {
+    if STUN_PROFILE.load(Ordering::Relaxed) == 1 {
+        StunProfile::Chrome
+    } else {
+        StunProfile::Str0m
+    }
+}
+
+/// Sets the GOOG-NETWORK-INFO value the Chrome profile writes.
+pub fn set_network_info(network_id: u16, cost: u16) {
+    NETWORK_INFO.store((network_id as u32) << 16 | cost as u32, Ordering::Relaxed);
+}
+
+fn network_info() -> (u16, u16) {
+    let v = NETWORK_INFO.load(Ordering::Relaxed);
+    ((v >> 16) as u16, v as u16)
+}
+
 pub const DEFAULT_MAX_RETRANSMITS: usize = 9;
 
 #[derive(Debug)] // Purposely not `Clone` / `Copy` to ensure we always use the latest one everywhere.
@@ -363,6 +408,12 @@ impl<'a> StunMessage<'a> {
             builder = builder.ice_controlling(control_tie_breaker);
         } else {
             builder = builder.ice_controlled(control_tie_breaker);
+        }
+
+        // olcRTC fork: Chrome's requests carry GOOG-NETWORK-INFO.
+        if stun_profile() == StunProfile::Chrome {
+            let (id, cost) = network_info();
+            builder = builder.network_cost(id, cost);
         }
 
         builder.build(trans_id)
@@ -728,6 +779,11 @@ impl<'a> Attributes<'a> {
         } else {
             0
         };
+        // olcRTC fork: GOOG-NETWORK-INFO is written when set.
+        let network_cost = self
+            .network_cost
+            .map(|_| ATTR_TLV_LENGTH + 4)
+            .unwrap_or_default();
         let xor_peer_address = self
             .xor_peer_address
             .map(|a| ATTR_TLV_LENGTH + if a.is_ipv4() { 8 } else { 20 })
@@ -767,6 +823,7 @@ impl<'a> Attributes<'a> {
             + priority
             + address
             + use_candidate
+            + network_cost
             + xor_peer_address
             + xor_relayed_address
             + data
@@ -778,26 +835,60 @@ impl<'a> Attributes<'a> {
     }
 
     fn to_bytes(self, out: &mut dyn Write, trans_id: &TransId) -> io::Result<()> {
+        // olcRTC fork: under the Chrome profile the leading attributes go in libwebrtc's
+        // order; everything after PRIORITY is written as before.
+        let chrome = stun_profile() == StunProfile::Chrome;
         if let Some(v) = self.username {
             out.write_all(&Self::USERNAME.to_be_bytes())?;
             encode_str(Self::USERNAME, v, out)?;
             let pad = calculate_pad(v.len());
             out.write_all(&PAD[0..pad])?;
         }
-        if let Some(v) = self.ice_controlled {
-            out.write_all(&Self::ICE_CONTROLLED.to_be_bytes())?;
-            out.write_all(&8_u16.to_be_bytes())?;
-            out.write_all(&v.to_be_bytes())?;
-        }
-        if let Some(v) = self.ice_controlling {
-            out.write_all(&Self::ICE_CONTROLLING.to_be_bytes())?;
-            out.write_all(&8_u16.to_be_bytes())?;
-            out.write_all(&v.to_be_bytes())?;
+        if chrome {
+            if let Some((id, cost)) = self.network_cost {
+                out.write_all(&Self::NETWORK_COST.to_be_bytes())?;
+                out.write_all(&4_u16.to_be_bytes())?;
+                out.write_all(&id.to_be_bytes())?;
+                out.write_all(&cost.to_be_bytes())?;
+            }
+            if let Some(v) = self.ice_controlling {
+                out.write_all(&Self::ICE_CONTROLLING.to_be_bytes())?;
+                out.write_all(&8_u16.to_be_bytes())?;
+                out.write_all(&v.to_be_bytes())?;
+                if self.use_candidate {
+                    out.write_all(&Self::USE_CANDIDATE.to_be_bytes())?;
+                    out.write_all(&0_u16.to_be_bytes())?;
+                }
+            }
+            if let Some(v) = self.ice_controlled {
+                out.write_all(&Self::ICE_CONTROLLED.to_be_bytes())?;
+                out.write_all(&8_u16.to_be_bytes())?;
+                out.write_all(&v.to_be_bytes())?;
+            }
+        } else {
+            if let Some(v) = self.ice_controlled {
+                out.write_all(&Self::ICE_CONTROLLED.to_be_bytes())?;
+                out.write_all(&8_u16.to_be_bytes())?;
+                out.write_all(&v.to_be_bytes())?;
+            }
+            if let Some(v) = self.ice_controlling {
+                out.write_all(&Self::ICE_CONTROLLING.to_be_bytes())?;
+                out.write_all(&8_u16.to_be_bytes())?;
+                out.write_all(&v.to_be_bytes())?;
+            }
         }
         if let Some(v) = self.priority {
             out.write_all(&Self::PRIORITY.to_be_bytes())?;
             out.write_all(&4_u16.to_be_bytes())?;
             out.write_all(&v.to_be_bytes())?;
+        }
+        if !chrome {
+            if let Some((id, cost)) = self.network_cost {
+                out.write_all(&Self::NETWORK_COST.to_be_bytes())?;
+                out.write_all(&4_u16.to_be_bytes())?;
+                out.write_all(&id.to_be_bytes())?;
+                out.write_all(&cost.to_be_bytes())?;
+            }
         }
         if let Some(v) = self.xor_mapped_address {
             let mut buf = [0_u8; 20];
@@ -806,7 +897,7 @@ impl<'a> Attributes<'a> {
             out.write_all(&((len as u16).to_be_bytes()))?;
             out.write_all(&buf[0..len])?;
         }
-        if self.use_candidate {
+        if self.use_candidate && !(chrome && self.ice_controlling.is_some()) {
             out.write_all(&Self::USE_CANDIDATE.to_be_bytes())?;
             out.write_all(&0_u16.to_be_bytes())?;
         }

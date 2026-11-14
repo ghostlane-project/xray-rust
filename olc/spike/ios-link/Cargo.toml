@@ -1,0 +1,26 @@
+[package]
+name = "olc-spike-ios-link"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "M2 probe d: BoringSSL (boring 5.5), aws-lc-rs and ring linked into one iOS binary"
+
+[lib]
+# staticlib: what an iOS app links (c/main.c stands in for the Swift app); rlib: for the bin.
+crate-type = ["staticlib", "rlib"]
+
+[[bin]]
+name = "ios-link"
+path = "src/main.rs"
+
+[dependencies]
+olc-spike-probe = { path = "../probe", features = ["boring"] }
+olc-spike-dtls-boring = { path = "../dtls-boring" }
+str0m.workspace = true
+boring.workspace = true
+# As Ghostlane's workspace has them (xray-rust Cargo.toml): rustls on aws-lc-rs with ring too.
+rustls = { version = "0.23.40", default-features = false, features = ["aws_lc_rs", "ring", "std", "tls12", "logging"] }
+aws-lc-rs = { version = "=1.18.1", default-features = false, features = ["alloc", "non-fips", "prebuilt-nasm"] }
+ring = "0.17"
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring"] }

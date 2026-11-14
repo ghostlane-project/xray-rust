@@ -1,0 +1,36 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>olc spike: Chrome loopback</title>
+<script>
+// Two RTCPeerConnections in one page, one data channel, one echo: what a capture of this
+// shows is Chrome's own STUN binding requests (the offerer controls, the answerer is
+// controlled) and Chrome's DTLS ClientHello (the answerer is the DTLS client).
+(async () => {
+  const say = (m) => { console.log('OLC_SPIKE ' + m); document.title = m; };
+  try {
+    const a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate);
+    b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate);
+    const dc = a.createDataChannel('_reliable', { ordered: true });
+    b.ondatachannel = (e) => { e.channel.onmessage = (m) => e.channel.send(m.data); };
+    dc.onopen = () => dc.send('ping');
+    dc.onmessage = async (m) => {
+      const st = await a.getStats();
+      st.forEach((r) => {
+        if (r.type === 'transport') say('TRANSPORT dtls=' + r.tlsVersion + ' cipher=' + r.dtlsCipher + ' srtp=' + r.srtpCipher + ' group=' + (r.tlsGroup || ''));
+        if (r.type === 'local-candidate') say('CANDIDATE ' + r.candidateType + ' ' + r.protocol + ' ' + r.address);
+      });
+      say('ECHO_OK ' + m.data);
+    };
+    const offer = await a.createOffer();
+    await a.setLocalDescription(offer);
+    await b.setRemoteDescription(offer);
+    const answer = await b.createAnswer();
+    await b.setLocalDescription(answer);
+    await a.setRemoteDescription(answer);
+    say('UA ' + navigator.userAgent);
+  } catch (e) {
+    say('ERROR ' + e);
+  }
+})();
+</script>
