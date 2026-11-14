@@ -19,14 +19,14 @@
 use rand::{rngs::OsRng, RngCore};
 use rustls::{
     client::{
-        ClientHelloAdvertisedSupportedGroups, ClientHelloAdvertisedSupportedVersions,
-        ClientHelloAlpnProtocols, ClientHelloCertificateCompressionAlgorithms,
-        ClientHelloCipherSuites, ClientHelloContext, ClientHelloExactExtension,
-        ClientHelloExactExtensions, ClientHelloExtensionOrder, ClientHelloExtensionPlan,
-        ClientHelloForcedExtensions, ClientHelloGreaseExtension, ClientHelloGreasePlan,
-        ClientHelloKeySharePlan, ClientHelloPaddingPlan, ClientHelloPlan, ClientHelloRawExtension,
-        ClientHelloRawExtensions, ClientHelloRawKeyShare, ClientHelloRawKeyShares,
-        ClientHelloSupportedGroups, ClientHelloSupportedVersions,
+        ClientHelloAdvertisedCipherSuites, ClientHelloAdvertisedSupportedGroups,
+        ClientHelloAdvertisedSupportedVersions, ClientHelloAlpnProtocols,
+        ClientHelloCertificateCompressionAlgorithms, ClientHelloCipherSuites, ClientHelloContext,
+        ClientHelloExactExtension, ClientHelloExactExtensions, ClientHelloExtensionOrder,
+        ClientHelloExtensionPlan, ClientHelloForcedExtensions, ClientHelloGreaseExtension,
+        ClientHelloGreasePlan, ClientHelloKeySharePlan, ClientHelloPaddingPlan, ClientHelloPlan,
+        ClientHelloRawExtension, ClientHelloRawExtensions, ClientHelloRawKeyShare,
+        ClientHelloRawKeyShares, ClientHelloSupportedGroups, ClientHelloSupportedVersions,
     },
     CertificateCompressionAlgorithm, CipherSuite, Error as RustlsError, NamedGroup,
     ProtocolVersion,
@@ -99,7 +99,8 @@ const GREASE_SIGNATURE_ALGORITHM: usize = 7;
 /// What uTLS draws anew for every hello of a profile: the GREASE value of
 /// each slot, the cipher suite and payload length of a GREASE ECH extension,
 /// and for a Chrome profile whose spec runs `ShuffleChromeTLSExtensions`, the
-/// extension order.
+/// extension order. Chrome 156 draws its order as BoringSSL does instead
+/// (`boringssl_permuted_extensions`), a HelloRetryRequest's cookie in it.
 ///
 /// One draw serves the whole hello, a HelloRetryRequest's second flight
 /// included, since the plan it shapes is built once per connection.
@@ -148,16 +149,26 @@ impl HelloDraws {
     pub(crate) fn draw(profile: &UtlsClientHelloProfile) -> Result<Self, RustlsError> {
         let mut seeds = [0; 2 * GREASE_SEEDS];
         fill_random(&mut seeds, "GREASE")?;
-        let shuffle_seed = if profile.unshuffled_extensions.is_empty() {
+        let order = if profile.unshuffled_extensions.is_empty() {
             None
+        } else if profile.boringssl_permutation {
+            let steps = boringssl_permutation_table(profile).len().saturating_sub(1);
+            let mut bytes = vec![0; 4 * steps];
+            fill_random(&mut bytes, "the extension order")?;
+            let seeds = bytes
+                .chunks_exact(4)
+                .map(|seed| u32::from_le_bytes([seed[0], seed[1], seed[2], seed[3]]))
+                .collect::<Vec<_>>();
+            Some(boringssl_permuted_extensions(profile, &seeds))
         } else {
-            Some(loop {
+            let seed = loop {
                 let mut bytes = [0; 8];
                 fill_random(&mut bytes, "the extension order")?;
                 if let Some(seed) = crypto_rand_int63(bytes) {
                     break seed;
                 }
-            })
+            };
+            Some(chrome_shuffled_extensions(profile, seed))
         };
         let ech = profile
             .encrypted_client_hello
@@ -168,17 +179,16 @@ impl HelloDraws {
         fill_random(&mut cookie, "the cookie's place")?;
         Ok(Self {
             cookie: u32::from_le_bytes(cookie),
-            ..Self::from_seeds(profile, seeds, shuffle_seed, ech)
+            ..Self::from_seeds(seeds, order, ech)
         })
     }
 
     /// The draws uTLS makes from `seeds`, its sixteen bytes of GREASE seeds,
-    /// `shuffle_seed`, the extension shuffle's seed, for a profile that
-    /// shuffles, and `ech`, its GREASE ECH extension's picks.
+    /// with `order`, the extension order drawn for a profile whose order is
+    /// drawn, and `ech`, its GREASE ECH extension's picks.
     fn from_seeds(
-        profile: &UtlsClientHelloProfile,
         seeds: [u8; 2 * GREASE_SEEDS],
-        shuffle_seed: Option<i64>,
+        order: Option<Vec<u16>>,
         ech: Option<EchDraw>,
     ) -> Self {
         let mut seed = [0u16; GREASE_SEEDS];
@@ -189,9 +199,6 @@ impl HelloDraws {
         if boring_grease(seed[GREASE_EXTENSION1]) == boring_grease(seed[GREASE_EXTENSION2]) {
             seed[GREASE_EXTENSION2] ^= 0x1010;
         }
-        let order = shuffle_seed
-            .filter(|_| !profile.unshuffled_extensions.is_empty())
-            .map(|seed| chrome_shuffled_extensions(profile, seed));
         Self {
             grease: seed.map(boring_grease),
             order,
@@ -203,13 +210,15 @@ impl HelloDraws {
     /// The draws of an all-zero `crypto/rand`, the one the oracle fixtures
     /// are made with: `0x0a0a` in every slot but the second GREASE
     /// extension's `0x1a1a`, the order `extensions` records, and the first
-    /// ECH candidates.
+    /// ECH candidates. A profile that permutes as BoringSSL does takes the
+    /// recorded order too: the fixtures are uTLS's.
     #[cfg(test)]
     pub(crate) fn zero(profile: &UtlsClientHelloProfile) -> Self {
+        let order = (!profile.unshuffled_extensions.is_empty() && !profile.boringssl_permutation)
+            .then(|| chrome_shuffled_extensions(profile, 0));
         Self::from_seeds(
-            profile,
             [0; 2 * GREASE_SEEDS],
-            Some(0),
+            order,
             profile.encrypted_client_hello.as_ref().map(EchDraw::first),
         )
     }
@@ -281,6 +290,72 @@ fn chrome_shuffle(spec: &[u16], seed: i64) -> Vec<u16> {
     order
 }
 
+/// The extensions BoringSSL's `ssl_setup_extension_permutation` permutes for
+/// `profile`'s hello, in the profile's spec order: every one the hello may
+/// carry but the two GREASE extensions, which `ssl_add_clienthello_tlsext`
+/// writes before and after the rest, and padding and pre_shared_key, which it
+/// writes last; and the cookie a HelloRetryRequest may bring.
+///
+/// BoringSSL permutes its whole extension table, those a hello leaves out
+/// included, so the ones it carries come out in a uniformly drawn order
+/// whatever else the table holds. The cookie belongs here for that reason:
+/// it is in the table, so it takes its place in the second ClientHello where
+/// the connection's permutation put it, the one permutation serving both.
+fn boringssl_permutation_table(profile: &UtlsClientHelloProfile) -> Vec<u16> {
+    let mut table = profile
+        .unshuffled_extensions
+        .iter()
+        .copied()
+        .filter(|extension_type| !stays_in_place(*extension_type))
+        .filter(|extension_type| profile_has_extension(profile, *extension_type))
+        .collect::<Vec<_>>();
+    if !table.contains(&EXT_COOKIE) {
+        table.push(EXT_COOKIE);
+    }
+    table
+}
+
+/// `profile`'s extensions in the order BoringSSL's permutation gives with
+/// `seeds`, one `u32` per step of its Fisher-Yates loop
+/// (`std::swap(permutation[i], permutation[seeds[i - 1] % (i + 1)])`, for `i`
+/// from the last place down to 1), framed by the two GREASE extensions and
+/// followed by padding and pre_shared_key where the hello carries them.
+///
+/// The table starts in the profile's spec order rather than BoringSSL's
+/// `kExtensions` order; with seeds drawn uniformly, every order comes out as
+/// often either way.
+fn boringssl_permuted_extensions(profile: &UtlsClientHelloProfile, seeds: &[u32]) -> Vec<u16> {
+    let mut table = boringssl_permutation_table(profile);
+    for i in (1..table.len()).rev() {
+        // `i + 1` is at most the table's length, far below `u32::MAX`.
+        let j = (seeds[i - 1] % (i as u32 + 1)) as usize;
+        table.swap(i, j);
+    }
+    let grease = profile
+        .unshuffled_extensions
+        .iter()
+        .copied()
+        .filter(|extension_type| is_grease_value(*extension_type))
+        .collect::<Vec<_>>();
+    let last = profile
+        .unshuffled_extensions
+        .iter()
+        .copied()
+        .filter(|extension_type| {
+            !is_grease_value(*extension_type)
+                && stays_in_place(*extension_type)
+                && profile_has_extension(profile, *extension_type)
+        });
+    grease
+        .first()
+        .copied()
+        .into_iter()
+        .chain(table)
+        .chain(grease.get(1).copied())
+        .chain(last)
+        .collect()
+}
+
 /// The extensions `ShuffleChromeTLSExtensions` never moves.
 fn stays_in_place(extension_type: u16) -> bool {
     is_grease_value(extension_type)
@@ -305,11 +380,18 @@ pub(crate) fn apply_utls_profile(
     alpn_override: Option<&[Vec<u8>]>,
 ) -> Result<ClientHelloPlan, RustlsError> {
     let supported_versions = supported_versions(profile)?;
-    let cipher_suites = cipher_suites(profile, context, supported_versions.as_slice())?;
     let padding_offset = boringssl_padding_offset(profile, context, supported_versions.as_slice());
-    plan = plan
-        .with_cipher_suites(cipher_suites)
-        .with_supported_versions(supported_versions);
+    // shaped-rustls takes one list or the other, never both.
+    plan = if profile.advertises_unimplemented_suites {
+        plan.with_advertised_cipher_suites(advertised_cipher_suites(profile)?)
+    } else {
+        plan.with_cipher_suites(cipher_suites(
+            profile,
+            context,
+            supported_versions.as_slice(),
+        )?)
+    }
+    .with_supported_versions(supported_versions);
 
     if !profile.supported_versions.is_empty() {
         plan =
@@ -384,8 +466,7 @@ fn boringssl_padding_offset(
         .cipher_suites
         .iter()
         .filter(|suite| {
-            !is_grease_value(**suite)
-                && !provider_supports_cipher_suite(**suite, context, supported_versions)
+            !is_grease_value(**suite) && !emits_suite(profile, **suite, context, supported_versions)
         })
         .count() as isize;
     let added = if profile_has_extension(profile, EXT_SUPPORTED_VERSIONS) {
@@ -405,7 +486,8 @@ fn boringssl_padding_offset(
 /// two places (`handshake_client_tls13.go`). The place is drawn with the rest
 /// of this hello's draws, and shaped-rustls leaves the entry out of a
 /// ClientHello that carries no cookie, so only the second one a cookie asks
-/// for shows it.
+/// for shows it. A profile that permutes as BoringSSL does has the cookie in
+/// its drawn order already, where BoringSSL's permutation put it.
 fn planned_extensions(
     profile: &UtlsClientHelloProfile,
     draws: &HelloDraws,
@@ -437,6 +519,38 @@ fn cipher_suites(
             .map(CipherSuite::from)
             .collect::<Vec<_>>(),
     )
+}
+
+/// Every suite of the profile but GREASE, in its order, those the provider
+/// does not implement included: Chrome 156's list as Chrome sends it. The
+/// handshake can still settle only on a suite the provider implements;
+/// shaped-rustls ends it with `ServerChoseAdvertisedOnlyCipherSuite` when the
+/// server picks another.
+fn advertised_cipher_suites(
+    profile: &UtlsClientHelloProfile,
+) -> Result<ClientHelloAdvertisedCipherSuites, RustlsError> {
+    ClientHelloAdvertisedCipherSuites::try_from(
+        profile
+            .cipher_suites
+            .iter()
+            .copied()
+            .filter(|suite| !is_grease_value(*suite))
+            .map(CipherSuite::from)
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Whether the hello lists `suite`, a non-GREASE suite of the profile: always
+/// for a profile that advertises suites the provider lacks, otherwise only
+/// when this build can negotiate it.
+fn emits_suite(
+    profile: &UtlsClientHelloProfile,
+    suite: u16,
+    context: ClientHelloContext<'_>,
+    supported_versions: &[ProtocolVersion],
+) -> bool {
+    profile.advertises_unimplemented_suites
+        || provider_supports_cipher_suite(suite, context, supported_versions)
 }
 
 fn provider_supports_cipher_suite(
@@ -969,9 +1083,7 @@ fn grease_plan(
         let supported_versions = supported_versions(profile)?;
         let position = profile.cipher_suites[..grease_index]
             .iter()
-            .filter(|suite| {
-                provider_supports_cipher_suite(**suite, context, supported_versions.as_slice())
-            })
+            .filter(|suite| emits_suite(profile, **suite, context, supported_versions.as_slice()))
             .count();
         grease = grease.with_cipher_suite_position(position);
     }
@@ -1190,8 +1302,10 @@ mod tests {
     use super::*;
     use crate::utls_profiles::{ECH_GREASE_BORING, ECH_GREASE_FIREFOX};
 
-    /// The fingerprints whose uTLS spec runs `ShuffleChromeTLSExtensions`
-    /// (`u_parrots.go`), with Chrome 155's two other names.
+    /// The fingerprints whose extension order is drawn for every hello: those
+    /// whose uTLS spec runs `ShuffleChromeTLSExtensions` (`u_parrots.go`), and
+    /// Chrome 156's two names, which permute theirs as BoringSSL does
+    /// (`BORINGSSL_PERMUTED`).
     const SHUFFLED: [&str; 12] = [
         "chrome",
         "hellochrome_auto",
@@ -1206,6 +1320,17 @@ mod tests {
         "hellochrome_133",
         "hellochrome_155",
     ];
+
+    /// Chrome 156's names: their order is BoringSSL's permutation, not
+    /// uTLS's shuffle.
+    const BORINGSSL_PERMUTED: [&str; 2] = ["chrome", "hellochrome_auto"];
+
+    /// The names whose order is uTLS's shuffle.
+    fn utls_shuffled() -> impl Iterator<Item = &'static str> {
+        SHUFFLED
+            .into_iter()
+            .filter(|name| !BORINGSSL_PERMUTED.contains(name))
+    }
 
     fn profile(name: &str) -> &'static UtlsClientHelloProfile {
         crate::utls_profiles::profile_for_fingerprint(name)
@@ -1269,7 +1394,7 @@ mod tests {
     /// draws miss one with odds below 10^-18.
     #[test]
     fn the_shuffle_keeps_grease_padding_and_psk_in_place() {
-        for name in SHUFFLED {
+        for name in utls_shuffled() {
             let spec = profile(name).unshuffled_extensions;
             let mut seen = HashSet::new();
             for _ in 0..1000 {
@@ -1298,6 +1423,102 @@ mod tests {
         }
     }
 
+    /// BoringSSL's loop on its seeds: each step `i` swaps place `i` with
+    /// place `seeds[i - 1] % (i + 1)`. Seeds that name each place itself
+    /// leave the table as it is; all-zero ones swap every place with the
+    /// first, which carries the first entry to the end. Either way the two
+    /// GREASE extensions frame it.
+    #[test]
+    fn the_boringssl_permutation_follows_its_seeds() {
+        for name in BORINGSSL_PERMUTED {
+            let chrome = profile(name);
+            let table = boringssl_permutation_table(chrome);
+            let framed = |middle: &[u16]| {
+                let mut order = vec![chrome.unshuffled_extensions[0]];
+                order.extend_from_slice(middle);
+                order.push(*chrome.unshuffled_extensions.last().unwrap());
+                order
+            };
+            let in_place = (1..table.len() as u32).collect::<Vec<_>>();
+            assert_eq!(
+                boringssl_permuted_extensions(chrome, &in_place),
+                framed(&table),
+                "{name}"
+            );
+            let mut rotated = table[1..].to_vec();
+            rotated.push(table[0]);
+            assert_eq!(
+                boringssl_permuted_extensions(chrome, &vec![0; table.len() - 1]),
+                framed(&rotated),
+                "{name}"
+            );
+        }
+    }
+
+    /// Chrome 156's table is every extension its hello carries between the
+    /// two GREASE ones, with the cookie a HelloRetryRequest may bring.
+    #[test]
+    fn the_boringssl_table_is_chromes_extensions_and_the_cookie() {
+        let chrome = profile("chrome");
+        let mut table = boringssl_permutation_table(chrome);
+        table.sort_unstable();
+        let mut expected = recorded_order(chrome)
+            .into_iter()
+            .filter(|extension_type| !is_grease_value(*extension_type))
+            .chain([EXT_COOKIE])
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        assert_eq!(table, expected);
+        assert_eq!(table.len(), 18);
+    }
+
+    /// How far the likeliest pairing of an extension and a place between the
+    /// two GREASE extensions strays from a uniform draw's odds, over `draws`
+    /// hellos of `profile`.
+    fn largest_skew(profile: &UtlsClientHelloProfile, draws: usize) -> f64 {
+        let mut counts = std::collections::HashMap::<(u16, usize), usize>::new();
+        let mut places = 0;
+        for _ in 0..draws {
+            let order = HelloDraws::draw(profile).unwrap().extension_types(profile);
+            assert!(is_grease_value(order[0]));
+            assert!(is_grease_value(order[order.len() - 1]));
+            let middle = &order[1..order.len() - 1];
+            assert!(middle.iter().all(|value| !is_grease_value(*value)));
+            places = middle.len();
+            for (place, extension_type) in middle.iter().enumerate() {
+                *counts.entry((*extension_type, place)).or_default() += 1;
+            }
+        }
+        assert_eq!(counts.len(), places * places, "every pairing comes up");
+        let uniform = 1.0 / places as f64;
+        counts
+            .values()
+            .map(|count| (*count as f64 / draws as f64 - uniform).abs())
+            .fold(0.0, f64::max)
+    }
+
+    /// Chrome 156 orders its extensions by BoringSSL's
+    /// `ssl_setup_extension_permutation`, drawn for every connection: the
+    /// first GREASE extension first, the second last, and in between every
+    /// extension of the table in a uniformly drawn order. uTLS's shuffle, the
+    /// one `hellochrome_155` keeps, is not uniform: it skips every swap that
+    /// would move a GREASE extension, so an extension stays where it is twice
+    /// as often at each step.
+    ///
+    /// Over 20 000 hellos each of the 18 x 18 pairings comes up with odds
+    /// 1/18 give or take 0.0016 (one standard deviation), so 0.012 is over
+    /// seven of them; uTLS's shuffle strays by about 0.058.
+    #[test]
+    fn chrome_permutes_its_extensions_as_boringssl_does() {
+        const DRAWS: usize = 20_000;
+        for name in BORINGSSL_PERMUTED {
+            let skew = largest_skew(profile(name), DRAWS);
+            assert!(skew < 0.012, "{name}: skewed by {skew}");
+        }
+        let skew = largest_skew(profile("hellochrome_155"), DRAWS);
+        assert!(skew > 0.03, "uTLS's shuffle skewed by only {skew}");
+    }
+
     /// `getBoringGREASEValue` on uTLS's little-endian seeds, the second
     /// GREASE extension moved off the first's value, and each slot drawn on
     /// its own.
@@ -1322,7 +1543,7 @@ mod tests {
         seeds[8] = 0x10;
         seeds[14] = 0xe5;
         assert_eq!(
-            HelloDraws::from_seeds(chrome, seeds, None, None).grease,
+            HelloDraws::from_seeds(seeds, None, None).grease,
             [0x3a3a, 0x7a7a, 0xcaca, 0xdada, 0x1a1a, 0x0a0a, 0x0a0a, 0xeaea]
         );
 

@@ -47,6 +47,16 @@ pub(crate) struct UtlsClientHelloProfile {
     /// extensions, padding and pre_shared_key stay where the spec has them.
     /// Empty for a profile whose order is fixed.
     pub unshuffled_extensions: &'static [u16],
+    /// Whether the hello lists every suite of `cipher_suites`, those the
+    /// crypto provider does not implement included, as the browser itself
+    /// does. A server that picks one of those ends the handshake with
+    /// `PeerIncompatible::ServerChoseAdvertisedOnlyCipherSuite`. Otherwise
+    /// the hello leaves out every suite this build cannot negotiate.
+    pub advertises_unimplemented_suites: bool,
+    /// Whether the order of `unshuffled_extensions` is drawn for every hello
+    /// as BoringSSL draws it (`ssl_setup_extension_permutation`), uniformly,
+    /// rather than by uTLS's `ShuffleChromeTLSExtensions`.
+    pub boringssl_permutation: bool,
 }
 
 /// What a profile's ECH GREASE extension draws from, per connection.
@@ -444,6 +454,8 @@ const PROFILE_0: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: Some(ECH_GREASE_BORING),
     trust_anchor_ids: &[],
     unshuffled_extensions: CHROME_133_SPEC,
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_1_CIPHERS: &[u16] = &[
@@ -551,6 +563,8 @@ const PROFILE_1: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: Some(ECH_GREASE_FIREFOX),
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_2_CIPHERS: &[u16] = &[
@@ -658,6 +672,8 @@ const PROFILE_2: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_3_CIPHERS: &[u16] = &[
@@ -762,6 +778,8 @@ const PROFILE_3: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_4_CIPHERS: &[u16] = &[
@@ -823,6 +841,8 @@ const PROFILE_4: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_5_CIPHERS: &[u16] = &[
@@ -934,6 +954,8 @@ const PROFILE_5: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_6_CIPHERS: &[u16] = &[
@@ -1008,6 +1030,8 @@ const PROFILE_6: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_7_CIPHERS: &[u16] = &[
@@ -1127,6 +1151,8 @@ const PROFILE_7: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_8_CIPHERS: &[u16] = &[
@@ -1218,6 +1244,8 @@ const PROFILE_8: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_9_CIPHERS: &[u16] = &[
@@ -1282,6 +1310,8 @@ const PROFILE_9: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_10_CIPHERS: &[u16] = &[
@@ -1385,6 +1415,8 @@ const PROFILE_10: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: Some(ECH_GREASE_FIREFOX),
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_11_CIPHERS: &[u16] = &[
@@ -1508,6 +1540,8 @@ const PROFILE_11: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: Some(ECH_GREASE_BORING),
     trust_anchor_ids: &[],
     unshuffled_extensions: CHROME_120_SPEC,
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_12_CIPHERS: &[u16] = &[
@@ -1631,6 +1665,8 @@ const PROFILE_12: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: Some(ECH_GREASE_BORING),
     trust_anchor_ids: &[],
     unshuffled_extensions: CHROME_131_SPEC,
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_13_CIPHERS: &[u16] = &[
@@ -1721,6 +1757,8 @@ const PROFILE_13: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_14_CIPHERS: &[u16] = &[
@@ -1840,6 +1878,8 @@ const PROFILE_14: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_15_CIPHERS: &[u16] = &[
@@ -1955,6 +1995,8 @@ const PROFILE_15: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_16_CIPHERS: &[u16] = &[
@@ -2023,6 +2065,8 @@ const PROFILE_16: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_17_CIPHERS: &[u16] = &[
@@ -2093,6 +2137,8 @@ const PROFILE_17: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_18_CIPHERS: &[u16] = &[
@@ -2163,6 +2209,8 @@ const PROFILE_18: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_19_CIPHERS: &[u16] = &[
@@ -2262,6 +2310,8 @@ const PROFILE_19: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_20_CIPHERS: &[u16] = &[
@@ -2361,6 +2411,8 @@ const PROFILE_20: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_21_CIPHERS: &[u16] = &[
@@ -2464,6 +2516,8 @@ const PROFILE_21: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_22_CIPHERS: &[u16] = &[
@@ -2567,6 +2621,8 @@ const PROFILE_22: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_23_CIPHERS: &[u16] = &[
@@ -2670,6 +2726,8 @@ const PROFILE_23: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_24_CIPHERS: &[u16] = &[
@@ -2756,6 +2814,8 @@ const PROFILE_24: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_25_CIPHERS: &[u16] = &[
@@ -2842,6 +2902,8 @@ const PROFILE_25: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_26_CIPHERS: &[u16] = &[
@@ -2957,6 +3019,8 @@ const PROFILE_26: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_27_CIPHERS: &[u16] = &[
@@ -3068,6 +3132,8 @@ const PROFILE_27: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_28_CIPHERS: &[u16] = &[
@@ -3179,6 +3245,8 @@ const PROFILE_28: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_29_CIPHERS: &[u16] = &[
@@ -3290,6 +3358,8 @@ const PROFILE_29: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_30_CIPHERS: &[u16] = &[
@@ -3409,6 +3479,8 @@ const PROFILE_30: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_31_CIPHERS: &[u16] = &[
@@ -3528,6 +3600,8 @@ const PROFILE_31: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_32_CIPHERS: &[u16] = &[
@@ -3647,6 +3721,8 @@ const PROFILE_32: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_33_CIPHERS: &[u16] = &[
@@ -3766,6 +3842,8 @@ const PROFILE_33: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: CHROME_106_SHUFFLE_SPEC,
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_34_CIPHERS: &[u16] = &[
@@ -3848,6 +3926,8 @@ const PROFILE_34: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_35_CIPHERS: &[u16] = &[
@@ -3930,6 +4010,8 @@ const PROFILE_35: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_36_CIPHERS: &[u16] = &[
@@ -4037,6 +4119,8 @@ const PROFILE_36: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_37_CIPHERS: &[u16] = &[
@@ -4152,6 +4236,8 @@ const PROFILE_37: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_38_CIPHERS: &[u16] = &[
@@ -4267,6 +4353,8 @@ const PROFILE_38: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: CHROME_112_PSK_SHUF_SPEC,
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_39_CIPHERS: &[u16] = &[
@@ -4386,6 +4474,8 @@ const PROFILE_39: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: CHROME_114_PADDING_PSK_SHUF_SPEC,
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_40_CIPHERS: &[u16] = &[
@@ -4505,6 +4595,8 @@ const PROFILE_40: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: CHROME_115_PQ_SPEC,
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_41_CIPHERS: &[u16] = &[
@@ -4624,6 +4716,8 @@ const PROFILE_41: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: CHROME_115_PQ_PSK_SPEC,
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 const PROFILE_42_CIPHERS: &[u16] = &[
@@ -4747,6 +4841,8 @@ const PROFILE_42: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: Some(ECH_GREASE_BORING),
     trust_anchor_ids: &[],
     unshuffled_extensions: CHROME_120_PQ_SPEC,
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
 // Xray's `randomizednoalpn` preset: `HelloRandomizedNoALPN` under the weights
@@ -4841,10 +4937,13 @@ const PROFILE_43: UtlsClientHelloProfile = UtlsClientHelloProfile {
     encrypted_client_hello: None,
     trust_anchor_ids: &[],
     unshuffled_extensions: &[],
+    advertises_unimplemented_suites: false,
+    boringssl_permutation: false,
 };
 
-// Chrome 155 (`HelloChrome_155`), the profile `chrome` names since Xray-core
-// v26.11.9: Chrome 133's, with GREASE and ML-DSA 44, 65 and 87 ahead of the
+// Chrome 155 (`HelloChrome_155`), the profile Xray-core v26.11.9 names
+// `chrome`; here `hellochrome_155`, `chrome` being Chrome 156 (`PROFILE_45`).
+// Chrome 133's, with GREASE and ML-DSA 44, 65 and 87 ahead of the
 // signature algorithms and a `trust_anchors` extension carrying the snapshot
 // of the Chrome Root Store IDs in uTLS's `u_chrome155.go`. The order is the
 // one uTLS's Chrome shuffle gives under the oracle's zeroed `crypto/rand`,
@@ -4968,6 +5067,19 @@ const PROFILE_44: UtlsClientHelloProfile = UtlsClientHelloProfile {
     ..PROFILE_0
 };
 
+// Chrome 156 (156.0.8078.79), the profile `chrome` and `hellochrome_auto`
+// name. Its hello carries Chrome 155's lists as they are -- fourteen lab
+// captures (`tests/fixtures/chrome156`) show the same suites, groups, key
+// shares, signature algorithms, trust anchors and ECH GREASE scheme -- and
+// differs from uTLS's in how they go out: every suite listed, the six
+// TLS-1.2-only ones rustls does not implement included, and the extensions
+// in BoringSSL's uniformly drawn order. `hellochrome_155` keeps uTLS's.
+const PROFILE_45: UtlsClientHelloProfile = UtlsClientHelloProfile {
+    advertises_unimplemented_suites: true,
+    boringssl_permutation: true,
+    ..PROFILE_44
+};
+
 /// Resolves a fingerprint name to the ClientHello shape it stands for.
 ///
 /// `random` and `randomized` do not name a fixed shape. Xray's `init()` draws
@@ -5062,8 +5174,8 @@ fn modern_fingerprint_at(entropy: u64) -> &'static str {
 
 fn named_profile(fingerprint: &str) -> Option<&'static UtlsClientHelloProfile> {
     match fingerprint {
-        "chrome" => Some(&PROFILE_44),
-        "hellochrome_auto" => Some(&PROFILE_44),
+        "chrome" => Some(&PROFILE_45),
+        "hellochrome_auto" => Some(&PROFILE_45),
         "hellochrome_155" => Some(&PROFILE_44),
         "hellochrome_133" => Some(&PROFILE_0),
         "firefox" => Some(&PROFILE_1),
@@ -5148,25 +5260,65 @@ mod tests {
                 && a.trust_anchor_ids == b.trust_anchor_ids
                 && a.cipher_suites == b.cipher_suites
                 && extensions(a) == extensions(b)
+                && a.advertises_unimplemented_suites == b.advertises_unimplemented_suites
+                && a.boringssl_permutation == b.boringssl_permutation
         })
     }
 
-    /// Xray-core v26.11.9: `chrome`, `hellochrome_auto` and the new
-    /// `hellochrome_155` are Chrome 155; `hellochrome_133` keeps Chrome 133.
+    /// `chrome` and `hellochrome_auto` are Chrome 156 as Chrome sends it;
+    /// `hellochrome_155` keeps uTLS's Chrome 155, the name Xray-core v26.11.9
+    /// added, and `hellochrome_133` Chrome 133.
     #[test]
-    fn chrome_names_resolve_as_xray_core_v26_11_9_resolves_them() {
-        for name in ["chrome", "hellochrome_auto", "hellochrome_155"] {
-            assert!(same(profile_for_fingerprint(name), &PROFILE_44), "{name}");
+    fn chrome_names_resolve_to_chrome_156_and_the_utls_names_to_utls() {
+        for name in ["chrome", "hellochrome_auto"] {
+            assert!(same(profile_for_fingerprint(name), &PROFILE_45), "{name}");
             assert!(
-                same(reality_profile_for_fingerprint(name), &PROFILE_44),
+                same(reality_profile_for_fingerprint(name), &PROFILE_45),
                 "{name}"
             );
         }
+        assert!(same(
+            profile_for_fingerprint("hellochrome_155"),
+            &PROFILE_44
+        ));
+        assert!(same(
+            reality_profile_for_fingerprint("hellochrome_155"),
+            &PROFILE_44
+        ));
         assert!(same(profile_for_fingerprint("hellochrome_133"), &PROFILE_0));
         assert!(same(
             reality_profile_for_fingerprint("hellochrome_133"),
             &PROFILE_0
         ));
+    }
+
+    /// Chrome 156 sends Chrome 155's lists; what differs is how they go out:
+    /// every suite advertised, the six this build cannot negotiate included,
+    /// and the extensions in BoringSSL's uniform order. Only Chrome 156 does
+    /// either.
+    #[test]
+    fn chrome_156_is_chrome_155_sent_as_chrome_sends_it() {
+        let (old, new) = (&PROFILE_44, &PROFILE_45);
+        assert_eq!(new.cipher_suites, old.cipher_suites);
+        assert_eq!(new.supported_groups, old.supported_groups);
+        assert_eq!(new.supported_versions, old.supported_versions);
+        assert_eq!(new.signature_algorithms, old.signature_algorithms);
+        assert_eq!(new.alpn_protocols, old.alpn_protocols);
+        assert_eq!(new.trust_anchor_ids, old.trust_anchor_ids);
+        assert_eq!(new.unshuffled_extensions, old.unshuffled_extensions);
+        assert_eq!(new.padding_length, old.padding_length);
+        assert!(new.advertises_unimplemented_suites && new.boringssl_permutation);
+        for name in xray_utls::XRAY_UTLS_FINGERPRINTS {
+            let Some(profile) = profile_for_fingerprint(name) else {
+                continue;
+            };
+            let chrome_156 = matches!(*name, "chrome" | "hellochrome_auto");
+            assert_eq!(
+                profile.advertises_unimplemented_suites, chrome_156,
+                "{name}"
+            );
+            assert_eq!(profile.boringssl_permutation, chrome_156, "{name}");
+        }
     }
 
     /// Chrome 155 is Chrome 133 with GREASE and ML-DSA ahead of its signature

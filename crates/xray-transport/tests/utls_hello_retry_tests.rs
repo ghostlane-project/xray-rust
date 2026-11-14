@@ -205,12 +205,15 @@ async fn a_retry_naming_a_group_gets_its_key_share_alone() {
 }
 
 /// A HelloRetryRequest with a cookie and no group gets the cookie back, the
-/// first ClientHello's key shares unchanged, and the cookie anywhere but the
-/// last two places, as uTLS's `p.Intn(len(Extensions) - 2)` puts it: over
-/// 512 retries every allowed place comes up (with sixteen or seventeen of
-/// them, a given one is missed with probability below `10^-13`) and no other.
+/// first ClientHello's key shares unchanged, and the cookie where its client
+/// would put it. uTLS puts it anywhere but the last two places, with
+/// `p.Intn(len(Extensions) - 2)`. Chrome 156 (`chrome`) puts it where
+/// BoringSSL's extension permutation drew it for the connection: anywhere
+/// between the two GREASE extensions, the first and last places. Over 512
+/// retries every allowed place comes up (with sixteen to eighteen of them, a
+/// given one is missed with probability below `10^-12`) and no other.
 #[tokio::test]
-async fn a_retry_with_a_cookie_gets_it_back_where_utls_would_place_it() {
+async fn a_retry_with_a_cookie_gets_it_back_where_its_client_would_place_it() {
     let sent = [0xc0, 0x0c, 0x1e, 0x5e];
     // `randomizednoalpn` with `http/1.1`: an ALPN extension the override
     // appends is one more place in uTLS's list too.
@@ -237,6 +240,20 @@ async fn a_retry_with_a_cookie_gets_it_back_where_utls_would_place_it() {
             assert_eq!(extension_body(&first, EXT_COOKIE), None);
 
             let types = extension_types(&second);
+            // The one order holds for the connection: the second hello is
+            // the first with the cookie in it.
+            let kept = |types: &[u16]| {
+                types
+                    .iter()
+                    .copied()
+                    .filter(|extension_type| ![EXT_COOKIE, EXT_PADDING].contains(extension_type))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                kept(&types),
+                kept(&extension_types(&first)),
+                "{fingerprint}: the second ClientHello keeps the first's order"
+            );
             others = types.len() - 1;
             places.insert(
                 types
@@ -245,10 +262,14 @@ async fn a_retry_with_a_cookie_gets_it_back_where_utls_would_place_it() {
                     .expect("the second ClientHello carries the cookie"),
             );
         }
+        let allowed = if fingerprint == "chrome" {
+            (1..others).collect::<BTreeSet<_>>()
+        } else {
+            (0..others - 2).collect::<BTreeSet<_>>()
+        };
         assert_eq!(
-            places,
-            (0..others - 2).collect::<BTreeSet<_>>(),
-            "{fingerprint}: every place but the last two of {others}"
+            places, allowed,
+            "{fingerprint}: the cookie's places among {others} others"
         );
     }
 }
