@@ -25,7 +25,9 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
 
+use crate::memory_budget::{ByteBudget, ReceiveGate};
 use crate::stream::h2_bdp::{BdpEstimator, BdpPings, BdpSampler};
+use crate::stream::h2_budget::hand_back;
 use crate::{BoxedTransportStream, MemoryClass};
 
 use super::config::{
@@ -909,6 +911,9 @@ pub struct H2ResponseBody {
     failure: Option<String>,
     shared: Arc<SharedSend>,
     bdp: Option<Arc<BdpSampler>>,
+    /// The response's queue within the process's byte budget, and the
+    /// credit its reads free ([`hand_back`]).
+    window: ReceiveGate<'static>,
 }
 
 /// DATA received for one response and not yet read, filled by
@@ -1008,6 +1013,7 @@ impl H2ResponseBody {
                 failure: None,
                 shared,
                 bdp,
+                window: ReceiveGate::new(ByteBudget::process()),
             };
         };
         let flow = recv.flow_control().clone();
@@ -1024,7 +1030,20 @@ impl H2ResponseBody {
             failure: None,
             shared,
             bdp,
+            window: ReceiveGate::new(ByteBudget::process()),
         }
+    }
+
+    /// Settles the response's queue with the budget and hands back the
+    /// credit it grants.
+    fn hand_back(&mut self) -> Result<(), io::Error> {
+        let Some(flow) = self.flow.as_mut() else {
+            return Ok(());
+        };
+        if let Err(source) = hand_back(&mut self.window, flow) {
+            return Err(self.fail(format!("HTTP/2 response flow control failed: {source}")));
+        }
+        Ok(())
     }
 
     /// Response headers excluding the HTTP/2 pseudo-headers.
@@ -1105,6 +1124,7 @@ impl AsyncRead for H2ResponseBody {
                     this.trailers = trailers;
                     this.received = None;
                     this.flow = None;
+                    this.window.close();
                     this.eof = true;
                     return Poll::Ready(Ok(()));
                 }
@@ -1114,20 +1134,22 @@ impl AsyncRead for H2ResponseBody {
                 }
                 None => {
                     guard.reader = Some(cx.waker().clone());
+                    drop(guard);
+                    // Nothing is queued: credit held back goes out now.
+                    if let Err(error) = this.hand_back() {
+                        return Poll::Ready(Err(error));
+                    }
                     return Poll::Pending;
                 }
             }
         }
 
         if copied > 0 {
-            let release = match this.flow.as_mut() {
-                Some(flow) => flow.release_capacity(copied),
-                None => Ok(()),
-            };
-            if let Err(source) = release {
-                return Poll::Ready(Err(
-                    this.fail(format!("HTTP/2 response flow control failed: {source}"))
-                ));
+            // Credit goes back as the reader takes bytes, at once unless the
+            // byte budget is spent and the queue holds more than the floor.
+            this.window.consumed(copied);
+            if let Err(error) = this.hand_back() {
+                return Poll::Ready(Err(error));
             }
             if let Some(bdp) = &this.bdp {
                 bdp.record_data(copied);

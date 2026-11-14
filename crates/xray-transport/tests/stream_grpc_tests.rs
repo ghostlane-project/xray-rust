@@ -5792,3 +5792,164 @@ mod stream_grpc_flow_control_tests {
         assert_eq!(received, VICTIM_PAYLOAD, "the second flow's own bytes");
     }
 }
+
+mod stream_grpc_budget_tests {
+    //! The downlink's credit under the process's byte budget, set to a
+    //! phone's: calls that read keep up, and calls read and left open hold
+    //! nothing of it.
+    use std::future::poll_fn;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use h2::server::{self, SendResponse};
+    use h2::SendStream;
+    use http::{HeaderValue, Response};
+    use tokio::io::AsyncReadExt;
+    use tokio::net::{TcpListener, TcpStream};
+    use xray_routing::{Network, Target, TargetAddr};
+    use xray_transport::stream::grpc_test_only::encode_hunk;
+    use xray_transport::stream::{GrpcConfig, GrpcTransport, TransportLayer};
+    use xray_transport::{
+        BoxedTransportStream, ByteBudgetSettings, ConnectorConfig, MemoryClass, TransportDialer,
+    };
+
+    const DEADLINE: Duration = Duration::from_secs(30);
+    /// Calls on the one connection the pool gives an outbound.
+    const CALLS: usize = 8;
+    /// What each call downloads: many times its opening window.
+    const SIZE: usize = 4 * 1024 * 1024;
+    const HUNK: usize = 32 * 1024;
+
+    /// The process has one byte budget; the tests that set it take turns.
+    static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    struct BudgetTurn {
+        _turn: tokio::sync::MutexGuard<'static, ()>,
+    }
+
+    impl Drop for BudgetTurn {
+        fn drop(&mut self) {
+            xray_transport::set_byte_budget(None);
+        }
+    }
+
+    async fn budget_of(class: MemoryClass) -> BudgetTurn {
+        let turn = TURN.lock().await;
+        xray_transport::set_byte_budget(Some(ByteBudgetSettings::for_class(class)));
+        BudgetTurn { _turn: turn }
+    }
+
+    fn config() -> GrpcConfig {
+        GrpcConfig {
+            service_name: "xray.grpc".to_owned(),
+            multi_mode: false,
+            authority: "grpc.example.com".parse().expect("a literal authority"),
+            user_agent: HeaderValue::from_static("grpc-go/1.81.0"),
+            idle_timeout_secs: 0,
+            health_check_timeout_secs: 0,
+            permit_without_stream: false,
+            initial_windows_size: 0,
+        }
+    }
+
+    async fn open_flow(
+        dialer: &TransportDialer,
+        transport: &TransportLayer,
+        addr: SocketAddr,
+    ) -> BoxedTransportStream {
+        let target = Target::new(TargetAddr::Ip(addr.ip()), addr.port(), Network::Tcp);
+        dialer
+            .connect_stream(&ConnectorConfig::Tcp, transport, &target, &[addr], None)
+            .await
+            .expect("the flow opens")
+    }
+
+    fn grpc_response() -> Response<()> {
+        Response::builder()
+            .status(200)
+            .header("content-type", "application/grpc")
+            .body(())
+            .expect("a well-formed response")
+    }
+
+    async fn send_all(send: &mut SendStream<Bytes>, mut chunk: Bytes) {
+        while !chunk.is_empty() {
+            send.reserve_capacity(chunk.len());
+            let granted = poll_fn(|cx| send.poll_capacity(cx))
+                .await
+                .expect("the send half is still streaming")
+                .expect("capacity, not an error");
+            let take = granted.min(chunk.len());
+            send.send_data(chunk.split_to(take), false)
+                .expect("send data");
+        }
+    }
+
+    /// A loopback peer that answers every call with [`SIZE`] bytes and then
+    /// holds the call open.
+    async fn spawn_peer() -> SocketAddr {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a loopback listener");
+        let addr = listener.local_addr().expect("the listener's address");
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(serve(socket));
+            }
+        });
+        addr
+    }
+
+    async fn serve(socket: TcpStream) {
+        let mut connection = server::handshake(socket).await.expect("server handshake");
+        while let Some(accepted) = connection.accept().await {
+            let (_request, respond) = accepted.expect("a well-formed request");
+            tokio::spawn(download(respond));
+        }
+    }
+
+    async fn download(mut respond: SendResponse<Bytes>) {
+        let mut send = respond
+            .send_response(grpc_response(), false)
+            .expect("respond");
+        let hunk = Bytes::from(encode_hunk(&vec![0xa5; HUNK]));
+        for _ in 0..SIZE / HUNK {
+            send_all(&mut send, hunk.clone()).await;
+        }
+        let _held = send;
+        std::future::pending::<()>().await;
+    }
+
+    /// Eight calls on one connection download under a phone's 3 MB at once
+    /// and all finish; read and left open, as a messenger's calls are, they
+    /// hold nothing of the budget, which the relays keep for their reads.
+    #[tokio::test]
+    async fn eight_calls_on_one_connection_finish_under_a_phone_budget_and_then_hold_nothing() {
+        let _turn = budget_of(MemoryClass::Constrained).await;
+        let addr = spawn_peer().await;
+        let dialer = TransportDialer::system().expect("a system dialer");
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config()));
+        let mut flows = Vec::new();
+        for _ in 0..CALLS {
+            flows.push(open_flow(&dialer, &transport, addr).await);
+        }
+
+        let reads = futures_util::future::join_all(flows.iter_mut().map(|flow| async move {
+            let mut bytes = vec![0; SIZE];
+            flow.read_exact(&mut bytes).await.expect("the call reads");
+            bytes.iter().all(|byte| *byte == 0xa5)
+        }));
+        let intact = tokio::time::timeout(DEADLINE, reads)
+            .await
+            .expect("the calls stalled");
+        assert_eq!(intact, vec![true; CALLS], "every call's own bytes");
+
+        let usage = xray_transport::byte_budget_usage();
+        assert!(
+            usage.in_use <= 64 * 1024,
+            "{CALLS} calls read and left open hold {usage:?}"
+        );
+        drop(flows);
+    }
+}

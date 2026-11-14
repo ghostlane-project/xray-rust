@@ -26,6 +26,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use super::framing::{encode_hunk, HunkDecoder, HunkMode, MAX_HUNK_PAYLOAD_LEN};
 use super::h2client::H2ConnectionDriver;
 use super::keepalive::OpenCall;
+use crate::memory_budget::{ByteBudget, ReceiveGate};
+use crate::stream::h2_budget::hand_back;
 use crate::{TransportError, TransportStream};
 
 /// Where [`GrpcStream::poll_drain_uplink`] stopped.
@@ -158,6 +160,9 @@ pub struct GrpcStream {
     /// succeeded. Every other way a downlink can end is an error, not this.
     eof: bool,
     send_closed: bool,
+    /// The downlink's queue within the process's byte budget, and the
+    /// credit its reads free ([`hand_back`]).
+    window: ReceiveGate<'static>,
     /// The connection task this call rides on, held so that
     /// [`Self::connection_is_finished`] has something to ask.
     ///
@@ -215,6 +220,7 @@ impl GrpcStream {
             downlink_carried_data: false,
             eof: false,
             send_closed: false,
+            window: ReceiveGate::new(ByteBudget::process()),
             driver,
             _open_call: open_call,
         }
@@ -487,6 +493,8 @@ impl GrpcStream {
     /// that we call success and xray-core calls an error is the kind of
     /// disagreement that gets debugged on someone else's server.
     fn finish_downlink(&mut self) -> io::Result<()> {
+        // No more credit goes out: the queue's bytes of the budget go back.
+        self.window.close();
         // Checked before the status because it is the more precise complaint:
         // grpc-go turns an EOF inside a message into `io.ErrUnexpectedEOF`
         // rather than letting it pass as the end of the stream
@@ -791,14 +799,25 @@ impl AsyncRead for GrpcStream {
                 Downlink::Reading(recv) => recv,
             };
 
-            match ready!(recv.poll_data(cx)) {
+            let data = match recv.poll_data(cx) {
+                Poll::Ready(data) => data,
+                Poll::Pending => {
+                    // Nothing is queued: credit held back goes out now.
+                    hand_back(&mut this.window, recv.flow_control())
+                        .map_err(|error| h2_io_error("could not release the window", &error))?;
+                    return Poll::Pending;
+                }
+            };
+            match data {
                 Some(Ok(chunk)) => {
                     // The window has to be handed back explicitly or the peer
                     // stalls the moment it has sent 65535 bytes, which is the
                     // connection and stream default. h2 releases the stream
-                    // and connection windows together here.
-                    recv.flow_control()
-                        .release_capacity(chunk.len())
+                    // and connection windows together here, at once unless
+                    // the byte budget is spent and the queue holds more than
+                    // the floor.
+                    this.window.consumed(chunk.len());
+                    hand_back(&mut this.window, recv.flow_control())
                         .map_err(|error| h2_io_error("could not release the window", &error))?;
                     this.decoder.push(&chunk);
                     this.downlink_carried_data = true;

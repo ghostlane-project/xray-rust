@@ -33,9 +33,23 @@
 //!
 //! # Who takes bytes
 //!
-//! A relay direction, for a read beyond its floor and for what it wrote
-//! that its writer may still hold (a TLS session's records) until it
-//! flushes: [`BudgetPermits`].
+//! - A relay direction, for a read beyond its floor and for what it wrote
+//!   that its writer may still hold (a TLS session's records) until it
+//!   flushes: [`BudgetPermits`].
+//! - A flow-controlled receive window (an HTTP/2 stream), for the bytes it
+//!   received and no reader has taken yet, beyond its floor: a
+//!   [`ReceiveGate`]. Credit its peer has and has not used holds nothing, so
+//!   an idle stream holds no bytes of `B` however large its window; when the
+//!   windows' part of `B` is spent, a stream that queues more than its floor
+//!   hands credit back only once that part covers its queue again, at the
+//!   latest when its reader has taken the queue down to the floor.
+//!
+//! The windows' part of `B` is what it leaves after a reserve for the relays
+//! (`B / 8`, [`RELAY_RESERVE_DIVISOR`]): queues beyond that part get no more
+//! credit until they drain. Handshake values (HTTP/2 SETTINGS, the first
+//! connection WINDOW_UPDATE) are not touched: only when later credit goes
+//! out moves. Hysteria2's QUIC windows are not counted: each connection keeps
+//! the windows it announced (`HysteriaWindows`).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -60,6 +74,11 @@ pub const MIN_FLOW_FLOOR: usize = 1024;
 /// The largest floor: one HTTP/2 or QUIC flow's useful minimum window, past
 /// which the floor rather than `B` would bound the process.
 pub const MAX_FLOW_FLOOR: usize = 64 * 1024;
+
+/// The part of `B` kept from the receive windows for the relays: an eighth. On a
+/// phone that is 375,000 bytes, four relay directions at the phone's read cap
+/// with a TLS writer's unflushed threshold each (4 × (32 + 64) KiB).
+pub const RELAY_RESERVE_DIVISOR: usize = 8;
 
 /// `rate × RTT` in bytes: what a path of `rate_bits_per_second` and
 /// `rtt_millis` holds in flight.
@@ -106,6 +125,8 @@ pub struct ByteBudgetUsage {
     pub in_use: usize,
     /// The most taken at once since the last [`reset_byte_budget_peak`].
     pub peak: usize,
+    /// Bytes the receive gates hold, part of `in_use`.
+    pub window_bytes: usize,
 }
 
 static PROCESS: ByteBudget = ByteBudget::new();
@@ -146,6 +167,8 @@ pub struct ByteBudget {
     waiting: AtomicUsize,
     /// Holders waiting for bytes, in the order they began to wait.
     queue: Mutex<VecDeque<Arc<Waiter>>>,
+    /// Bytes the receive gates hold, part of `in_use`.
+    window_bytes: AtomicUsize,
 }
 
 impl Default for ByteBudget {
@@ -164,6 +187,7 @@ impl ByteBudget {
             peak: AtomicUsize::new(0),
             waiting: AtomicUsize::new(0),
             queue: Mutex::new(VecDeque::new()),
+            window_bytes: AtomicUsize::new(0),
         }
     }
 
@@ -227,6 +251,7 @@ impl ByteBudget {
             floor: self.floor(),
             in_use: self.in_use(),
             peak: self.peak.load(Ordering::SeqCst),
+            window_bytes: self.window_bytes.load(Ordering::SeqCst),
         }
     }
 
@@ -285,6 +310,13 @@ impl ByteBudget {
     /// The bytes no holder has taken.
     pub fn free(&self) -> usize {
         self.capacity().saturating_sub(self.in_use())
+    }
+
+    /// The windows' part of `B`: what the receive gates' queues may hold
+    /// together and still be handed credit, `B` less the relays' reserve.
+    pub fn window_cap(&self) -> usize {
+        let capacity = self.capacity();
+        capacity - capacity / RELAY_RESERVE_DIVISOR
     }
 
     fn lock_queue(&self) -> MutexGuard<'_, VecDeque<Arc<Waiter>>> {
@@ -489,6 +521,104 @@ impl<'b> BudgetPermits<'b> {
 impl Drop for BudgetPermits<'_> {
     fn drop(&mut self) {
         self.release();
+    }
+}
+
+/// Paces the credit one flow-controlled receive window hands back by the
+/// bytes it holds.
+///
+/// A receive window lets its peer send that much ahead of the reader, and
+/// what arrives waits in the window's queue until a reader takes it. Those
+/// bytes, beyond the floor, take bytes of the budget. As a reader takes
+/// bytes, the credit they free is owed to the peer and handed back at once,
+/// unless the budget is spent and the queue still holds more than the floor:
+/// then the credit waits until the reader has taken the queue down to the
+/// floor or the budget has room again, and a peer that outruns a pressed
+/// process pauses on its window. The reader's next read decides again, so no
+/// task waits on the budget and a stream's credit never depends on another
+/// stream's.
+///
+/// Credit the peer has and has not used holds nothing: an idle stream holds
+/// no bytes of `B`, whatever its window. What all streams can hold at once is
+/// therefore bounded by their windows, as without a budget; the budget bounds
+/// what they hold while readers keep up and the pace at which a pressed
+/// process lets a queue refill.
+#[derive(Debug)]
+pub struct ReceiveGate<'b> {
+    permits: BudgetPermits<'b>,
+    owed: usize,
+}
+
+impl<'b> ReceiveGate<'b> {
+    pub fn new(budget: &'b ByteBudget) -> Self {
+        Self {
+            permits: BudgetPermits::new(budget),
+            owed: 0,
+        }
+    }
+
+    pub fn budget(&self) -> &'b ByteBudget {
+        self.permits.budget()
+    }
+
+    /// A reader took `bytes`: the window owes the peer that much credit.
+    pub fn consumed(&mut self, bytes: usize) {
+        self.owed = self.owed.saturating_add(bytes);
+    }
+
+    /// Credit taken by readers and not handed back yet.
+    pub fn owed(&self) -> usize {
+        self.owed
+    }
+
+    /// Bytes of the budget the window holds.
+    pub fn held(&self) -> usize {
+        self.permits.held()
+    }
+
+    /// Holds the budget's bytes for `queued`, the bytes received and not
+    /// taken by a reader, and returns how much of the credit owed to hand
+    /// back now: all of it while the budget covers the queue beyond the
+    /// floor, none while it does not, nor while the budget holds more than
+    /// a lowered capacity: then queues beyond the floor drain before their
+    /// peers may send more, and what they hold comes back.
+    pub fn grant(&mut self, queued: usize) -> usize {
+        let budget = self.permits.budget();
+        let need = queued.saturating_sub(budget.floor());
+        let before = self.permits.held();
+        let held = self.permits.try_hold(need);
+        if held > before {
+            budget
+                .window_bytes
+                .fetch_add(held - before, Ordering::SeqCst);
+        } else {
+            budget
+                .window_bytes
+                .fetch_sub(before - held, Ordering::SeqCst);
+        }
+        let spent = budget.in_use() > budget.capacity()
+            || budget.window_bytes.load(Ordering::SeqCst) > budget.window_cap();
+        if held < need || (need > 0 && spent) {
+            return 0;
+        }
+        std::mem::take(&mut self.owed)
+    }
+
+    /// Gives back the budget's bytes; the window is closed.
+    pub fn close(&mut self) {
+        self.owed = 0;
+        let held = self.permits.held();
+        self.permits
+            .budget()
+            .window_bytes
+            .fetch_sub(held, Ordering::SeqCst);
+        self.permits.release();
+    }
+}
+
+impl Drop for ReceiveGate<'_> {
+    fn drop(&mut self) {
+        self.close();
     }
 }
 
@@ -712,5 +842,96 @@ mod tests {
         drop(all);
         assert_eq!(wakes(&task), 2, "all of B came back to it");
         assert_eq!(greedy.try_hold(usize::MAX), 20 * KIB);
+    }
+
+    #[test]
+    fn a_gate_holds_its_queue_beyond_the_floor_and_nothing_for_unused_credit() {
+        let budget = budget(64 * KIB, 4 * KIB);
+        let mut gate = ReceiveGate::new(&budget);
+        // The peer has a 1 MiB window and has sent nothing: no bytes held.
+        assert_eq!(gate.grant(0), 0);
+        assert_eq!(gate.held(), 0);
+        // 40 KiB arrived and a reader took 16 of them.
+        gate.consumed(16 * KIB);
+        assert_eq!(gate.grant(24 * KIB), 16 * KIB, "B covers the queue");
+        assert_eq!(gate.held(), 20 * KIB, "the queue beyond the floor");
+        // The reader caught up: the stream holds nothing, idle or not.
+        gate.consumed(24 * KIB);
+        assert_eq!(gate.grant(0), 24 * KIB);
+        assert_eq!(gate.held(), 0);
+        assert_eq!(budget.in_use(), 0);
+    }
+
+    #[test]
+    fn a_pressed_gate_holds_back_credit_until_its_reader_drains_the_queue() {
+        let budget = budget(64 * KIB, 4 * KIB);
+        let mut other = BudgetPermits::new(&budget);
+        other.try_hold(60 * KIB);
+        let mut gate = ReceiveGate::new(&budget);
+        gate.consumed(8 * KIB);
+        assert_eq!(gate.grant(20 * KIB), 0, "16 KiB beyond the floor, 4 free");
+        assert_eq!(gate.owed(), 8 * KIB);
+        gate.consumed(12 * KIB);
+        assert_eq!(gate.grant(8 * KIB), 20 * KIB, "4 KiB beyond the floor fit");
+        gate.consumed(8 * KIB);
+        assert_eq!(gate.grant(0), 8 * KIB, "within the floor it never waits");
+        // Another holder's bytes coming back let a full queue refill too.
+        gate.consumed(KIB);
+        assert_eq!(gate.grant(40 * KIB), 0);
+        drop(other);
+        assert_eq!(gate.grant(40 * KIB), KIB);
+        gate.close();
+        assert_eq!(budget.in_use(), 0);
+    }
+
+    #[test]
+    fn queues_beyond_the_windows_part_get_no_credit_and_leave_the_relays_reserve() {
+        let budget = budget(64 * KIB, 4 * KIB);
+        let mut gate = ReceiveGate::new(&budget);
+        gate.consumed(8 * KIB);
+        // 60 KiB beyond the floor: held, as they are in memory, but past the
+        // windows' 56 KiB, so the peer gets no more until they drain.
+        assert_eq!(gate.grant(64 * KIB), 0);
+        assert_eq!(budget.usage().window_bytes, 60 * KIB);
+        gate.consumed(8 * KIB);
+        assert_eq!(
+            gate.grant(56 * KIB),
+            16 * KIB,
+            "52 KiB fit the windows' part"
+        );
+        let mut relay = BudgetPermits::new(&budget);
+        assert_eq!(relay.try_hold(16 * KIB), 12 * KIB);
+        drop(gate);
+        assert_eq!(budget.usage().window_bytes, 0, "a dropped gate gives back");
+        assert_eq!(budget.in_use(), 12 * KIB);
+    }
+
+    #[test]
+    fn a_lowered_budget_holds_back_credit_until_the_queues_drain() {
+        let budget = budget(64 * KIB, 4 * KIB);
+        let mut gate = ReceiveGate::new(&budget);
+        gate.consumed(8 * KIB);
+        assert_eq!(gate.grant(36 * KIB), 8 * KIB, "32 KiB beyond the floor fit");
+        // A host under memory pressure lowers B below what the queue holds.
+        budget.set(Some(ByteBudgetSettings {
+            capacity: 16 * KIB,
+            floor: 4 * KIB,
+        }));
+        gate.consumed(8 * KIB);
+        assert_eq!(
+            gate.grant(28 * KIB),
+            0,
+            "B is spent: the queue drains first"
+        );
+        assert_eq!(
+            gate.held(),
+            24 * KIB,
+            "what it holds follows the queue down"
+        );
+        gate.consumed(16 * KIB);
+        assert_eq!(gate.grant(12 * KIB), 24 * KIB, "within the new B again");
+        assert_eq!(budget.in_use(), 8 * KIB);
+        gate.close();
+        assert_eq!(budget.in_use(), 0);
     }
 }
