@@ -31,6 +31,7 @@ func TestZZVectors(t *testing.T) {
 		})
 	zzKCPSettingsVectors(t)
 	zzKCPSegmentVectors(t)
+	zzWireVectors(t)
 }
 
 // zzSettingKeys are the settings the vectors keep: ZZKCPSettingFields (none
