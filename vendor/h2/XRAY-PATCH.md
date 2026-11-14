@@ -1,4 +1,4 @@
-# h2 0.4.20: Go's stream WINDOW_UPDATE policy, Xray's MASQUE client and Go's request headers
+# h2 0.4.20: Go's stream WINDOW_UPDATE policy, Xray's MASQUE client, Go's request headers and the read side's memory
 
 Source: the complete unchanged-version crates.io `h2` **0.4.20** archive,
 SHA256 `7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c18c05b8ab635fc118`.
@@ -73,3 +73,37 @@ unconditionally; upstream allows it only with the `unstable` feature. Cargo caps
 the lints of registry crates, but this copy is a path dependency, so its
 `deny(missing_docs)` applies, and cargo-fuzz's `--cfg fuzzing` build failed on
 the undocumented bridge. Behavior is unchanged.
+
+## Frames read into allocations of their own size
+
+`codec::FramedRead` reads each frame by itself: its 9-byte header into an
+inline array, then the frame into a `Vec` sized from the length the header
+gives, handed to the decoder whole. A frame up to 16,384 B of payload (the
+protocol's default maximum) is one allocation of exactly its size; a larger one
+starts at 16,393 B and doubles, ending at exactly its size. Between frames the
+reader holds no heap. A DATA frame's payload is that allocation, shared with
+nothing.
+
+Upstream read through tokio-util's `FramedRead` and `LengthDelimitedCodec`: one
+`BytesMut` that reserved each frame's length, was never shrunk, and handed
+frames out with `split_to`. A frame queued in a stream then kept alive the
+allocation it was cut from, with the bytes of its neighbours, and an
+allocation grew to the largest frame, twice its size while another frame was
+held. XHTTP's client advertises Go's 1 MiB SETTINGS_MAX_FRAME_SIZE, which the
+server sees and which stays; only how the client stores what it reads changes.
+
+Behavior is otherwise upstream's: a length above SETTINGS_MAX_FRAME_SIZE is a
+FRAME_SIZE_ERROR as soon as the length's three bytes are in, EOF inside a frame
+is the I/O error "bytes remaining on stream", EOF between frames ends the
+stream, and after a read error the next poll ends it. Unit tests in
+`codec/framed_read.rs` cover each, frames cut at every size, and the
+allocation sizes.
+
+## Drained frame buffers give their slots back
+
+`proto::streams::buffer::Buffer`, the slab that queues frames for every stream
+of a connection (received DATA waiting for its reader, DATA and HEADERS waiting
+to be sent), kept every slot it had grown to: one per frame queued at once, 512
+for a 4 MiB window of 8 KiB frames. Once it is empty it now keeps at most 4 KiB
+of slots, and gives the rest back. A unit test in `buffer.rs` covers both
+sides of that bound.

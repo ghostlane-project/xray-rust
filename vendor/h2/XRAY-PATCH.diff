@@ -129,10 +129,233 @@
          let send_request = SendRequest {
 --- a/src/codec/framed_read.rs
 +++ b/src/codec/framed_read.rs
-@@ -491,3 +491,227 @@
-         }
+@@ -8,22 +8,56 @@
+ 
+ use futures_core::Stream;
+ 
+-use bytes::{Buf, BytesMut};
++use bytes::{Buf, BufMut, Bytes, BytesMut};
+ 
+ use std::io;
+ 
+ use std::pin::Pin;
+ use std::task::{Context, Poll};
+-use tokio::io::AsyncRead;
+-use tokio_util::codec::FramedRead as InnerFramedRead;
+-use tokio_util::codec::{LengthDelimitedCodec, LengthDelimitedCodecError};
++use tokio::io::{AsyncRead, ReadBuf};
++use tokio_util::io::poll_read_buf;
+ 
+ // 16 MB "sane default" taken from golang http2
+ const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: usize = 16 << 20;
+ 
++/// xray-rust: bytes of a frame's header that carry its payload length.
++const LENGTH_FIELD_LEN: usize = 3;
++
++/// xray-rust: the first allocation for a frame, its header included:
++/// `HEADER_LEN + DEFAULT_MAX_FRAME_SIZE` = 9 + 16,384 = 16,393 B. A frame no
++/// larger than the protocol's default maximum is read into one allocation of
++/// exactly its size. A larger one starts here and doubles, ending at exactly
++/// its size, so it never holds more than twice the bytes that have arrived.
++const FRAME_FIRST_ALLOCATION: usize = frame::HEADER_LEN + DEFAULT_MAX_FRAME_SIZE as usize;
++
++/// xray-rust: reads each frame into an allocation of its own size, its
++/// header first. Upstream read through tokio-util's `FramedRead` and
++/// `LengthDelimitedCodec`: one buffer that grew to the largest frame read and
++/// was never shrunk, and whose frames, split off it, each kept a share of a
++/// larger allocation alive. Here a frame's bytes are exactly its bytes, and
++/// between frames the reader holds no heap.
+ #[derive(Debug)]
+ pub struct FramedRead<T> {
+-    inner: InnerFramedRead<T, LengthDelimitedCodec>,
++    inner: T,
++
++    /// Largest payload accepted (SETTINGS_MAX_FRAME_SIZE).
++    max_frame_size: usize,
++
++    /// The header of the frame being read.
++    head: [u8; frame::HEADER_LEN],
++
++    /// Bytes of `head` read so far.
++    head_len: usize,
++
++    /// The frame being read, header included, once its header is in: sized
++    /// from the length the header gives and handed to the decoder whole.
++    frame: Vec<u8>,
++
++    /// The size, header included, of the frame in `frame`.
++    frame_len: usize,
++
++    /// A read failed: the next poll ends the stream, as tokio-util's did.
++    errored: bool,
+ 
+     decoder: FrameDecoder,
+ }
+@@ -59,23 +93,32 @@
+ }
+ 
+ impl<T> FramedRead<T> {
+-    pub fn new(inner: InnerFramedRead<T, LengthDelimitedCodec>) -> FramedRead<T> {
+-        let decoder = FrameDecoder::new(inner.decoder().max_frame_length());
+-        FramedRead { inner, decoder }
++    pub fn new(inner: T) -> FramedRead<T> {
++        let max_frame_size = DEFAULT_MAX_FRAME_SIZE as usize;
++        FramedRead {
++            inner,
++            max_frame_size,
++            head: [0; frame::HEADER_LEN],
++            head_len: 0,
++            frame: Vec::new(),
++            frame_len: 0,
++            errored: false,
++            decoder: FrameDecoder::new(max_frame_size),
++        }
+     }
+ 
+     pub fn get_ref(&self) -> &T {
+-        self.inner.get_ref()
++        &self.inner
+     }
+ 
+     pub fn get_mut(&mut self) -> &mut T {
+-        self.inner.get_mut()
++        &mut self.inner
+     }
+ 
+     /// Returns the current max frame size setting
+     #[inline]
+     pub fn max_frame_size(&self) -> usize {
+-        self.inner.decoder().max_frame_length()
++        self.max_frame_size
+     }
+ 
+     /// Updates the max frame size setting.
+@@ -84,7 +127,7 @@
+     #[inline]
+     pub fn set_max_frame_size(&mut self, val: usize) {
+         assert!(DEFAULT_MAX_FRAME_SIZE as usize <= val && val <= MAX_MAX_FRAME_SIZE as usize);
+-        self.inner.decoder_mut().set_max_frame_length(val);
++        self.max_frame_size = val;
+         // Update max CONTINUATION frames too, since its based on this
+         self.decoder.set_max_frame_size(val);
+     }
+@@ -103,6 +146,69 @@
      }
  }
+ 
++impl<T: AsyncRead + Unpin> FramedRead<T> {
++    /// xray-rust: reads one whole frame, header included; `None` at EOF
++    /// between frames.
++    fn poll_frame(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<BytesMut>, Error>> {
++        while self.head_len < frame::HEADER_LEN {
++            let mut buf = ReadBuf::new(&mut self.head[self.head_len..]);
++            ready!(Pin::new(&mut self.inner).poll_read(cx, &mut buf))?;
++            let read = buf.filled().len();
++            if read == 0 {
++                if self.head_len == 0 {
++                    return Poll::Ready(Ok(None));
++                }
++                return Poll::Ready(Err(bytes_remaining()));
++            }
++            self.head_len += read;
++            if self.head_len < LENGTH_FIELD_LEN {
++                continue;
++            }
++            // Checked as soon as the length is in, as tokio-util did.
++            let payload_len = usize::from(self.head[0]) << 16
++                | usize::from(self.head[1]) << 8
++                | usize::from(self.head[2]);
++            if payload_len > self.max_frame_size {
++                return Poll::Ready(Err(Error::library_go_away(Reason::FRAME_SIZE_ERROR)));
++            }
++            if self.head_len == frame::HEADER_LEN {
++                self.frame_len = frame::HEADER_LEN + payload_len;
++                self.frame = Vec::with_capacity(self.frame_len.min(FRAME_FIRST_ALLOCATION));
++                self.frame.extend_from_slice(&self.head);
++            }
++        }
++
++        while self.frame.len() < self.frame_len {
++            let left = self.frame_len - self.frame.len();
++            if self.frame.len() == self.frame.capacity() {
++                // Doubles, and ends at exactly the frame's size.
++                let more = self.frame.capacity().min(left);
++                self.frame.reserve_exact(more);
++            }
++            let read = ready!(poll_read_buf(
++                Pin::new(&mut self.inner),
++                cx,
++                &mut (&mut self.frame).limit(left),
++            ))?;
++            if read == 0 {
++                return Poll::Ready(Err(bytes_remaining()));
++            }
++        }
++
++        self.head_len = 0;
++        self.frame_len = 0;
++        let frame = std::mem::take(&mut self.frame);
++        // A `Vec` whose length is its capacity becomes `Bytes` and then
++        // `BytesMut` without a copy or another allocation.
++        Poll::Ready(Ok(Some(BytesMut::from(Bytes::from(frame)))))
++    }
++}
++
++/// The error tokio-util's reader gave for EOF inside a frame.
++fn bytes_remaining() -> Error {
++    io::Error::new(io::ErrorKind::Other, "bytes remaining on stream").into()
++}
++
+ fn calc_max_continuation_frames(header_max: usize, frame_max: usize) -> usize {
+     // At least this many frames needed to use max header list size
+     let min_frames_for_list = (header_max / frame_max).max(1);
+@@ -419,12 +525,19 @@
+     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+         let span = tracing::trace_span!("FramedRead::poll_next");
+         let _e = span.enter();
++        if self.errored {
++            self.errored = false;
++            return Poll::Ready(None);
++        }
+         loop {
+             tracing::trace!("poll");
+-            let bytes = match ready!(Pin::new(&mut self.inner).poll_next(cx)) {
+-                Some(Ok(bytes)) => bytes,
+-                Some(Err(e)) => return Poll::Ready(Some(Err(map_err(e)))),
+-                None => return Poll::Ready(None),
++            let bytes = match ready!(self.poll_frame(cx)) {
++                Ok(Some(bytes)) => bytes,
++                Err(e) => {
++                    self.errored = true;
++                    return Poll::Ready(Some(Err(e)));
++                }
++                Ok(None) => return Poll::Ready(None),
+             };
+ 
+             tracing::trace!(read.bytes = bytes.len());
+@@ -436,17 +549,6 @@
+     }
+ }
+ 
+-fn map_err(err: io::Error) -> Error {
+-    if let io::ErrorKind::InvalidData = err.kind() {
+-        if let Some(custom) = err.get_ref() {
+-            if custom.is::<LengthDelimitedCodecError>() {
+-                return Error::library_go_away(Reason::FRAME_SIZE_ERROR);
+-            }
+-        }
+-    }
+-    err.into()
+-}
+-
+ // ===== impl Continuable =====
+ 
+ impl Continuable {
+@@ -490,4 +592,323 @@
+             }
+         }
+     }
++}
 +
 +/// xray-rust: frames as the reader hands them on, however the bytes arrive.
 +#[cfg(test)]
@@ -356,7 +579,102 @@
 +            assert!(next(&mut codec).is_none(), "cut {}: the stream ends", cut);
 +        }
 +    }
-+}
++
++    fn poll_once(reader: &mut FramedRead<Script>) -> Poll<Option<Result<Frame, Error>>> {
++        let waker = Waker::from(Arc::new(NoWake));
++        let mut cx = Context::from_waker(&waker);
++        Pin::new(reader).poll_next(&mut cx)
++    }
++
++    /// Steps that deliver `wire` `piece` bytes at a time, pausing after each.
++    fn in_pieces(wire: &[u8], piece: usize) -> Vec<Step> {
++        let mut steps = Vec::new();
++        for bytes in wire.chunks(piece) {
++            steps.push(Step::Bytes(bytes.to_vec()));
++            steps.push(Step::Pending);
++        }
++        steps
++    }
++
++    /// Once a frame is handed on, nothing of it stays with the reader, the
++    /// largest frame the connection allows included.
++    #[test]
++    fn between_frames_the_reader_holds_no_heap() {
++        let large = pattern(1 << 20, 7);
++        let mut wire = data(1, &large);
++        wire.extend(ping(*b"between!"));
++        let mut reader = FramedRead::new(Script(vec![Step::Bytes(wire)].into()));
++        reader.set_max_frame_size(1 << 20);
++        assert_eq!(reader.frame.capacity(), 0, "a new reader");
++
++        match poll_once(&mut reader) {
++            Poll::Ready(Some(Ok(Frame::Data(data)))) => assert_eq!(data.payload(), &large[..]),
++            other => panic!("expected the 1 MiB DATA frame, got {:?}", other),
++        }
++        assert_eq!(reader.frame.capacity(), 0, "after a 1 MiB frame");
++        match poll_once(&mut reader) {
++            Poll::Ready(Some(Ok(Frame::Ping(_)))) => {}
++            other => panic!("expected PING, got {:?}", other),
++        }
++        assert_eq!(reader.frame.capacity(), 0, "after a PING");
++    }
++
++    /// A frame up to the default maximum is read into one allocation of
++    /// exactly its size; a larger one doubles from there to exactly its size,
++    /// never holding more than twice what has arrived.
++    #[test]
++    fn a_frame_is_read_into_an_allocation_of_its_size() {
++        for (payload_len, piece) in [(8 * 1024, 1000), (16 * 1024, 4096), (1 << 20, 4096)] {
++            let payload = pattern(payload_len, 8);
++            let frame_len = frame::HEADER_LEN + payload_len;
++            let steps = in_pieces(&data(1, &payload), piece);
++            let mut reader = FramedRead::new(Script(steps.into()));
++            reader.set_max_frame_size(1 << 20);
++            let mut allocations = vec![];
++            let delivered = loop {
++                match poll_once(&mut reader) {
++                    Poll::Pending => {
++                        let (len, capacity) = (reader.frame.len(), reader.frame.capacity());
++                        if allocations.last() != Some(&capacity) && capacity > 0 {
++                            allocations.push(capacity);
++                        }
++                        assert!(
++                            capacity <= frame_len,
++                            "{}: capacity {} past the frame",
++                            payload_len,
++                            capacity
++                        );
++                        assert!(
++                            capacity <= FRAME_FIRST_ALLOCATION.max(2 * len),
++                            "{}: capacity {} for {} B arrived",
++                            payload_len,
++                            capacity,
++                            len
++                        );
++                    }
++                    Poll::Ready(Some(Ok(Frame::Data(data)))) => break data.into_payload(),
++                    Poll::Ready(other) => panic!("expected DATA, got {:?}", other),
++                }
++            };
++            assert_eq!(delivered, payload);
++            assert_eq!(
++                allocations.last(),
++                Some(&frame_len),
++                "{}: ends at exactly the frame's size",
++                payload_len
++            );
++            if frame_len <= FRAME_FIRST_ALLOCATION {
++                assert_eq!(allocations, [frame_len], "{}: one allocation", payload_len);
++            } else {
++                assert_eq!(
++                    allocations[0], FRAME_FIRST_ALLOCATION,
++                    "{}: the first allocation",
++                    payload_len
++                );
++            }
++        }
++    }
+ }
 --- a/src/codec/framed_write.rs
 +++ b/src/codec/framed_write.rs
 @@ -343,6 +343,26 @@
@@ -388,7 +706,34 @@
          self.encoder.last_data_frame.take()
 --- a/src/codec/mod.rs
 +++ b/src/codec/mod.rs
-@@ -95,6 +95,26 @@
+@@ -16,7 +16,6 @@
+ use std::pin::Pin;
+ use std::task::{Context, Poll};
+ use tokio::io::{AsyncRead, AsyncWrite};
+-use tokio_util::codec::length_delimited;
+ 
+ use std::io;
+ 
+@@ -41,15 +40,9 @@
+         // Wrap with writer
+         let framed_write = FramedWrite::new(io);
+ 
+-        // Delimit the frames
+-        let delimited = length_delimited::Builder::new()
+-            .big_endian()
+-            .length_field_length(3)
+-            .length_adjustment(9)
+-            .num_skip(0) // Don't skip the header
+-            .new_read(framed_write);
+-
+-        let mut inner = FramedRead::new(delimited);
++        // xray-rust: FramedRead delimits the frames itself, each read into an
++        // allocation of its own size.
++        let mut inner = FramedRead::new(framed_write);
+ 
+         // Use FramedRead's method since it checks the value is within range.
+         inner.set_max_frame_size(max_frame_size);
+@@ -95,6 +88,26 @@
          self.framed_write().set_header_table_size(val)
      }
  
@@ -926,7 +1271,49 @@
          let streams = Streams::new(streams_config(&config));
 --- a/src/proto/streams/buffer.rs
 +++ b/src/proto/streams/buffer.rs
-@@ -97,3 +97,32 @@
+@@ -1,5 +1,13 @@
+ use slab::Slab;
+ 
++/// xray-rust: the slots a buffer keeps once it is empty, in bytes: 4 KiB, what
++/// an idle connection may keep of it. Upstream kept every slot the buffer had
++/// ever grown to, one per frame queued at once: a burst of 8 KiB DATA frames
++/// queued in a 4 MiB window is 512 slots, and they stayed. Up to this size a
++/// buffer that drains keeps its slots, so a stream that queues a few frames
++/// between reads does not reallocate at each read.
++const EMPTY_BUFFER_KEEP_BYTES: usize = 4 * 1024;
++
+ /// Buffers frames for multiple streams.
+ #[derive(Debug)]
+ pub struct Buffer<T> {
+@@ -33,6 +41,19 @@
+     pub fn is_empty(&self) -> bool {
+         self.slab.is_empty()
+     }
++
++    /// xray-rust: an empty buffer gives back slots beyond
++    /// `EMPTY_BUFFER_KEEP_BYTES`. No key is held once it is empty: every
++    /// `Deque` on it is empty too.
++    fn release_slots(&mut self) {
++        let kept = self
++            .slab
++            .capacity()
++            .saturating_mul(std::mem::size_of::<Slot<T>>());
++        if self.slab.is_empty() && kept > EMPTY_BUFFER_KEEP_BYTES {
++            self.slab = Slab::new();
++        }
++    }
+ }
+ 
+ impl Deque {
+@@ -82,6 +103,7 @@
+         match self.indices {
+             Some(mut idxs) => {
+                 let mut slot = buf.slab.remove(idxs.head);
++                buf.release_slots();
+ 
+                 if idxs.head == idxs.tail {
+                     assert!(slot.next.is_none());
+@@ -97,3 +119,32 @@
          }
      }
  }
