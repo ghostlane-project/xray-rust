@@ -11,11 +11,14 @@
 //	go test -tags olcrtc_interop ./internal/gate -run '^TestGateP2P$' \
 //	    -olcrtc.gate-target=p2p [-olcrtc.gate-rust-bin=<olc-client>] \
 //	    [-olcrtc.gate-flavours=rust,cli] [-olcrtc.gate-turn=udp|tcp|tls \
-//	    -olcrtc.gate-turnserver=/usr/bin/turnserver]
+//	    -olcrtc.gate-turnserver=/usr/bin/turnserver [-olcrtc.gate-relay=both]]
 //
 // With -olcrtc.gate-turn the server is relay-only (policy=relay) through a
 // coturn the test runs as its own child on 127.0.0.1, listening on that one
-// transport alone; the clients keep their host candidates.
+// transport alone; the clients keep their host candidates, unless
+// -olcrtc.gate-relay=both gives them the server's query too, so every path
+// is relayed at both ends. The Rust client allocates over UDP only so far
+// (olc-rtc's TURN client), so both ends relay with udp alone.
 
 package gate
 
@@ -68,6 +71,8 @@ var (
 	gateTurn = flag.String("olcrtc.gate-turn", "none",
 		"the p2p target's TURN: none, or the server relay-only through coturn over udp, tcp or tls")
 	gateTurnServer = flag.String("olcrtc.gate-turnserver", "turnserver", "coturn's turnserver binary")
+	gateRelay      = flag.String("olcrtc.gate-relay", "server",
+		"with -olcrtc.gate-turn, who is relay-only: server, or both (the clients too)")
 )
 
 // P2PTarget is the server in a room of the hub, reached peer to peer.
@@ -143,16 +148,24 @@ func p2pServerConfig(ep Endpoint, query string) string {
 	}, "\n") + "\n"
 }
 
-// goP2PClient is the Go public client in the same room: the baseline.
-type goP2PClient struct{ cli cliClient }
+// goP2PClient is the Go public client in the same room: the baseline. A
+// non-empty query is added to the room's URL (its ICE servers and policy).
+type goP2PClient struct {
+	cli   cliClient
+	query string
+}
 
 // Name implements Client.
 func (goP2PClient) Name() string { return cliFlavour }
 
 // Start implements Client.
 func (g goP2PClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, error) {
+	room := ep.Room
+	if g.query != "" {
+		room += "?" + g.query
+	}
 	cfg := client.Config{
-		Transport: ep.Transport, Provider: "none", Engine: interopp2p.Name, URL: ep.Room, ChannelID: ep.Channel,
+		Transport: ep.Transport, Provider: "none", Engine: interopp2p.Name, URL: room, ChannelID: ep.Channel,
 		KeyHex: ep.Key, LocalAddr: "127.0.0.1:0", DNSServer: ep.DNS, DeviceID: "gate-cli",
 		TransportOptions: client.VP8Options{FPS: ep.VP8FPS, BatchSize: ep.VP8Batch},
 	}
@@ -352,13 +365,29 @@ func TestGateP2P(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir = filepath.Join(dir, "p2p-"+cmpOr(*gateTurn, "none"))
+	relayed := *gateTurn != "none" && *gateTurn != ""
+	name := "p2p-" + cmpOr(*gateTurn, "none")
+	switch *gateRelay {
+	case "server":
+	case "both":
+		if relayed {
+			name += "-both"
+		}
+	default:
+		t.Fatalf("-olcrtc.gate-relay=%q: server or both", *gateRelay)
+	}
+	dir = filepath.Join(dir, name)
 	if err := os.MkdirAll(dir, artifactsPerm); err != nil {
 		t.Fatal(err)
 	}
-	var query string
-	if *gateTurn != "none" && *gateTurn != "" {
+	// query is the server's; clientQuery the clients' (relay-only too with
+	// -olcrtc.gate-relay=both).
+	var query, clientQuery string
+	if relayed {
 		query = startCoturn(t, *gateTurn, dir)
+		if *gateRelay == "both" {
+			clientQuery = query
+		}
 	}
 	hub, err := interoppipe.StartHub("127.0.0.1:0", interoppipe.Chaos{})
 	if err != nil {
@@ -386,9 +415,13 @@ func TestGateP2P(t *testing.T) {
 				extra: func(cfg *rustConfig) {
 					cfg.Engine = interopp2p.Name
 					cfg.IceLocalIP = "127.0.0.1"
+					if clientQuery != "" {
+						cfg.URL += "?" + clientQuery
+					}
 				}})
 		case cliFlavour:
-			clients = append(clients, goP2PClient{cli: cliClient{start: startBudget, stop: stopBudget}})
+			clients = append(clients, goP2PClient{cli: cliClient{start: startBudget, stop: stopBudget},
+				query: clientQuery})
 		default:
 			t.Fatalf("unknown flavour %q: rust or cli", name)
 		}

@@ -120,8 +120,14 @@ jobs:
       fail-fast: false
       matrix:
         # none: both ends on host candidates, the baseline the relayed
-        # runs are read against.
+        # runs are read against. relay: who is relay-only through coturn,
+        # the server, or both ends (UDP only: the Rust client's TURN
+        # allocates over UDP so far).
         turn: [none, udp, tcp, tls]
+        relay: [server]
+        include:
+          - turn: udp
+            relay: both
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -139,16 +145,16 @@ jobs:
         with:
           name: olc-client
           path: bin
-      - name: gate S0-S5, the server relayed over ${{ matrix.turn }}
+      - name: gate S0-S5, relayed over ${{ matrix.turn }} (${{ matrix.relay }})
         run: |
           chmod +x bin/olc-client
           bash olc/interop/p2p.sh "$PWD/bin/olc-client" \
             -olcrtc.gate-turn=${{ matrix.turn }} -olcrtc.gate-turnserver=/usr/bin/turnserver \
-            -olcrtc.gate-flavours=rust,cli 2>&1 | tee gate.log
+            -olcrtc.gate-relay=${{ matrix.relay }} -olcrtc.gate-flavours=rust,cli 2>&1 | tee gate.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: t2a-${{ matrix.turn }}
+          name: t2a-${{ matrix.turn }}-${{ matrix.relay }}
           path: |
             gate.log
             olc/interop/.work/gate-artifacts
