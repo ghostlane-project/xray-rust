@@ -8,6 +8,7 @@
 //!   - DTLS 1.2 to 1.3, `SSL_CTX_set_permute_extensions`, no session tickets, MTU 1200;
 //!   - the cipher string `DEFAULT:!NULL:!aNULL:!SHA256:!SHA384:!aECDH:!AESGCM+AES256:!aPSK:!3DES`;
 //!   - groups X25519MLKEM768, X25519, P-256, P-384 (the hello carries 11ec and 001d key shares);
+//!   - signature algorithms as Chrome lists them ([`CHROME_SIGALGS`], no ML-DSA);
 //!   - use_srtp AES128_CM_SHA1_80, AEAD_AES_256_GCM, AEAD_AES_128_GCM (0001 0008 0007);
 //!   - a self-signed ECDSA P-256 certificate, CN "WebRTC", 64-bit serial, valid from a day
 //!     ago for 30 days, no extensions (`rtc::SSLIdentity::Create`, KT_ECDSA).
@@ -48,6 +49,10 @@ pub const CHROME_CIPHERS: &str =
 pub const CHROME_GROUPS: &str = "X25519MLKEM768:X25519:P-256:P-384";
 /// The SRTP profiles in Chrome's use_srtp extension, in its order.
 pub const CHROME_SRTP: &str = "SRTP_AES128_CM_SHA1_80:SRTP_AEAD_AES_256_GCM:SRTP_AEAD_AES_128_GCM";
+/// The signature algorithms Chrome 157's DTLS ClientHello lists, in its order (captured on
+/// a runner, M2 spike): 0403 0804 0401 0503 0805 0501 0806 0601 0201. BoringSSL's own default
+/// with DTLS 1.3 enabled puts ML-DSA (0904 0905 0906) in front, which Chrome's hello does not.
+pub const CHROME_SIGALGS: [u16; 9] = [0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201];
 /// libwebrtc's DTLS MTU (`dtls_mtu_`).
 pub const CHROME_DTLS_MTU: u32 = 1200;
 
@@ -153,6 +158,13 @@ fn chrome_context(cert: &DtlsCert, min: SslVersion, max: SslVersion) -> Result<S
     ctx.set_curves_list(CHROME_GROUPS)?;
     ctx.set_tlsext_use_srtp(CHROME_SRTP)?;
     ctx.set_permute_extensions(true);
+    // SAFETY: the context is live and the list outlives the call (BoringSSL copies it).
+    let ok = unsafe {
+        boring_sys::SSL_CTX_set_verify_algorithm_prefs(ctx.as_ptr(), CHROME_SIGALGS.as_ptr(), CHROME_SIGALGS.len() as _)
+    };
+    if ok != 1 {
+        return Err(boring::error::ErrorStack::get());
+    }
     ctx.set_options(SslOptions::NO_TICKET | SslOptions::NO_QUERY_MTU | SslOptions::SINGLE_ECDH_USE);
     // Both ends present a certificate; str0m checks the peer's against the SDP fingerprint.
     ctx.set_verify_callback(SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT, |_, _| true);

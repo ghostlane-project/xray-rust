@@ -3,7 +3,7 @@
 
   wire.py stun  <file>...          the attribute order of every distinct binding request
   wire.py hello <file>...          each first ClientHello: version, suites, groups, extensions
-  wire.py compare <label=file>...  both, side by side per label, extensions as sets
+  wire.py compare <label=file[:TX|:RX]>...  both, side by side per label, extensions as sets
 
 A file is a pcap/pcapng (UDP payloads are read, any link type tcpdump -i any writes) or a text
 log holding the probes' lines `STUN_TX <conn> [<shape>] <hex>`, `STUN_RX ...`,
@@ -135,24 +135,32 @@ def stun_shape(b):
     return " ".join(out)
 
 
+def side(d):
+    """TX (the probe's own) or RX (its peer's) for a logged datagram; the flow for a pcap."""
+    return d[:2] if d[:3] in ("TX:", "RX:") else "pcap"
+
+
 def cmd_stun(paths):
     for path in paths:
         seen = {}
         for d, b in datagrams(path):
             s = stun_shape(b)
             if s:
-                seen.setdefault(s, set()).add(d)
+                seen.setdefault((side(d), s), set()).add(d)
         print(f"== {path}")
-        for s, ds in seen.items():
-            print(f"  {s}    [{len(ds)} flow(s)]")
+        for (k, s), ds in sorted(seen.items()):
+            print(f"  {k} {s}    [{len(ds)} flow(s)]")
 
 
 # ---- DTLS ClientHello ----------------------------------------------------------------------
 
-def first_hellos(path):
-    """{flow: reassembled first ClientHello body} (message_seq 0, type 1)."""
+def first_hellos(path, want=None):
+    """{flow: reassembled first ClientHello body} (message_seq 0, type 1); `want` keeps one
+    side (TX or RX) of a probe log."""
     frags = {}
     for d, u in datagrams(path):
+        if want is not None and side(d) != want:
+            continue
         j = 0
         while j + 13 <= len(u):
             ct = u[j]
@@ -167,7 +175,7 @@ def first_hellos(path):
             fl = int.from_bytes(body[9:12], "big")
             if seq != 0:
                 continue
-            f = frags.setdefault(d.replace("RX:", "").replace("TX:", ""), {"len": total, "parts": {}, "records": 0})
+            f = frags.setdefault(d, {"len": total, "parts": {}, "records": 0})
             f["parts"][fo] = body[12:12 + fl]
             f["records"] += 1
     out = {}
@@ -183,7 +191,7 @@ def first_hellos(path):
 
 
 def parse_hello(h):
-    r = {"legacy_version": VERS.get(int.from_bytes(h[0:2], "big"), h[0:2].hex())}
+    r = {"legacy_version": VERS.get(int.from_bytes(h[0:2], "big"), h[0:2].hex()), "len": len(h)}
     i = 2 + 32
     sl = h[i]
     r["session_id_len"] = sl
@@ -247,8 +255,12 @@ def cmd_compare(specs):
     shapes = {}
     for spec in specs:
         label, path = spec.split("=", 1)
-        hellos = first_hellos(path)
-        stun = sorted({s for _, b in datagrams(path) if (s := stun_shape(b))})
+        # The probe logs carry its peer's requests too (RX): `label=file:TX` keeps one side.
+        want = None
+        if path.endswith((":TX", ":RX")):
+            path, want = path[:-3], path[-2:]
+        stun = sorted({s for d, b in datagrams(path) if (s := stun_shape(b)) and (want is None or side(d) == want)})
+        hellos = first_hellos(path, want)
         h = parse_hello(next(iter(hellos.values()))[0]) if hellos else None
         shapes[label] = (stun, h)
     for label, (stun, h) in shapes.items():
@@ -268,8 +280,13 @@ def cmd_compare(specs):
                 continue
             ea = {n for n, _, _ in shapes[a][1]["extensions"]}
             eb = {n for n, _, _ in shapes[b][1]["extensions"]}
+            da = {n: dt for n, _, dt in shapes[a][1]["extensions"]}
+            db = {n: dt for n, _, dt in shapes[b][1]["extensions"]}
+            keys = ("supported_versions", "supported_groups", "key_share", "use_srtp", "signature_algorithms")
+            differ = [k for k in keys if da.get(k) != db.get(k)]
             print(f"-- {a} vs {b}: only {a}: {sorted(ea - eb)}  only {b}: {sorted(eb - ea)}  "
-                  f"suites equal: {shapes[a][1]['suites'] == shapes[b][1]['suites']}")
+                  f"suites equal: {shapes[a][1]['suites'] == shapes[b][1]['suites']}  values differ: {differ}  "
+                  f"hello bytes: {shapes[a][1]['len']} vs {shapes[b][1]['len']}")
 
 
 if __name__ == "__main__":
