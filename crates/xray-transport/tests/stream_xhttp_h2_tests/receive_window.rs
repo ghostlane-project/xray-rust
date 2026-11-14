@@ -5,8 +5,19 @@ use tokio::time::{sleep_until, Instant};
 
 const STREAM_WINDOW: usize = 4 * 1024 * 1024;
 
+/// These tests count h2's credit, not the process's byte budget, which the
+/// memory class other tests in this binary set would otherwise size: they
+/// run with no limit, as the transport did before the budget.
+fn without_a_byte_budget() {
+    xray_transport::set_byte_budget(Some(xray_transport::ByteBudgetSettings {
+        capacity: usize::MAX / 2,
+        floor: xray_transport::memory_budget::DEFAULT_FLOW_FLOOR,
+    }));
+}
+
 #[tokio::test(start_paused = true)]
 async fn configured_receive_windows_bound_unread_data_and_replenish_only_consumed_bytes() {
+    without_a_byte_budget();
     for window in [65535, 1024 * 1024, 8 * 1024 * 1024, 16 * 1024 * 1024] {
         let (client, mut server) = pair_with_window(server::Builder::new(), Some(window)).await;
         let (mut body, mut send) = response_pair(&client, &mut server).await;
@@ -36,6 +47,7 @@ async fn configured_receive_windows_bound_unread_data_and_replenish_only_consume
 
 #[tokio::test]
 async fn invalid_receive_window_is_rejected_before_writing_the_preface() {
+    without_a_byte_budget();
     for window in [0, 65534, 16 * 1024 * 1024 + 1, u32::MAX] {
         let (client, mut server) = tokio::io::duplex(64);
         assert!(matches!(
@@ -50,6 +62,7 @@ async fn invalid_receive_window_is_rejected_before_writing_the_preface() {
 
 #[tokio::test(start_paused = true)]
 async fn a_larger_stream_override_does_not_raise_shared_connection_credit() {
+    without_a_byte_budget();
     let (client, mut server) =
         pair_with_window(server::Builder::new(), Some(8 * 1024 * 1024)).await;
     let mut stalled = Vec::new();
@@ -105,6 +118,7 @@ async fn response_pair(
 /// open, not only after a third of it has been read.
 #[tokio::test(start_paused = true)]
 async fn a_sixteenth_of_the_window_read_returns_its_credit_while_the_window_is_open() {
+    without_a_byte_budget();
     let (client, mut server) = pair().await;
     let (mut body, mut send) = response_pair(&client, &mut server).await;
     timeout(DEADLINE, send_bytes(&mut send, STREAM_WINDOW / 4))
@@ -129,6 +143,7 @@ async fn a_sixteenth_of_the_window_read_returns_its_credit_while_the_window_is_o
 /// fast reader does not send a WINDOW_UPDATE for every read.
 #[tokio::test(start_paused = true)]
 async fn a_smaller_read_keeps_its_credit_while_the_window_is_open() {
+    without_a_byte_budget();
     let (client, mut server) = pair().await;
     let (mut body, mut send) = response_pair(&client, &mut server).await;
     timeout(DEADLINE, send_bytes(&mut send, STREAM_WINDOW / 4))
@@ -174,6 +189,7 @@ async fn assert_blocked(send: &mut SendStream<Bytes>) {
 
 #[tokio::test(start_paused = true)]
 async fn unread_response_is_bounded_and_partial_reads_return_credit() {
+    without_a_byte_budget();
     let (client, mut server) = pair().await;
     let (mut body, mut send) = response_pair(&client, &mut server).await;
     timeout(DEADLINE, send_bytes(&mut send, STREAM_WINDOW))
@@ -209,6 +225,7 @@ async fn unread_response_is_bounded_and_partial_reads_return_credit() {
 
 #[tokio::test(start_paused = true)]
 async fn stalled_responses_share_a_bounded_connection_and_cancel_restores_progress() {
+    without_a_byte_budget();
     let (client, mut server) = pair().await;
     let mut stalled = Vec::new();
     for _ in 0..3 {
@@ -302,6 +319,7 @@ fn delay_direction(
 
 #[tokio::test(start_paused = true)]
 async fn single_download_pipelines_across_a_113ms_path() {
+    without_a_byte_budget();
     let (client_io, client_wire) = tokio::io::duplex(1024 * 1024);
     let (server_wire, server_io) = tokio::io::duplex(1024 * 1024);
     let (client_read, client_write) = tokio::io::split(client_wire);
@@ -383,6 +401,7 @@ async fn pair_over(
 /// A stalled reader on a constrained host pins the opening window, not Go's.
 #[tokio::test(start_paused = true)]
 async fn an_adaptive_window_holds_a_stalled_reader_to_its_opening_window() {
+    without_a_byte_budget();
     let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
     let (client, mut server) = pair_over(client_io, server_io, ADAPTIVE).await;
     let (body, mut send) = response_pair(&client, &mut server).await;
@@ -461,6 +480,7 @@ async fn download_over_a_long_link(window: H2ReceiveWindow) -> Duration {
 /// more round trips, 280 ms; growing to 4 MiB brings that under five.
 #[tokio::test(start_paused = true)]
 async fn an_adaptive_window_grows_for_a_reader_that_keeps_up() {
+    without_a_byte_budget();
     let fixed = download_over_a_long_link(H2ReceiveWindow::Fixed(1024 * 1024)).await;
     let adaptive = download_over_a_long_link(ADAPTIVE).await;
 
