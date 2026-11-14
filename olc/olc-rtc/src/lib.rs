@@ -15,10 +15,10 @@
 //!   24-character password ([`ice::chrome_creds`]);
 //! - STUN attributes go in Chrome's order: the vendored `is` fork
 //!   (`olc/vendor/is-0.12.0`), switched on by [`init`];
-//! - DTLS is str0m's own (dimpl) for now, whose hello does not look like
-//!   Chrome's; the BoringSSL provider shaped as Chrome's (the spike's, M2)
-//!   comes next, behind a `boring` feature: a build for a censored network
-//!   needs it.
+//! - DTLS is BoringSSL configured as libwebrtc configures it under the
+//!   `boring` feature ([`dtls_boring`]): Chrome's ClientHello and
+//!   certificate. Without it, str0m's own (dimpl), whose hello looks like no
+//!   browser's: a development build only.
 //!
 //! # Memory
 //!
@@ -28,8 +28,12 @@
 //! 1 MiB per association, str0m's floor, allocated as data arrives).
 
 #![warn(missing_docs)]
-#![forbid(unsafe_code)]
+#![cfg_attr(not(feature = "boring"), forbid(unsafe_code))]
+#![cfg_attr(feature = "boring", deny(unsafe_code))]
 
+#[cfg(feature = "boring")]
+#[allow(unsafe_code)]
+pub mod dtls_boring;
 pub mod ice;
 pub mod peer;
 pub mod turn;
@@ -50,13 +54,21 @@ pub fn init() {
 /// from aws-lc-rs either way.
 #[must_use]
 pub fn crypto() -> Arc<CryptoProvider> {
-    Arc::new(str0m_aws_lc_rs::default_provider())
+    #[cfg(feature = "boring")]
+    let provider = dtls_boring::provider();
+    #[cfg(not(feature = "boring"))]
+    let provider = str0m_aws_lc_rs::default_provider();
+    Arc::new(provider)
 }
 
 /// The name of [`crypto`]'s DTLS, for the logs and the reports.
 #[must_use]
 pub fn dtls_name() -> &'static str {
-    "dimpl"
+    if cfg!(feature = "boring") {
+        "boringssl"
+    } else {
+        "dimpl"
+    }
 }
 
 /// Bounds for this crate's tests: a stuck test fails instead of holding the

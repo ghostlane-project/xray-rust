@@ -30,6 +30,11 @@ heap-stats = []
 # wss:// and https:// (the SaluteJazz connector and its auth) over the
 # fork's shaped-rustls, Chrome's ClientHello; without it a TLS URL fails.
 shaped-tls = ["olc-net/shaped-tls"]
+# The peer connections' DTLS from BoringSSL, configured as libwebrtc
+# configures it (Chrome's ClientHello and certificate); a build for a
+# censored network needs it. Built on a GitHub runner: it needs cmake and
+# libclang.
+boring = ["olc-salutejazz/boring"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
