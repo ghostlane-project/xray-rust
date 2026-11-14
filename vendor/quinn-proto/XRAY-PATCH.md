@@ -245,3 +245,21 @@ ChromeParrot, whose Initial numbers start at 1, so the first Initial is not
 credited to the congestion controller as acknowledged, which is what quic-go's
 `ResetForRetry` does; `discard_space` takes every sent Initial out of the
 bytes in flight once, and the ClientHello is queued again whole.
+
+## A grown connection receive window pays its shrink debt first
+
+`StreamsState::set_receive_window` keeps the credit a shrink cannot take back
+as `receive_window_shrink_debt`, which reads pay before they grant more. A
+growth used to add its whole difference to `local_max_data` on top of that
+debt. Xray's Hysteria client shrinks an idle connection's window to the
+floor and grows it again once data moves, so each idle-then-active cycle that
+read less than the shrink left the peer that much more connection credit
+than the window: after k cycles about 3 MiB plus k times the shrink on a
+phone, while the client counted only the window. A growth now pays the debt
+first and grants only what is left, and returns true only when it granted
+new credit for a `MAX_DATA`; a growth past the window before the shrink
+still grants the difference at once. Nothing changes for a window that only
+grows. `a_window_shrunk_and_grown_back_grants_no_credit_beyond_it` runs eight
+shrink and growth cycles with reads between them and checks that the peer's
+credit never exceeds the window; without the change it fails on the first
+growth. The complete 314-test library suite passes in the reconstruction.
