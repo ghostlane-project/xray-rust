@@ -944,10 +944,10 @@ fn udp_target(addr: Result<TargetAddr, SocksParseError>, port: u16) -> Target {
 /// `HevSocks5UDPHdr` (`hev-socks5-udp.c` at `162dd996`).
 #[test]
 fn socks5_udp_in_tcp_frames_lay_out_as_hev_socks5_writes_them() {
-    let ipv4 = udp_target(ip("172.19.0.2"), 53);
+    let ipv4 = udp_target(ip("192.0.2.53"), 53);
     assert_eq!(
         encode_socks5_udp_in_tcp_frame(&ipv4, b"abc").unwrap(),
-        [0, 3, 10, 1, 172, 19, 0, 2, 0, 53, b'a', b'b', b'c']
+        [0, 3, 10, 1, 192, 0, 2, 53, 0, 53, b'a', b'b', b'c']
     );
     let ipv6 = udp_target(ip("2001:db8::1"), 443);
     let frame = encode_socks5_udp_in_tcp_frame(&ipv6, b"q").unwrap();
@@ -972,7 +972,7 @@ fn socks5_udp_in_tcp_frames_lay_out_as_hev_socks5_writes_them() {
 #[test]
 fn socks5_udp_in_tcp_frames_survive_split_and_joined_reads() {
     let datagrams = [
-        (udp_target(ip("172.19.0.2"), 53), b"first query".to_vec()),
+        (udp_target(ip("192.0.2.53"), 53), b"first query".to_vec()),
         (udp_target(ip("2001:db8::1"), 443), vec![0x5a; 1200]),
         (udp_target(domain("example.com"), 3478), b"".to_vec()),
         (udp_target(ip("192.0.2.7"), 9), b"last".to_vec()),

@@ -17,7 +17,7 @@ const LOGIN: &str = r#""auth": "password",
 /// hev-socks5's `FWD_UDP` request: an all-zero IPv4 address and port.
 const FWD_UDP_REQUEST: [u8; 10] = [5, 5, 0, 1, 0, 0, 0, 0, 0, 0];
 const FWD_UDP_GRANTED: [u8; 10] = [5, 0, 0, 1, 0, 0, 0, 0, 0, 0];
-/// The largest datagram an app sends through Ghostlane's 9,000-byte tun.
+/// The largest datagram an app sends through a 9,000-byte tun.
 const TUN_LARGEST_DATAGRAM: usize = 9000 - 28;
 
 async fn start_core(raw: &str) -> (Core, Arc<CountingSocketProtector>, SocketAddr) {
@@ -263,7 +263,7 @@ async fn fwd_udp_answers_dns_through_the_port_53_hijack_with_fake_ips() {
         let mut control = open_fwd_udp(socks_addr).await;
         let mut received = BytesMut::new();
 
-        let resolver = SocketAddr::from((Ipv4Addr::new(172, 19, 0, 2), 53));
+        let resolver = SocketAddr::from((Ipv4Addr::new(192, 0, 2, 53), 53));
         let query = build_dns_a_query(0x5ec7, "fwd-udp.example");
         control.write_all(&frame(resolver, &query)).await.unwrap();
         let answer = read_frame(&mut control, &mut received).await;
