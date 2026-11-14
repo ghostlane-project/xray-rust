@@ -143,7 +143,9 @@ stopping the core or its listeners, it:
   after the pools are reset, so an application that dials again at once gets
   the new network.
 
-The required `closed` count is the number of flows asked to close. The call
+The required `closed` count is the number of flows asked to close; a flow an
+earlier reset or `xray_core_close_connection` already asked, and that has not
+closed yet, is not counted again. The call
 is nonblocking, needs no Tokio context and is harmless when repeated, without
 traffic, before start or after stop (count 0). It is a shared call with the
 rebind calls' rules: it may overlap data-path and snapshot calls, but not

@@ -415,7 +415,8 @@ XrayStatus xray_core_rebind_hysteria(
  * carriers as xray_core_rebind_hysteria and xray_core_rebind_wireguard do
  * (XHTTP over HTTP/3 is moved, not dropped); then ask every relayed flow to
  * close, so its application dials again at once. Listeners and the core's
- * state are kept. closed is required and counts the flows asked to close.
+ * state are kept. closed is required and counts the flows asked to close; a
+ * flow already asked by an earlier reset or close is not counted again.
  * Nonblocking; harmless when repeated, before start or after stop. Concurrent
  * with data-path calls, but not lifecycle/free. */
 XrayStatus xray_core_reset_network(

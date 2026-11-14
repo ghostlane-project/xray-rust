@@ -512,7 +512,9 @@ pub enum CoreError {
 /// What [`Core::reset_network`] asked for.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct NetworkReset {
-    /// Relayed flows asked to close: not flows that have closed yet.
+    /// Relayed flows asked to close: not flows that have closed yet. A flow
+    /// an earlier reset or [`Core::close_connection`] already asked is not
+    /// counted again.
     pub closed_connections: u64,
     /// Carriers asked to move to a fresh socket, counted as the rebinds
     /// count them: not paths validated.

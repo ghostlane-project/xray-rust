@@ -1642,8 +1642,9 @@ pub unsafe extern "C" fn xray_core_rebind_hysteria(
 /// [`xray_core_rebind_hysteria`] and [`xray_core_rebind_wireguard`] do, and
 /// every relayed flow is asked to close, so its application dials again at
 /// once. Listeners, FakeDNS mappings and the core's state are kept. `closed`
-/// is the number of flows asked to close. Nonblocking; harmless when
-/// repeated, before start or after stop.
+/// is the number of flows asked to close; a flow an earlier reset or close
+/// already asked is not counted again. Nonblocking; harmless when repeated,
+/// before start or after stop.
 ///
 /// # Safety
 /// `handle` must be null or live; `closed` must be null or writable. May run
