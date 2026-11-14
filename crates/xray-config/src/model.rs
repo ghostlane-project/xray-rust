@@ -53,6 +53,40 @@ pub struct CoreConfig {
     pub policy: PolicyConfig,
 }
 
+/// Severity of a runtime log line, from the most verbose to the least, as
+/// Xray-core's `log.loglevel` names them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum LogLevel {
+    Debug,
+    Info,
+    Warning,
+    Error,
+}
+
+/// What the top-level `log` object asks of the embedding's runtime log.
+///
+/// The core opens no file the object names: the embedding decides where the
+/// lines go. The default is Xray-core's when `log` is absent: warnings and
+/// errors, and no access log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogConfig {
+    /// The least severe error-log line written; `None` writes none
+    /// (`loglevel` or `error` is `"none"`).
+    pub level: Option<LogLevel>,
+    /// Whether a line is written for each connection accepted or rejected:
+    /// only when `access` names a log other than `"none"`.
+    pub access: bool,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            level: Some(LogLevel::Warning),
+            access: false,
+        }
+    }
+}
+
 pub const DEFAULT_OBSERVATORY_PROBE_URL: &str = "https://www.google.com/generate_204";
 pub const DEFAULT_OBSERVATORY_PROBE_INTERVAL: Duration = Duration::from_secs(10);
 pub const OBSERVATORY_PROBE_TIMEOUT: Duration = Duration::from_secs(5);

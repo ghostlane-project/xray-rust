@@ -8,7 +8,7 @@ source of truth for declarations and enum values.
 ## ABI version
 
 Call `xray_ffi_version_major()` and `xray_ffi_version_minor()` before creating a
-handle. The current ABI version is `1.17`. The checked-in Swift and JNI adapters
+handle. The current ABI version is `1.18`. The checked-in Swift and JNI adapters
 reject any major other than `1` and require minor `1` or newer. Their selector
 and health methods require the corresponding ABI 1.2 capability bits; their
 connection-management methods require the ABI 1.3 capability bit, and routing
@@ -30,6 +30,8 @@ Startup-probe preflight requires minor >=12 and `STARTUP_PROBE_PREFLIGHT` (bit 2
 A TUN MTU other than 1500 requires minor >=16 and `TUN_MTU` (bit 29).
 VLESS link import requires minor >=17, `PROFILE_IMPORT` and
 `VLESS_PROFILE_IMPORT` (bit 30); see the [format contract](vless-profile-import.md).
+The [log callback](#runtime-log-abi-118) requires minor >=18; it has no
+capability bit.
 
 An incompatible function signature, enum representation, ownership rule, or
 required struct layout requires a major version change. Consumers should
@@ -149,7 +151,7 @@ requires ABI 1.10 and the new capability. Rust hosts set
 3. Allocate a handle with `xray_core_new`.
 4. Configure optional pre-load settings:
    - geodata search directory;
-   - file logging;
+   - file logging or the log callback;
    - startup probe;
    - socket-protection callback;
    - direct TUN fd and its ownership;
@@ -680,3 +682,44 @@ flow budget. Overflow drops packets even with fail-open configured. Established
 TCP does not call the policy again; enabled UDP uses a bounded tuple lookup.
 There are no per-packet host/JNI calls. `XrayTunAdmissionOptions` exposes the same
 optional policy in Kotlin and Swift.
+
+## Runtime log (ABI 1.18)
+
+The runtime log is off until the host asks for it before config load, with
+`xray_core_set_file_logging` (files in a directory) or
+`xray_core_set_log_callback` (lines handed to the host). With a callback set,
+no log file is opened. Either way the loaded config's `log` object decides
+which lines are written, as Xray-core reads it (see
+[config compatibility](config-compatibility.md#log)):
+
+- error-log lines from `loglevel` up: `debug`, `info`, `warning` (the default)
+  or `error`; `none`, or `error: "none"`, writes none;
+- access lines, one per connection accepted or rejected, only when `access`
+  names a log other than `none`. Without `log` there are none, where Xray-core
+  writes them to standard output. The path is not opened.
+
+No line at `warning` or above names a destination; access and debug lines show
+destinations as `<redacted-domain>:443` or `<redacted-ip>:443`. Logging never
+blocks a data-path thread: lines go through a queue of 4096 to one log thread
+and are dropped when it is full.
+
+Files: `xray-error.log` and `xray-access.log`, each created only when a line
+can reach it. Each is capped at 1 MiB: the line that would pass the cap first
+moves the file to `<name>.1`, replacing the previous one, so a directory holds
+at most 4 MiB of log. A line longer than the cap is cut to it.
+
+Callback: `XrayLogCallback(level, line, line_len, user_data)` runs on the log
+thread, one line at a time and in order. `level` is an `XrayLogLevel`: `ERROR`
+(1), `WARNING` (2), `INFO` (3) and `DEBUG` (4), numbered as Xray-core's
+severities, and `ACCESS` (5). `line` is the message without timestamp or
+level, UTF-8 on one line with control characters escaped, NUL-terminated and
+borrowed for the call; `line_len` excludes the NUL. On success the core owns
+`user_data`: the mandatory release callback runs exactly once, after the last
+line, possibly after `xray_core_free` and on any thread. Replacing or clearing
+a registration releases the previous one; clearing takes null callback,
+release and context. A failed registration leaves ownership with the caller.
+Both callbacks must return promptly, never unwind across C and never call core
+lifecycle methods.
+
+A capability bit would be bit 31, which a C `int` enumerator cannot hold
+portably, so a host checks `xray_ffi_version_minor() >= 18` instead.

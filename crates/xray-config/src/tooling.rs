@@ -87,7 +87,6 @@ pub fn configuration_contract() -> Value {
         },
         "objects": crate::surface::OBJECTS,
         "additionalSurfaces": [
-            {"context": "$.log", "semantics": "Accepted and ignored, including unknown fields; runtime logging belongs to the embedding API."},
             {"context": "$.inbounds[].settings (tun)", "fields": ["userLevel"], "semantics": "Only userLevel is consumed. Other input is ignored, not a supported interface/route configuration."},
             {"context": "streamSettings.realitySettings", "fields": ["serverName", "fingerprint", "publicKey", "shortId", "spiderX", "mldsa65Verify"], "semantics": "Validated by the dedicated REALITY parser when selected. Additional fields are currently ignored, not advertised as runtime features."},
             {"context": "$.dns.hosts", "semantics": "Dynamic domain-matcher keys map to an IP, domain alias or nonempty IP array; parser budgets and geodata expansion apply."},

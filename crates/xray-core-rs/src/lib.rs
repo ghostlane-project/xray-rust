@@ -71,7 +71,9 @@ pub use outbound::{
     OutboundSelectorGroup, OutboundSelectorGroupSnapshot, RoutingPolicySnapshot, TcpOutbound,
     UdpOutbound, VlessTcpOutbound, VlessUdpFraming,
 };
-pub use runtime_log::{RuntimeLogConfig, RuntimeLogger};
+pub use runtime_log::{
+    RuntimeLogConfig, RuntimeLogKind, RuntimeLogger, DEFAULT_RUNTIME_LOG_FILE_MAX_BYTES,
+};
 pub use startup_probe::{
     OutboundProbeError, OutboundProbeOutcome, StartupProbeError, StartupProbeOptions,
     MAX_OUTBOUND_PROBE_TIMEOUT,
@@ -1482,9 +1484,11 @@ impl Core {
         }
         if has_tun_inbound {
             let tun_inbound_tag = tun_inbounds.first().and_then(|(tag, _, _)| tag.clone());
+            // The timings feed only debug lines, so a log at a higher level
+            // does not turn their collection on.
             let tun_runtime_options = TunRuntimeOptions {
                 collect_tcp_timings: self.tun_runtime_options.collect_tcp_timings
-                    || self.runtime_logger.is_enabled(),
+                    || self.runtime_logger.debug_enabled(),
                 ..self.tun_runtime_options
             };
             tasks.push(tokio::spawn(tun::serve_tun_endpoint(

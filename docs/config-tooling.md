@@ -109,8 +109,10 @@ the parser's unknown-field check; its `context` identifies the consuming
 location, and `notes` describes the main restrictions. The executable checker
 decides whether that node is active and whether its values and combinations
 are accepted. `additionalSurfaces` records maps, XHTTP download composition and
-existing ignored input such as `log`, extra TUN settings and additional REALITY
-fields. Ignored input is not advertised as working runtime behavior.
+existing ignored input such as extra TUN settings and additional REALITY
+fields. Ignored input is not advertised as working runtime behavior. `log` is
+an object node since ABI 1.18: it is read for the runtime log the embedding
+sets up.
 
 An editor can use the document for discovery and starting examples, then invoke
 the stdin JSON checker for authoritative diagnostics. Use a binary and contract

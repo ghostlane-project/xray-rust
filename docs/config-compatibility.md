@@ -725,11 +725,37 @@ exposes an unauthenticated proxy to the network.
 | `observatory` | Bounded periodic HTTP(S) URL probes for tagged outbounds |
 | `dns` | Hosts, string/object servers with managed selection policy, global and per-server `queryStrategy` including `UseSystem`, and `fakeIp` subset |
 | `policy` | Level/system fields are parsed; runtime timeout/buffer behavior is a subset |
-| `log` | Accepted for input compatibility, but runtime file logging is configured through the embedding API |
+| `log` | Read as Xray-core reads it, for the runtime log the embedding sets up (file logging or, since ABI 1.18, a log callback); see [log](#log) |
 | `reverse` | The legacy reverse proxy, refused unless `null` with Xray-core's message: upstream removed it for the [VLESS reverse proxy](#vless-reverse-proxy) |
 | `remarks`, `meta` | Subscription labels, such as those in Remnawave's XRAY_JSON format; `remarks` must be a string and `meta` an object (or null), and both are ignored, as in Xray-core |
 
 Other top-level keys are rejected.
+
+### Log
+
+`log` is read as Xray-core v26.11.9 reads it (`infra/conf/log.go`). It
+decides which lines reach the runtime log; the embedding decides where they
+go: the files of `xray_core_set_file_logging` or, since ABI 1.18, the host's
+log callback (see [the C ABI](ffi.md#runtime-log-abi-118)). The core opens no
+file the object names.
+
+| Field | Behavior |
+| --- | --- |
+| `loglevel` (or `logLevel`) | `debug`, `info`, `warning`, `error` or `none`, ignoring case; absent, null or empty is `warning`. Lines from that severity up are written; `none` writes no line at all. Another value reads as `warning`, as in Xray-core, and the parser warns. Xray-core's struct tag is `logLevel` and Go matches keys ignoring case, so both spellings are read; both at once are refused |
+| `access` | The access log, a line per connection accepted or rejected, is written only when this names a log other than `none`. Absent or empty writes none, where Xray-core writes it to standard output |
+| `error` | `none` turns the error log off; any other value leaves it on |
+| `dnsLog` | A boolean, checked and ignored: no line here holds a DNS name |
+| `maskAddress` | A string, checked and ignored: no line here holds an address |
+
+Null reads as absent, a `log` that is not an object or null is refused, and
+unknown fields are refused, where Xray-core ignores them. Without `log`, as
+with `{}`, warnings and errors are written and no access line.
+
+What the lines say: access lines and the destinations in debug lines show the
+port only (`<redacted-domain>:443`, `<redacted-ip>:443`), and no line at
+`warning` or above names a destination. Each file is capped at 1 MiB: the line
+that would pass the cap first moves the file to `<name>.1`, replacing the
+previous one.
 
 ## Inbounds
 

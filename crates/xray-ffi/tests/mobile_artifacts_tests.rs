@@ -59,6 +59,10 @@ fn ffi_header_declares_lifecycle_error_and_tun_abi() {
         "xray_core_free",
         "XraySocketProtectCallback",
         "xray_core_set_socket_protect_callback",
+        "XrayLogLevel",
+        "XrayLogCallback",
+        "XrayLogRelease",
+        "xray_core_set_log_callback",
         "xray_core_set_startup_probe",
         "xray_core_preflight_startup_probe",
         "XrayTunFdPacketFormat",
@@ -116,6 +120,11 @@ fn ffi_header_declares_lifecycle_error_and_tun_abi() {
         ("XRAY_OUTBOUND_PROBE_FAILURE_IO", 4),
         ("XRAY_OUTBOUND_PROBE_FAILURE_MALFORMED_HTTP_RESPONSE", 5),
         ("XRAY_OUTBOUND_PROBE_FAILURE_HTTP_STATUS", 6),
+        ("XRAY_LOG_LEVEL_ERROR", 1),
+        ("XRAY_LOG_LEVEL_WARNING", 2),
+        ("XRAY_LOG_LEVEL_INFO", 3),
+        ("XRAY_LOG_LEVEL_DEBUG", 4),
+        ("XRAY_LOG_LEVEL_ACCESS", 5),
     ] {
         assert!(
             header.contains(&format!("{name} = {value}")),
@@ -1310,6 +1319,7 @@ const EXPORTED_SYMBOLS: &[&str] = &[
     "xray_core_free",
     "xray_core_set_socket_protect_callback",
     "xray_core_set_file_logging",
+    "xray_core_set_log_callback",
     "xray_core_set_startup_probe",
     "xray_core_preflight_startup_probe",
     "xray_core_set_tun_fd",
@@ -1353,6 +1363,16 @@ const C_HARNESS_SOURCE: &str = r#"
 
 #include <stddef.h>
 #include <stdint.h>
+
+static void harness_log_line(
+    int32_t level, const char *line, size_t line_len, void *user_data) {
+  (void)level;
+  (void)line;
+  (void)line_len;
+  (void)user_data;
+}
+
+static void harness_log_release(void *user_data) { (void)user_data; }
 
 static void use_xray_ffi_api(void) {
   XrayError *error = NULL;
@@ -1403,6 +1423,10 @@ static void use_xray_ffi_api(void) {
   (void)xray_core_set_geodata_search_dir_exclusive(handle, ".", &error);
   (void)xray_core_set_socket_protect_callback(handle, NULL, NULL, &error);
   (void)xray_core_set_file_logging(handle, ".", 0, &error);
+  (void)xray_core_set_log_callback(
+      handle, harness_log_line, harness_log_release, NULL, &error);
+  (void)xray_core_set_log_callback(handle, NULL, NULL, NULL, &error);
+  (void)XRAY_LOG_LEVEL_ACCESS;
   (void)xray_core_set_startup_probe(
       handle,
       "http://probe.test/health",

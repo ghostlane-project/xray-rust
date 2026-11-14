@@ -7,23 +7,55 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use xray_config::{LogConfig, LogLevel};
+
 const LOG_QUEUE_CAPACITY: usize = 4096;
 const LOG_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 const LOG_FLUSH_BATCH_SIZE: usize = 256;
+
+/// The size a runtime log file may reach. The line that would take it past
+/// this first moves it to `<name>.1`, replacing the previous one, so a log
+/// takes at most twice this on disk.
+pub const DEFAULT_RUNTIME_LOG_FILE_MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeLogConfig {
     access_path: PathBuf,
     error_path: PathBuf,
+    log: LogConfig,
+    max_file_bytes: u64,
 }
 
 impl RuntimeLogConfig {
+    /// `xray-access.log` and `xray-error.log` in `dir`, each capped at
+    /// [`DEFAULT_RUNTIME_LOG_FILE_MAX_BYTES`]. Every severity and the access
+    /// log are written until [`Self::with_log`] narrows them, as an embedding
+    /// does with the `log` object of the config it loads.
     pub fn directory(dir: impl AsRef<Path>) -> Self {
         let dir = dir.as_ref();
         Self {
             access_path: dir.join("xray-access.log"),
             error_path: dir.join("xray-error.log"),
+            log: LogConfig {
+                level: Some(LogLevel::Debug),
+                access: true,
+            },
+            max_file_bytes: DEFAULT_RUNTIME_LOG_FILE_MAX_BYTES,
         }
+    }
+
+    /// Writes only the lines `log` asks for. A file that would receive none
+    /// is not opened.
+    pub fn with_log(mut self, log: LogConfig) -> Self {
+        self.log = log;
+        self
+    }
+
+    /// Caps each file at `max_file_bytes`, at least one byte, instead of
+    /// [`DEFAULT_RUNTIME_LOG_FILE_MAX_BYTES`].
+    pub fn with_max_file_bytes(mut self, max_file_bytes: u64) -> Self {
+        self.max_file_bytes = max_file_bytes.max(1);
+        self
     }
 
     pub fn access_path(&self) -> &Path {
@@ -32,6 +64,47 @@ impl RuntimeLogConfig {
 
     pub fn error_path(&self) -> &Path {
         &self.error_path
+    }
+
+    pub fn log(&self) -> LogConfig {
+        self.log
+    }
+
+    pub fn max_file_bytes(&self) -> u64 {
+        self.max_file_bytes
+    }
+}
+
+/// What one runtime log line is: an error-log line of a severity, or an
+/// access-log line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RuntimeLogKind {
+    Debug,
+    Info,
+    Warning,
+    Error,
+    Access,
+}
+
+impl RuntimeLogKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Debug => "debug",
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+            Self::Access => "access",
+        }
+    }
+
+    fn severity(self) -> Option<LogLevel> {
+        match self {
+            Self::Debug => Some(LogLevel::Debug),
+            Self::Info => Some(LogLevel::Info),
+            Self::Warning => Some(LogLevel::Warning),
+            Self::Error => Some(LogLevel::Error),
+            Self::Access => None,
+        }
     }
 }
 
@@ -49,25 +122,68 @@ impl RuntimeLogger {
         Self::with_queue_capacity(config, LOG_QUEUE_CAPACITY)
     }
 
+    /// Hands each line to `callback` instead of writing files: one at a time,
+    /// in order, on the logger's own thread, without a timestamp, on one line
+    /// with control characters escaped. The callback is dropped on that thread
+    /// after the last line, once every clone of the logger is gone, or at once
+    /// when `log` asks for no line.
+    pub fn with_callback(
+        log: LogConfig,
+        callback: impl FnMut(RuntimeLogKind, &str) + Send + 'static,
+    ) -> io::Result<Self> {
+        if !writes_any_line(log) {
+            return Ok(Self::disabled());
+        }
+        Self::spawn(log, LOG_QUEUE_CAPACITY, CallbackSink(callback))
+    }
+
     fn with_queue_capacity(config: RuntimeLogConfig, queue_capacity: usize) -> io::Result<Self> {
-        let access = open_log_file(config.access_path())?;
-        let error = open_log_file(config.error_path())?;
+        let log = config.log;
+        if !writes_any_line(log) {
+            return Ok(Self::disabled());
+        }
+        let open = |wanted: bool, path: &Path| {
+            wanted
+                .then(|| CappedFile::open(path, config.max_file_bytes))
+                .transpose()
+        };
+        let sink = FileSink {
+            access: open(log.access, config.access_path())?,
+            error: open(log.level.is_some(), config.error_path())?,
+        };
+        Self::spawn(log, queue_capacity, sink)
+    }
+
+    fn spawn(
+        log: LogConfig,
+        queue_capacity: usize,
+        sink: impl LogSink + 'static,
+    ) -> io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel(queue_capacity);
         let worker = thread::Builder::new()
             .name("xray-runtime-log".to_owned())
-            .spawn(move || writer_loop(receiver, access, error))?;
+            .spawn(move || writer_loop(receiver, sink))?;
 
         Ok(Self {
             inner: Some(Arc::new(RuntimeLoggerInner {
                 sender: Some(sender),
                 dropped_lines: AtomicU64::new(0),
                 worker: Some(worker),
+                log,
             })),
         })
     }
 
     pub fn is_enabled(&self) -> bool {
         self.inner.is_some()
+    }
+
+    /// Whether debug lines are written, for callers that do work only to
+    /// produce them.
+    pub fn debug_enabled(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.writes(RuntimeLogKind::Debug))
     }
 
     pub fn dropped_lines(&self) -> u64 {
@@ -77,34 +193,42 @@ impl RuntimeLogger {
     }
 
     pub fn debug(&self, message: impl FnOnce() -> String) {
-        self.write_error("debug", message);
+        self.write(RuntimeLogKind::Debug, message);
+    }
+
+    pub fn info(&self, message: impl FnOnce() -> String) {
+        self.write(RuntimeLogKind::Info, message);
+    }
+
+    pub fn warning(&self, message: impl FnOnce() -> String) {
+        self.write(RuntimeLogKind::Warning, message);
     }
 
     pub fn error(&self, message: impl FnOnce() -> String) {
-        self.write_error("error", message);
+        self.write(RuntimeLogKind::Error, message);
     }
 
     pub fn access(&self, message: impl FnOnce() -> String) {
-        let Some(inner) = &self.inner else {
-            return;
-        };
-        inner.enqueue(LogRecord {
-            destination: LogDestination::Access,
-            level: "access",
-            message: message(),
-        });
+        self.write(RuntimeLogKind::Access, message);
     }
 
-    fn write_error(&self, level: &'static str, message: impl FnOnce() -> String) {
+    /// Builds the message only when its line is written.
+    fn write(&self, kind: RuntimeLogKind, message: impl FnOnce() -> String) {
         let Some(inner) = &self.inner else {
             return;
         };
+        if !inner.writes(kind) {
+            return;
+        }
         inner.enqueue(LogRecord {
-            destination: LogDestination::Error,
-            level,
+            kind,
             message: message(),
         });
     }
+}
+
+fn writes_any_line(log: LogConfig) -> bool {
+    log.level.is_some() || log.access
 }
 
 /// Rate-limits recurring log events. `register` records one event and
@@ -162,6 +286,7 @@ struct RuntimeLoggerInner {
     sender: Option<SyncSender<LogRecord>>,
     dropped_lines: AtomicU64,
     worker: Option<JoinHandle<()>>,
+    log: LogConfig,
 }
 
 impl std::fmt::Debug for RuntimeLoggerInner {
@@ -170,11 +295,19 @@ impl std::fmt::Debug for RuntimeLoggerInner {
             .debug_struct("RuntimeLoggerInner")
             .field("queue_connected", &self.sender.is_some())
             .field("dropped_lines", &self.dropped_lines.load(Ordering::Relaxed))
+            .field("log", &self.log)
             .finish_non_exhaustive()
     }
 }
 
 impl RuntimeLoggerInner {
+    fn writes(&self, kind: RuntimeLogKind) -> bool {
+        match kind.severity() {
+            Some(severity) => self.log.level.is_some_and(|level| severity >= level),
+            None => self.log.access,
+        }
+    }
+
     fn enqueue(&self, record: LogRecord) {
         let Some(sender) = self.sender.as_ref() else {
             self.dropped_lines.fetch_add(1, Ordering::Relaxed);
@@ -193,16 +326,9 @@ impl Drop for RuntimeLoggerInner {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum LogDestination {
-    Access,
-    Error,
-}
-
 #[derive(Debug)]
 struct LogRecord {
-    destination: LogDestination,
-    level: &'static str,
+    kind: RuntimeLogKind,
     message: String,
 }
 
@@ -219,65 +345,192 @@ fn enqueue_nonblocking(
     }
 }
 
-fn writer_loop(
-    receiver: Receiver<LogRecord>,
-    mut access: BufWriter<File>,
-    mut error: BufWriter<File>,
-) {
+/// Where the log thread puts each line. It is dropped on that thread when the
+/// last logger clone is gone.
+trait LogSink: Send {
+    fn write(&mut self, record: LogRecord);
+    fn flush(&mut self);
+}
+
+/// `xray-access.log` and `xray-error.log`; a log the config turns off has no
+/// file.
+struct FileSink {
+    access: Option<CappedFile>,
+    error: Option<CappedFile>,
+}
+
+impl LogSink for FileSink {
+    fn write(&mut self, record: LogRecord) {
+        let file = match record.kind {
+            RuntimeLogKind::Access => &mut self.access,
+            _ => &mut self.error,
+        };
+        if let Some(file) = file {
+            file.write_line(format!(
+                "{} {} {}\n",
+                timestamp_millis(),
+                record.kind.label(),
+                single_line_message(&record.message)
+            ));
+        }
+    }
+
+    fn flush(&mut self) {
+        for file in [&mut self.access, &mut self.error].into_iter().flatten() {
+            file.flush();
+        }
+    }
+}
+
+struct CallbackSink<F>(F);
+
+impl<F: FnMut(RuntimeLogKind, &str) + Send> LogSink for CallbackSink<F> {
+    fn write(&mut self, record: LogRecord) {
+        (self.0)(record.kind, &single_line_message(&record.message));
+    }
+
+    fn flush(&mut self) {}
+}
+
+/// One log file kept under its cap. The line that would take the file past
+/// the cap first moves it to `<name>.1`, replacing the previous one, and
+/// starts the file anew; a single line longer than the cap is cut to it.
+struct CappedFile {
+    path: PathBuf,
+    /// `None` once the file could not be opened again: its lines are dropped.
+    writer: Option<BufWriter<File>>,
+    len: u64,
+    max_bytes: u64,
+}
+
+impl CappedFile {
+    fn open(path: &Path, max_bytes: u64) -> io::Result<Self> {
+        let writer = open_log_file(path)?;
+        let len = writer.get_ref().metadata()?.len();
+        Ok(Self {
+            path: path.to_path_buf(),
+            writer: Some(writer),
+            len,
+            max_bytes,
+        })
+    }
+
+    fn write_line(&mut self, mut line: String) {
+        if line.len() as u64 > self.max_bytes {
+            let mut end = usize::try_from(self.max_bytes - 1).unwrap_or(usize::MAX);
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            line.truncate(end);
+            line.push('\n');
+        }
+        let line_len = line.len() as u64;
+        if self.len > 0 && self.len + line_len > self.max_bytes {
+            self.rotate();
+        }
+        let Some(writer) = self.writer.as_mut() else {
+            return;
+        };
+        if writer.write_all(line.as_bytes()).is_ok() {
+            self.len += line_len;
+        }
+    }
+
+    fn flush(&mut self) {
+        if let Some(writer) = self.writer.as_mut() {
+            let _ = writer.flush();
+        }
+    }
+
+    fn rotate(&mut self) {
+        let Some(mut writer) = self.writer.take() else {
+            return;
+        };
+        let _ = writer.flush();
+        let (file, _) = writer.into_parts();
+        // Only the file this logger writes is moved: not one that replaced it.
+        if is_same_file(&file, &self.path)
+            && std::fs::rename(&self.path, rotated_log_path(&self.path)).is_err()
+        {
+            // The file stays where it is: start it again to keep the cap.
+            if file.set_len(0).is_ok() {
+                self.len = 0;
+                self.writer = Some(BufWriter::new(file));
+            }
+            return;
+        }
+        // Moved aside, by this rotation or by someone else: open the path anew.
+        if let Ok(writer) = open_log_file(&self.path) {
+            self.len = writer
+                .get_ref()
+                .metadata()
+                .map_or(0, |metadata| metadata.len());
+            self.writer = Some(writer);
+        }
+    }
+}
+
+fn rotated_log_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".1");
+    path.with_file_name(name)
+}
+
+#[cfg(unix)]
+fn is_same_file(file: &File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+
+    match (file.metadata(), std::fs::symlink_metadata(path)) {
+        (Ok(open), Ok(named)) => open.dev() == named.dev() && open.ino() == named.ino(),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn is_same_file(_file: &File, path: &Path) -> bool {
+    path.is_file()
+}
+
+fn writer_loop(receiver: Receiver<LogRecord>, mut sink: impl LogSink) {
     let mut pending_since_flush = 0usize;
 
     loop {
         match receiver.recv_timeout(LOG_FLUSH_INTERVAL) {
             Ok(record) => {
-                write_record(&mut access, &mut error, record);
+                sink.write(record);
                 pending_since_flush += 1;
 
                 while pending_since_flush < LOG_FLUSH_BATCH_SIZE {
                     match receiver.try_recv() {
                         Ok(record) => {
-                            write_record(&mut access, &mut error, record);
+                            sink.write(record);
                             pending_since_flush += 1;
                         }
                         Err(TryRecvError::Empty) => break,
                         Err(TryRecvError::Disconnected) => {
-                            flush_logs(&mut access, &mut error);
+                            sink.flush();
                             return;
                         }
                     }
                 }
 
                 if pending_since_flush >= LOG_FLUSH_BATCH_SIZE {
-                    flush_logs(&mut access, &mut error);
+                    sink.flush();
                     pending_since_flush = 0;
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if pending_since_flush > 0 {
-                    flush_logs(&mut access, &mut error);
+                    sink.flush();
                     pending_since_flush = 0;
                 }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                flush_logs(&mut access, &mut error);
+                sink.flush();
                 return;
             }
         }
     }
-}
-
-fn write_record(access: &mut BufWriter<File>, error: &mut BufWriter<File>, record: LogRecord) {
-    let writer = match record.destination {
-        LogDestination::Access => access,
-        LogDestination::Error => error,
-    };
-    let message = single_line_message(&record.message);
-    let _ = writeln!(
-        writer,
-        "{} {} {}",
-        timestamp_millis(),
-        record.level,
-        message
-    );
 }
 
 fn single_line_message(message: &str) -> String {
@@ -294,11 +547,6 @@ fn single_line_message(message: &str) -> String {
         }
     }
     sanitized
-}
-
-fn flush_logs(access: &mut BufWriter<File>, error: &mut BufWriter<File>) {
-    let _ = access.flush();
-    let _ = error.flush();
 }
 
 fn open_log_file(path: &Path) -> io::Result<BufWriter<File>> {
@@ -513,8 +761,11 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use xray_config::{LogConfig, LogLevel};
+
     use super::{
-        monotonic_millis, LogThrottle, RuntimeLogConfig, RuntimeLogger, RuntimeLoggerInner,
+        monotonic_millis, LogThrottle, RuntimeLogConfig, RuntimeLogKind, RuntimeLogger,
+        RuntimeLoggerInner,
     };
 
     #[test]
@@ -585,6 +836,10 @@ mod tests {
                 sender: Some(sender),
                 dropped_lines: AtomicU64::new(0),
                 worker: None,
+                log: LogConfig {
+                    level: Some(LogLevel::Debug),
+                    access: true,
+                },
             })),
         };
 
@@ -678,6 +933,203 @@ mod tests {
 
         assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
         assert!(started.elapsed().as_secs() < 1);
+    }
+
+    #[test]
+    fn level_filter_writes_only_lines_at_or_above_the_level() {
+        let dir = unique_temp_dir("xray-runtime-log-level");
+        let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_log(LogConfig {
+            level: Some(LogLevel::Warning),
+            access: true,
+        }))
+        .expect("logger should open files");
+        let evaluated = AtomicBool::new(false);
+
+        assert!(logger.is_enabled());
+        assert!(!logger.debug_enabled());
+        logger.debug(|| {
+            evaluated.store(true, Ordering::SeqCst);
+            "a debug line".to_owned()
+        });
+        logger.info(|| "an info line".to_owned());
+        logger.warning(|| "a warning line".to_owned());
+        logger.error(|| "an error line".to_owned());
+        logger.access(|| "an access line".to_owned());
+        drop(logger);
+
+        assert!(!evaluated.load(Ordering::SeqCst));
+        let error_log = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
+        assert!(!error_log.contains("a debug line"), "{error_log}");
+        assert!(!error_log.contains("an info line"), "{error_log}");
+        assert!(error_log.contains(" warning a warning line"), "{error_log}");
+        assert!(error_log.contains(" error an error line"), "{error_log}");
+        let access_log = std::fs::read_to_string(dir.join("xray-access.log")).unwrap();
+        assert!(access_log.contains(" access an access line"), "{access_log}");
+
+        let dir = unique_temp_dir("xray-runtime-log-debug");
+        let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_log(LogConfig {
+            level: Some(LogLevel::Debug),
+            access: false,
+        }))
+        .unwrap();
+        assert!(logger.debug_enabled());
+        logger.debug(|| "a debug line".to_owned());
+        logger.info(|| "an info line".to_owned());
+        drop(logger);
+        let error_log = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
+        assert!(error_log.contains(" debug a debug line"), "{error_log}");
+        assert!(error_log.contains(" info an info line"), "{error_log}");
+    }
+
+    #[test]
+    fn default_log_config_opens_no_access_log() {
+        let dir = unique_temp_dir("xray-runtime-log-default");
+        let logger =
+            RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_log(LogConfig::default()))
+                .unwrap();
+        logger.access(|| "from tun accepted <redacted-domain>:443".to_owned());
+        logger.error(|| "an error line".to_owned());
+        drop(logger);
+
+        assert!(!dir.join("xray-access.log").exists());
+        assert!(std::fs::read_to_string(dir.join("xray-error.log"))
+            .unwrap()
+            .contains("an error line"));
+    }
+
+    #[test]
+    fn a_log_config_that_writes_nothing_opens_nothing() {
+        let dir = unique_temp_dir("xray-runtime-log-none");
+        let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_log(LogConfig {
+            level: None,
+            access: false,
+        }))
+        .unwrap();
+
+        assert!(!logger.is_enabled());
+        logger.error(|| "an error line".to_owned());
+        drop(logger);
+        assert!(!dir.join("xray-error.log").exists());
+        assert!(!dir.join("xray-access.log").exists());
+    }
+
+    #[test]
+    fn each_log_file_is_capped_with_one_rotation() {
+        let dir = unique_temp_dir("xray-runtime-log-cap");
+        let cap = 256;
+        let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_max_file_bytes(cap))
+            .unwrap();
+        for index in 0..100 {
+            logger.error(move || format!("line {index:03} {}", "x".repeat(40)));
+            logger.access(move || format!("access {index:03} {}", "y".repeat(40)));
+        }
+        drop(logger);
+
+        for name in ["xray-error.log", "xray-access.log"] {
+            let current = std::fs::read_to_string(dir.join(name)).unwrap();
+            let rotated = std::fs::read_to_string(dir.join(format!("{name}.1"))).unwrap();
+            assert!(current.len() as u64 <= cap, "{name}: {}", current.len());
+            assert!(rotated.len() as u64 <= cap, "{name}.1: {}", rotated.len());
+            assert!(!current.is_empty() && !rotated.is_empty(), "{name}");
+            // The newest line is in the file, the lines just before it in .1,
+            // and the oldest are gone.
+            assert!(current.lines().last().unwrap().contains(" 099 "), "{current}");
+            assert!(!rotated.contains(" 000 "), "{rotated}");
+            assert!(!dir.join(format!("{name}.2")).exists());
+            for line in current.lines().chain(rotated.lines()) {
+                assert!(line.ends_with(&"x".repeat(40)) || line.ends_with(&"y".repeat(40)));
+            }
+        }
+    }
+
+    #[test]
+    fn a_file_over_the_cap_from_before_is_rotated_on_the_first_line() {
+        let dir = unique_temp_dir("xray-runtime-log-cap-existing");
+        std::fs::write(dir.join("xray-error.log"), "z".repeat(1000)).unwrap();
+        let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_max_file_bytes(256))
+            .unwrap();
+        logger.error(|| "a new line".to_owned());
+        drop(logger);
+
+        let current = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
+        assert!(current.contains("a new line") && !current.contains('z'), "{current}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("xray-error.log.1")).unwrap(),
+            "z".repeat(1000)
+        );
+    }
+
+    #[test]
+    fn a_line_longer_than_the_cap_is_cut_to_it() {
+        let dir = unique_temp_dir("xray-runtime-log-cap-line");
+        let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_max_file_bytes(64))
+            .unwrap();
+        logger.error(|| "é".repeat(1000));
+        drop(logger);
+
+        let current = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
+        assert!(current.len() <= 64, "{}", current.len());
+        assert!(current.ends_with('\n'));
+    }
+
+    #[test]
+    fn callback_receives_each_line_with_its_kind_instead_of_files() {
+        struct Released(Arc<AtomicBool>);
+        impl Drop for Released {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let released = Arc::new(AtomicBool::new(false));
+        let guard = Released(Arc::clone(&released));
+        let (sender, receiver) = mpsc::channel();
+        let logger = RuntimeLogger::with_callback(
+            LogConfig {
+                level: Some(LogLevel::Info),
+                access: true,
+            },
+            move |kind, line| {
+                let _ = &guard;
+                sender.send((kind, line.to_owned())).unwrap();
+            },
+        )
+        .expect("log thread should start");
+
+        logger.debug(|| "a debug line".to_owned());
+        logger.info(|| "an info\nline".to_owned());
+        logger.warning(|| "a warning line".to_owned());
+        logger.error(|| "an error line".to_owned());
+        logger.access(|| "an access line".to_owned());
+        drop(logger);
+
+        assert_eq!(
+            receiver.iter().collect::<Vec<_>>(),
+            [
+                (RuntimeLogKind::Info, r"an info\nline".to_owned()),
+                (RuntimeLogKind::Warning, "a warning line".to_owned()),
+                (RuntimeLogKind::Error, "an error line".to_owned()),
+                (RuntimeLogKind::Access, "an access line".to_owned()),
+            ]
+        );
+        assert!(released.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn callback_with_nothing_to_write_is_dropped_at_once() {
+        let (sender, receiver) = mpsc::channel::<(RuntimeLogKind, String)>();
+        let logger = RuntimeLogger::with_callback(
+            LogConfig {
+                level: None,
+                access: false,
+            },
+            move |kind, line| sender.send((kind, line.to_owned())).unwrap(),
+        )
+        .unwrap();
+
+        assert!(!logger.is_enabled());
+        logger.error(|| "an error line".to_owned());
+        assert!(receiver.recv().is_err());
     }
 
     #[cfg(target_vendor = "apple")]

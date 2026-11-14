@@ -1381,12 +1381,37 @@ differences:
   `dialerProxy` outbound.
 - A WireGuard peer endpoint that is a domain dials the first address its
   `domainStrategy` keeps. Xray-core picks one of them at random.
-- An option that fails is logged at debug level; Xray-core logs it at info,
-  a level the runtime log here does not have.
 - Xray-core's outbound UDP sockets are IPv6 sockets that also carry IPv4, so
   its `customSockopt` entries for `udp4` never apply to them. Here a UDP
   socket has its destination's address family, and such entries apply to the
   IPv4 ones.
+
+## The `log` object
+
+`log` is read as Xray-core v26.11.9 reads it (`infra/conf/log.go`) for which
+lines are written, and differs in where they go and in what they say:
+
+- Without `access`, or with an empty one, no access line is written.
+  Xray-core writes access lines to standard output then. A mobile extension
+  has no one reading its standard output, and an access line is the record of
+  a connection.
+- The `access` and `error` paths are never opened. Lines go to the files or
+  the callback the embedding chose (see [the C ABI](ffi.md#runtime-log-abi-118));
+  a path other than `none` only turns its log on.
+- `dnsLog` and `maskAddress` are checked and ignored. Xray-core writes DNS
+  queries to its access log when `dnsLog` is true and masks addresses in its
+  lines as `maskAddress` asks; here no line holds a DNS name, access and debug
+  lines show a destination's port only, and no line at `warning` or above
+  names a destination at all.
+- Unknown fields are refused, and so is a `log` that gives both `loglevel` and
+  `logLevel`. Xray-core ignores unknown fields and, matching keys ignoring
+  case, keeps the later of the two.
+- An unknown `loglevel` reads as `warning`, as in Xray-core, and the parser
+  warns about it.
+- Each log file is capped at 1 MiB with one rotation to `<name>.1`. Xray-core
+  appends without a cap.
+- The lines are this core's own: their wording and the events they record are
+  not Xray-core's.
 
 ## VLESS share-link import
 
