@@ -5,6 +5,7 @@
 //! carries, read from JSON (the gate's rust flavour writes it; the FFI will
 //! build it in place).
 
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -12,8 +13,9 @@ use serde::Deserialize;
 /// The transport the client runs: the only one the port has so far.
 pub const TRANSPORT_DATACHANNEL: &str = "datachannel";
 
-/// One run of the client.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+/// One run of the client. Its `Debug` shows neither the key nor the SOCKS
+/// password.
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// The engine's URL: `tcp://host:port/room` for the interop hub.
@@ -124,7 +126,7 @@ fn loopback_any() -> String {
 }
 
 /// A config that cannot run.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum ConfigError {
     /// Not JSON of the right shape.
     #[error("parse config: {0}")]
@@ -138,6 +140,47 @@ pub enum ConfigError {
     /// A direct rule that does not parse (`route.ErrRule`).
     #[error("{0}")]
     Rule(String),
+    /// The SOCKS listen address cannot be used (`ErrInvalidConfig`).
+    #[error("invalid config: {0}")]
+    Socks(&'static str),
+}
+
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hidden = |set: &str| if set.is_empty() { "" } else { "<hidden>" };
+        f.debug_struct("Config")
+            .field("url", &self.url)
+            .field("rooms", &self.rooms)
+            .field("key", &hidden(&self.key))
+            .field("transport", &self.transport)
+            .field("dns", &self.dns)
+            .field("socks", &self.socks)
+            .field("device_id", &self.device_id)
+            .field("socks_user", &self.socks_user)
+            .field("socks_pass", &hidden(&self.socks_pass))
+            .field("udp_disabled", &self.udp_disabled)
+            .field("udp_max_flows", &self.udp_max_flows)
+            .field("liveness", &self.liveness)
+            .field("direct", &self.direct)
+            .field("debug", &self.debug)
+            .field("liveness_fallback_ms", &self.liveness_fallback_ms)
+            .field("end_on_empty_room", &self.end_on_empty_room)
+            .finish()
+    }
+}
+
+/// The key's hex and the SOCKS password are wiped when the settings go.
+impl Drop for Config {
+    fn drop(&mut self) {
+        wipe(&mut self.key);
+        wipe(&mut self.socks_pass);
+    }
+}
+
+/// Zeroes the string's whole buffer; `zeroize`'s volatile writes keep the
+/// wipe from being optimised away.
+fn wipe(s: &mut String) {
+    zeroize::Zeroize::zeroize(s);
 }
 
 impl Config {
@@ -147,6 +190,30 @@ impl Config {
     /// [`ConfigError::Parse`].
     pub fn from_json(raw: &[u8]) -> Result<Self, ConfigError> {
         serde_json::from_slice(raw).map_err(|e| ConfigError::Parse(e.to_string()))
+    }
+
+    /// Where the SOCKS front listens: IPv4 only, as Go listens `tcp4`
+    /// (client.go:318), `localhost` being 127.0.0.1. Outside loopback a
+    /// login is required (mobile/config.go:488-492): without one, anyone who
+    /// reaches the port could relay CONNECT and UDP through the exit.
+    ///
+    /// # Errors
+    /// [`ConfigError::Socks`].
+    pub fn socks_listen_addr(&self) -> Result<SocketAddrV4, ConfigError> {
+        let bad = ConfigError::Socks("invalid SOCKS listen address");
+        let (host, port) = self.socks.rsplit_once(':').ok_or(bad.clone())?;
+        let port: u16 = port.parse().map_err(|_| bad.clone())?;
+        let ip = match host {
+            "localhost" => Ipv4Addr::LOCALHOST,
+            "" => Ipv4Addr::UNSPECIFIED,
+            h => h.parse::<Ipv4Addr>().map_err(|_| bad)?,
+        };
+        if !ip.is_loopback() && (self.socks_user.is_empty() || self.socks_pass.is_empty()) {
+            return Err(ConfigError::Socks(
+                "SOCKS credentials are required outside loopback",
+            ));
+        }
+        Ok(SocketAddrV4::new(ip, port))
     }
 
     /// The liveness fallback's first pause.
@@ -179,6 +246,53 @@ mod tests {
         let min = Config::from_json(br#"{"url":"u","key":"k"}"#).unwrap();
         assert_eq!(min.transport, "datachannel");
         assert_eq!(min.socks, "127.0.0.1:0");
+    }
+
+    #[test]
+    fn debug_prints_neither_the_key_nor_the_socks_password() {
+        let key = "ab".repeat(32);
+        let cfg = Config::from_json(
+            format!(r#"{{"url":"u","key":"{key}","socks_user":"me","socks_pass":"hunter22"}}"#)
+                .as_bytes(),
+        )
+        .unwrap();
+        let shown = format!("{cfg:?}");
+        assert!(!shown.contains(&key), "{shown}");
+        assert!(!shown.contains("hunter22"), "{shown}");
+        assert!(shown.contains("socks_user: \"me\""), "{shown}");
+    }
+
+    #[test]
+    fn the_socks_front_listens_on_ipv4_and_outside_loopback_only_with_a_login() {
+        let at = |socks: &str, user: &str, pass: &str| {
+            Config::from_json(
+                format!(
+                    r#"{{"url":"u","key":"k","socks":"{socks}","socks_user":"{user}","socks_pass":"{pass}"}}"#
+                )
+                .as_bytes(),
+            )
+            .unwrap()
+            .socks_listen_addr()
+        };
+        assert_eq!(at("127.0.0.1:0", "", ""), Ok("127.0.0.1:0".parse().unwrap()));
+        assert_eq!(
+            at("localhost:1080", "", ""),
+            Ok("127.0.0.1:1080".parse().unwrap())
+        );
+        let refused = Err(ConfigError::Socks(
+            "SOCKS credentials are required outside loopback",
+        ));
+        assert_eq!(at("0.0.0.0:1080", "", ""), refused);
+        assert_eq!(at(":1080", "", ""), refused);
+        assert_eq!(at("192.168.1.2:1080", "me", ""), refused);
+        assert_eq!(
+            at("0.0.0.0:1080", "me", "pw"),
+            Ok("0.0.0.0:1080".parse().unwrap())
+        );
+        let invalid = Err(ConfigError::Socks("invalid SOCKS listen address"));
+        assert_eq!(at("[::1]:1080", "", ""), invalid);
+        assert_eq!(at("127.0.0.1", "", ""), invalid);
+        assert_eq!(at("host.example:1080", "me", "pw"), invalid);
     }
 
     #[test]

@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::sync::{mpsc, watch, Notify};
+use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::lane::Lane;
@@ -108,10 +108,15 @@ pub struct PipeLink {
     room: String,
     sinks: Mutex<Sinks>,
     writer: tokio::sync::Mutex<Option<Writer>>,
+    /// The joined connection's cut, `None` while not joined: cancelling it
+    /// drops that connection, as Go's `conn.Close()` does (a reconnect, a
+    /// failed write, the close), and frees a write stuck on a far end that
+    /// stopped reading without waiting for the writer's lock.
+    conn: Mutex<Option<CancellationToken>>,
     ready: watch::Sender<bool>,
-    reconnect: Notify,
     shut: CancellationToken,
-    events: mpsc::Sender<LinkEvent>,
+    /// Taken by [`PipeLink::close`]: the client's event queue ends with it.
+    events: Mutex<Option<mpsc::Sender<LinkEvent>>>,
 }
 
 impl std::fmt::Debug for PipeLink {
@@ -134,6 +139,12 @@ struct Writer {
     half: OwnedWriteHalf,
     /// One frame at a time: [`FRAME_HEADER`] + the largest message sent.
     buf: Vec<u8>,
+    /// The connection's cut.
+    cut: CancellationToken,
+}
+
+fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl PipeLink {
@@ -153,26 +164,33 @@ impl PipeLink {
             room,
             sinks: Mutex::new(Sinks::default()),
             writer: tokio::sync::Mutex::new(None),
+            conn: Mutex::new(None),
             ready,
-            reconnect: Notify::new(),
             shut: CancellationToken::new(),
-            events,
+            events: Mutex::new(Some(events)),
         });
-        let read = link.join().await.map_err(LinkError::Join)?;
-        tokio::spawn(link.clone().read_loop(read));
+        let (read, cut) = link.join().await.map_err(LinkError::Join)?;
+        tokio::spawn(link.clone().read_loop(read, cut));
         Ok(link)
     }
 
-    async fn join(&self) -> io::Result<OwnedReadHalf> {
+    async fn join(&self) -> io::Result<(OwnedReadHalf, CancellationToken)> {
         let stream = net::dial_tcp_host_with(&self.addr, Some(SEND_HIGH_WATER)).await?;
         stream.set_nodelay(true)?;
         let (read, mut half) = stream.into_split();
         let mut buf = Vec::with_capacity(FRAME_HEADER + MAX_PAYLOAD);
         frame_into(&mut buf, KIND_JOIN, self.room.as_bytes())?;
         half.write_all(&buf).await?;
-        *self.writer.lock().await = Some(Writer { half, buf });
+        // A child of the link's end: the close cuts every connection.
+        let cut = self.shut.child_token();
+        *self.writer.lock().await = Some(Writer {
+            half,
+            buf,
+            cut: cut.clone(),
+        });
+        *locked(&self.conn) = Some(cut.clone());
         self.ready.send_replace(true);
-        Ok(read)
+        Ok((read, cut))
     }
 
     /// Hands reliable messages to `lane` from now on (`None`: drop them).
@@ -186,7 +204,7 @@ impl PipeLink {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Sinks> {
-        self.sinks.lock().unwrap_or_else(PoisonError::into_inner)
+        locked(&self.sinks)
     }
 
     /// Whether another participant has been in the room
@@ -210,7 +228,8 @@ impl PipeLink {
     /// Sends one reliable message.
     ///
     /// # Errors
-    /// `NotConnected` while the room is not joined, or the socket's error.
+    /// `NotConnected` while the room is not joined or once the connection
+    /// was cut, or the socket's error.
     pub async fn send(&self, payload: &[u8]) -> io::Result<()> {
         self.send_kind(KIND_DATA, payload).await
     }
@@ -223,31 +242,47 @@ impl PipeLink {
         self.send_kind(KIND_DGRAM, payload).await
     }
 
+    /// One frame at a time, as Go's `wmu` (zz_pipe.go:290): the write has
+    /// no deadline there either, and ends with its connection.
     async fn send_kind(&self, kind: u8, payload: &[u8]) -> io::Result<()> {
         let mut guard = self.writer.lock().await;
         let Some(w) = guard.as_mut() else {
             return Err(io::ErrorKind::NotConnected.into());
         };
         frame_into(&mut w.buf, kind, payload)?;
-        let res = w.half.write_all(&w.buf).await;
+        let cut = w.cut.clone();
+        let res = tokio::select! {
+            biased;
+            () = cut.cancelled() => Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "interop-pipe: connection dropped",
+            )),
+            r = w.half.write_all(&w.buf) => r,
+        };
         if res.is_err() {
+            // Under the lock, so a rejoin cannot be marked joined first.
             *guard = None;
             self.ready.send_replace(false);
+            cut.cancel();
         }
         res
     }
 
-    /// Drops the hub connection; the read loop rejoins
-    /// (`Session.Reconnect`).
+    /// Drops the hub connection there is; the read loop rejoins
+    /// (`Session.Reconnect`). Not joined, it does nothing, as Go's.
     pub fn reconnect(&self, reason: &str) {
         crate::info!("interop-pipe: reconnect requested: {reason}");
-        self.reconnect.notify_one();
+        if let Some(cut) = locked(&self.conn).as_ref() {
+            cut.cancel();
+        }
     }
 
-    /// Leaves the room for good.
+    /// Leaves the room for good; the event queue ends.
     pub async fn close(&self) {
         self.shut.cancel();
         self.ready.send_replace(false);
+        locked(&self.events).take();
+        locked(&self.conn).take();
         if let Some(mut w) = self.writer.lock().await.take() {
             let _ = w.half.shutdown().await;
         }
@@ -256,14 +291,20 @@ impl PipeLink {
         sinks.datagram = None;
     }
 
-    async fn read_loop(self: Arc<Self>, mut read: OwnedReadHalf) {
+    fn event(&self, ev: LinkEvent) {
+        if let Some(tx) = locked(&self.events).as_ref() {
+            let _ = tx.try_send(ev);
+        }
+    }
+
+    async fn read_loop(self: Arc<Self>, mut read: OwnedReadHalf, mut cut: CancellationToken) {
         // The one read buffer: the largest frame the hub relays.
         let mut buf = vec![0u8; MAX_PAYLOAD];
         loop {
             let got = tokio::select! {
                 biased;
                 () = self.shut.cancelled() => return,
-                () = self.reconnect.notified() => Err(io::Error::other("reconnect requested")),
+                () = cut.cancelled() => Err(io::Error::other("connection dropped")),
                 r = read_frame(&mut read, &mut buf) => r,
             };
             match got {
@@ -286,44 +327,55 @@ impl PipeLink {
                 }
                 Ok((KIND_END, n)) => {
                     let reason = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    self.drop_writer().await;
-                    let _ = self.events.try_send(LinkEvent::Ended(reason));
+                    self.drop_conn(&cut).await;
+                    self.event(LinkEvent::Ended(reason));
                     return;
                 }
                 Ok(_) => {}
                 Err(_) => {
-                    self.drop_writer().await;
+                    self.drop_conn(&cut).await;
                     if self.shut.is_cancelled() {
                         return;
                     }
                     crate::info!("interop-pipe: hub connection lost, rejoining room");
-                    let Some(next) = self.rejoin().await else {
+                    let Some((next, next_cut)) = self.rejoin().await else {
                         return;
                     };
-                    read = next;
-                    let _ = self.events.try_send(LinkEvent::Reconnected);
+                    (read, cut) = (next, next_cut);
+                    self.event(LinkEvent::Reconnected);
                 }
             }
         }
     }
 
-    async fn drop_writer(&self) {
+    /// Forgets connection `cut`: not joined, its writer gone.
+    async fn drop_conn(&self, cut: &CancellationToken) {
         self.ready.send_replace(false);
-        self.writer.lock().await.take();
+        cut.cancel();
+        {
+            let mut conn = locked(&self.conn);
+            if conn.as_ref().is_some_and(|c| c.is_cancelled()) {
+                *conn = None;
+            }
+        }
+        let mut w = self.writer.lock().await;
+        if w.as_ref().is_some_and(|w| w.cut.is_cancelled()) {
+            *w = None;
+        }
     }
 
-    async fn rejoin(&self) -> Option<OwnedReadHalf> {
+    async fn rejoin(&self) -> Option<(OwnedReadHalf, CancellationToken)> {
         let mut delay = REJOIN_BACKOFF;
         loop {
             if self.shut.is_cancelled() {
                 return None;
             }
-            if let Ok(read) = self.join().await {
+            if let Ok(joined) = self.join().await {
                 if self.shut.is_cancelled() {
-                    self.drop_writer().await;
+                    self.drop_conn(&joined.1).await;
                     return None;
                 }
-                return Some(read);
+                return Some(joined);
             }
             tokio::select! {
                 () = self.shut.cancelled() => return None,
@@ -366,8 +418,102 @@ async fn read_frame(read: &mut OwnedReadHalf, buf: &mut [u8]) -> io::Result<(u8,
 }
 
 #[cfg(test)]
+impl PipeLink {
+    /// Marks the room joined or not without touching the connection.
+    pub(crate) fn set_ready(&self, ready: bool) {
+        self.ready.send_replace(ready);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testhub::TestHub;
+    use crate::testing::bounded;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::time::timeout;
+
+    const QUICK: Duration = Duration::from_secs(2);
+
+    /// Sends full frames until a send stops returning (the hub stopped
+    /// reading); the sender, which ends when a send fails.
+    async fn stall(link: &Arc<PipeLink>) -> tokio::task::JoinHandle<()> {
+        let sent = Arc::new(AtomicUsize::new(0));
+        let filler = {
+            let (link, sent) = (link.clone(), sent.clone());
+            tokio::spawn(async move {
+                let p = vec![0u8; MAX_PAYLOAD];
+                while link.send(&p).await.is_ok() {
+                    sent.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        };
+        let mut last = usize::MAX;
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let n = sent.load(Ordering::Relaxed);
+            if n == last {
+                return filler;
+            }
+            last = n;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_send_stuck_on_a_far_end_that_stopped_reading_holds_back_neither_reconnect_nor_close(
+    ) {
+        bounded(async {
+            let (hub, url) = TestHub::start("stall").await;
+            let (tx, mut rx) = mpsc::channel(EVENT_QUEUE);
+            let link = PipeLink::connect(&url, tx).await.unwrap();
+            let _first = hub.accept().await;
+            let filler = stall(&link).await;
+            link.reconnect("test");
+            let _second = timeout(QUICK, hub.accept())
+                .await
+                .expect("the link rejoins while a send is stuck");
+            assert_eq!(
+                timeout(QUICK, rx.recv()).await.unwrap(),
+                Some(LinkEvent::Reconnected)
+            );
+            timeout(QUICK, filler)
+                .await
+                .expect("the stuck send fails with its connection")
+                .unwrap();
+            let filler = stall(&link).await;
+            timeout(QUICK, link.close())
+                .await
+                .expect("close does not wait for a stuck send");
+            timeout(QUICK, filler).await.unwrap().unwrap();
+            assert!(!link.can_send());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn reconnects_asked_together_drop_one_connection() {
+        bounded(async {
+            let (hub, url) = TestHub::start("twice").await;
+            let (tx, mut rx) = mpsc::channel(EVENT_QUEUE);
+            let link = PipeLink::connect(&url, tx).await.unwrap();
+            let _first = hub.accept().await;
+            // Go's Reconnect closes the connection there is (zz_pipe.go:355):
+            // a second one finds it closed or gone, and the next connection
+            // stays.
+            link.reconnect("test");
+            link.reconnect("test");
+            let _second = timeout(QUICK, hub.accept()).await.unwrap();
+            assert_eq!(rx.recv().await, Some(LinkEvent::Reconnected));
+            assert!(
+                timeout(Duration::from_millis(500), hub.accept())
+                    .await
+                    .is_err(),
+                "a third connection"
+            );
+            link.close().await;
+        })
+        .await;
+    }
 
     #[test]
     fn a_url_names_the_hub_and_the_room() {
