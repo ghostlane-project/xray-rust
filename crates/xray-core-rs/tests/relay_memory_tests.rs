@@ -103,24 +103,29 @@ fn take_turn() -> MutexGuard<'static, ()> {
     TURN.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// The byte budget a constrained (phone) core runs with: 200 Mbit/s over
-/// 120 ms, `xray_transport::memory_budget`'s default for its class. Written
-/// out so that the test reads the same against a core without a budget.
-const CONSTRAINED_BUDGET: isize = 3_000_000;
-/// What a flow may hold beside the budget: its relay floors, its TLS
-/// session and its Vision state.
-const PER_FLOW: isize = 16 * KIB as isize;
+/// T4's budget: a third of a phone's 3 MB, so that 64 flows want more of it
+/// than it has (about 4 MB measured).
+const T4_BUDGET: usize = 1_000_000;
+/// What a flow may hold beside the budget: its two relay directions'
+/// 4 KiB floors.
+const PER_FLOW: isize = 8 * KIB as isize;
 /// The free relay buffers a constrained process keeps.
 const CONSTRAINED_POOL_KEEP: isize = 4 * 128 * KIB as isize;
 
-/// T4: 32 Vision flows over TLS, a MiB down each and then a MiB up each,
-/// all at once, the uploads to a server that takes them at a phone's pace:
-/// the core holds no more than the budget and a little per flow above what
-/// it holds idle.
-#[test]
-fn thirty_two_vision_flows_hold_the_budget_and_little_more() {
-    const FLOWS: usize = 32;
-    let _turn = take_turn();
+/// What one run of `flows` Vision flows held, in bytes.
+#[derive(Debug, Clone, Copy)]
+struct Run {
+    idle: isize,
+    download: isize,
+    peak_over_idle: isize,
+    after: isize,
+    budget_peak: usize,
+}
+
+/// `flows` Vision flows over TLS, a MiB down each and then a MiB up each,
+/// all at once, the uploads to a server that takes them at a phone's pace,
+/// under the byte budget the process has now.
+fn vision_flows(flows: usize) -> Run {
     let far = support::runtime(2, leave_this_thread);
     let near = support::runtime(2, count_this_thread);
     let (server, client_config) = far.block_on(support::start_vision_server(support::Uplink::Slow));
@@ -129,30 +134,77 @@ fn thirty_two_vision_flows_hold_the_budget_and_little_more() {
     near.block_on(core.start()).unwrap();
     let socks = core.inbound_addr(Some("socks-in")).unwrap();
 
-    let mut flows = far.block_on(futures_join_all(
-        (0..FLOWS).map(|_| support::open_vision_flow(socks)),
+    let mut streams = far.block_on(futures_join_all(
+        (0..flows).map(|_| support::open_vision_flow(socks)),
     ));
     far.block_on(async { tokio::time::sleep(Duration::from_millis(300)).await });
     let idle = reset_peak();
+    xray_transport::reset_byte_budget_peak();
 
-    far.block_on(futures_join_all(flows.iter_mut().map(support::download)));
-    let download_peak = peak() - idle;
-    far.block_on(futures_join_all(flows.iter_mut().map(support::upload)));
+    far.block_on(futures_join_all(streams.iter_mut().map(support::download)));
+    let download = peak() - idle;
+    far.block_on(futures_join_all(streams.iter_mut().map(support::upload)));
     let peak_over_idle = peak() - idle;
+    let budget_peak = xray_transport::byte_budget_usage().peak;
     far.block_on(async { tokio::time::sleep(Duration::from_millis(300)).await });
     let after = live() - idle;
-
-    let bound = CONSTRAINED_BUDGET + FLOWS as isize * PER_FLOW;
-    eprintln!(
-        "T4 {FLOWS} Vision flows: idle {idle} B ({} B a flow), peak over idle {peak_over_idle} B \
-         (download alone {download_peak} B), {after} B more than idle after, bound {bound} B",
-        idle / FLOWS as isize
-    );
-    drop(flows);
+    drop(streams);
     near.block_on(core.stop()).unwrap();
+    Run {
+        idle,
+        download,
+        peak_over_idle,
+        after,
+        budget_peak,
+    }
+}
+
+/// T4: 64 Vision flows over TLS, a MiB down each and then a MiB up each,
+/// all at once, the uploads to a server that takes them at a phone's pace:
+/// the core holds no more than its budget and the flows' floors above what
+/// it holds idle. The same flows with no limit take more than that (about
+/// 2.6 MB here, and 4 MB of permits), so the bound holds because of the
+/// budget, not beside it.
+#[test]
+fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
+    const FLOWS: usize = 64;
+    let _turn = take_turn();
+    let bound = T4_BUDGET as isize + FLOWS as isize * PER_FLOW;
+    let budget = |capacity| {
+        xray_transport::set_byte_budget(Some(xray_transport::ByteBudgetSettings {
+            capacity,
+            floor: xray_transport::memory_budget::DEFAULT_FLOW_FLOOR,
+        }));
+    };
+    budget(usize::MAX / 2);
+    let unlimited = vision_flows(FLOWS);
+    budget(T4_BUDGET);
+    let held = vision_flows(FLOWS);
+    xray_transport::set_byte_budget(None);
+    for (arm, run) in [("no limit", unlimited), ("B = 1 MB", held)] {
+        eprintln!(
+            "T4 {FLOWS} Vision flows, {arm}: idle {} B ({} B a flow), peak over idle {} B \
+             (download alone {} B), {} B more than idle after, {} B of permits at most; \
+             bound {bound} B",
+            run.idle,
+            run.idle / FLOWS as isize,
+            run.peak_over_idle,
+            run.download,
+            run.after,
+            run.budget_peak
+        );
+    }
     assert!(
-        peak_over_idle <= bound,
-        "the flows held {peak_over_idle} B over idle; the bound is {bound} B"
+        unlimited.budget_peak > 2 * T4_BUDGET && unlimited.peak_over_idle > bound,
+        "without a limit the flows took {} B over idle and {} B of permits: the test no \
+         longer presses the budget",
+        unlimited.peak_over_idle,
+        unlimited.budget_peak
+    );
+    assert!(
+        held.peak_over_idle <= bound,
+        "the flows held {} B over idle; the bound is {bound} B",
+        held.peak_over_idle
     );
 }
 
