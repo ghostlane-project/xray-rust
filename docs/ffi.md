@@ -721,5 +721,15 @@ release and context. A failed registration leaves ownership with the caller.
 Both callbacks must return promptly, never unwind across C and never call core
 lifecycle methods.
 
+Freeing the core waits for the callback. `xray_core_free`, and a config load
+that fails after the log started, can block the calling thread until the log
+thread has handed over every queued line (up to 4096 calls of the callback)
+and ended. A callback that waits for the thread inside one of those calls
+therefore deadlocks: in Swift, `DispatchQueue.main.sync` in the callback while
+the main thread calls `xray_core_free`, or a lock that the thread calling free
+holds. The callback should copy the line, which is borrowed for the call,
+hand the copy on asynchronously (for example `queue.async`, or a lock-free
+buffer another thread drains) and return.
+
 A capability bit would be bit 31, which a C `int` enumerator cannot hold
 portably, so a host checks `xray_ffi_version_minor() >= 19` instead.

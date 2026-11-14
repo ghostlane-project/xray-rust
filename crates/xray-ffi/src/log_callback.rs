@@ -84,6 +84,11 @@ impl Drop for FfiLogCallback {
 /// `xray_core_free` and on any thread; replacing or clearing a registration
 /// releases the previous one. Failure retains ownership with the caller.
 ///
+/// `xray_core_free`, and a config load that fails, can block until the log
+/// thread has handed over every queued line and ended, so the callback must
+/// never wait for a thread that may be inside a call on this handle: it
+/// should copy the line, hand the copy on asynchronously and return.
+///
 /// # Safety
 /// Handle/error must be valid, lifecycle calls externally serialized. Both
 /// callbacks must be thread-safe, return promptly, never unwind across FFI,

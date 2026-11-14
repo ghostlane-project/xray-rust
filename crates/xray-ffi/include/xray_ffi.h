@@ -483,6 +483,13 @@ XrayStatus xray_core_set_file_logging(
  * ownership stays with the caller. release is mandatory for a non-null
  * callback; to clear, pass NULL for callback/release/user_data. Both must
  * return promptly, never unwind, and never call core lifecycle methods.
+ * xray_core_free (and a config load that fails) can block its caller until
+ * the log thread has handed over every queued line, up to 4096 calls of
+ * callback, and ended. So callback must never wait for a thread that may be
+ * inside a call on this handle: no synchronous dispatch to the thread that
+ * frees the core (DispatchQueue.main.sync while main calls xray_core_free
+ * deadlocks), no lock that thread may hold. Copy the line (it is borrowed),
+ * hand the copy on asynchronously and return.
  * Lifecycle call: do not race any other handle call. */
 XrayStatus xray_core_set_log_callback(
     XrayCoreHandle *handle, XrayLogCallback callback,
