@@ -1563,7 +1563,7 @@ async fn bridge_socks_udp_flow(
     {
         Ok(outbound) => outbound,
         Err(error) => {
-            if context.runtime_logger.is_enabled() {
+            if context.runtime_logger.access_enabled() {
                 let source = context.client_label();
                 crate::debug_log::log_access_rejected(
                     &context.runtime_logger,
@@ -1576,7 +1576,7 @@ async fn bridge_socks_udp_flow(
         }
     };
 
-    if context.runtime_logger.is_enabled() {
+    if context.runtime_logger.debug_enabled() {
         let selected_outbound =
             selected
                 .tag
@@ -1612,7 +1612,7 @@ async fn bridge_socks_udp_flow(
     let outbound = match selected.outbound {
         UdpSessionOutbound::Transport(outbound) => outbound,
         UdpSessionOutbound::Dns(outbound) => {
-            if context.runtime_logger.is_enabled() {
+            if context.runtime_logger.access_enabled() {
                 let source = context.client_label();
                 crate::debug_log::log_access_accepted(
                     &context.runtime_logger,
@@ -1637,7 +1637,7 @@ async fn bridge_socks_udp_flow(
             return;
         }
         UdpSessionOutbound::Blackhole(blackhole) => {
-            if context.runtime_logger.is_enabled() {
+            if context.runtime_logger.access_enabled() {
                 let source = context.client_label();
                 crate::debug_log::log_access_accepted(
                     &context.runtime_logger,
@@ -1706,7 +1706,7 @@ async fn bridge_socks_udp_flow(
                 ),
                 None => (dial_target, client_visible_target),
             };
-            if context.runtime_logger.is_enabled() {
+            if context.runtime_logger.access_enabled() {
                 let source = context.client_label();
                 crate::debug_log::log_access_accepted(
                     &context.runtime_logger,
@@ -1731,7 +1731,7 @@ async fn bridge_socks_udp_flow(
             .await;
         }
         UdpOutbound::Vless(outbound) if !outbound.udp_uses_mux(&dial_target) => {
-            if context.runtime_logger.is_enabled() {
+            if context.runtime_logger.access_enabled() {
                 let source = context.client_label();
                 crate::debug_log::log_access_accepted(
                     &context.runtime_logger,
