@@ -102,7 +102,11 @@ impl Rules {
     /// The line that is not a rule, as Go words it.
     pub fn parse<S: AsRef<str>>(lines: &[S]) -> Result<Option<Self>, String> {
         let mut r = Self::default();
-        let text = lines.iter().map(AsRef::as_ref).collect::<Vec<_>>().join("\n");
+        let text = lines
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<_>>()
+            .join("\n");
         for (n, raw) in text.split('\n').enumerate() {
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -144,8 +148,16 @@ impl Rules {
                 IpAddr::V6(a) => u128::from(a),
             };
             let host_bits = width - bits;
-            let mask = if host_bits >= 128 { u128::MAX } else { (1u128 << host_bits) - 1 };
-            self.ranges.push(Range { family, lo: raw & !mask, hi: raw | mask });
+            let mask = if host_bits >= 128 {
+                u128::MAX
+            } else {
+                (1u128 << host_bits) - 1
+            };
+            self.ranges.push(Range {
+                family,
+                lo: raw & !mask,
+                hi: raw | mask,
+            });
             self.prefixes += 1;
             return Ok(());
         }
@@ -156,14 +168,22 @@ impl Rules {
                 IpAddr::V4(a) => (4, u128::from(u32::from(a))),
                 IpAddr::V6(a) => (6, u128::from(a)),
             };
-            self.ranges.push(Range { family, lo: v, hi: v });
+            self.ranges.push(Range {
+                family,
+                lo: v,
+                hi: v,
+            });
             self.prefixes += 1;
             return Ok(());
         }
         Err("not a name rule, an address or a prefix")
     }
 
-    fn add_name(set: &mut HashSet<String>, count: &mut usize, raw: &str) -> Result<(), &'static str> {
+    fn add_name(
+        set: &mut HashSet<String>,
+        count: &mut usize,
+        raw: &str,
+    ) -> Result<(), &'static str> {
         let name = normalize(raw);
         if name.is_empty() {
             return Err("empty name");
@@ -325,7 +345,11 @@ struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     fn new(b: &'a [u8]) -> Self {
-        Self { b, off: 0, bad: false }
+        Self {
+            b,
+            off: 0,
+            bad: false,
+        }
     }
     fn take(&mut self, n: usize) -> &'a [u8] {
         if self.bad || self.off + n > self.b.len() {
@@ -526,11 +550,16 @@ impl Inner {
             // The direct path won: whatever the tunnel has by now is closed.
             prep.abort();
             let given = std::mem::replace(&mut job.host, host);
-            self.dial_direct(conn, job, "sniffed name", Some(given)).await;
+            self.dial_direct(conn, job, "sniffed name", Some(given))
+                .await;
             return;
         }
         if !host.is_empty() {
-            crate::debug!("sniffed {host} for {}:{}: not a direct name", job.host, job.port);
+            crate::debug!(
+                "sniffed {host} for {}:{}: not a direct name",
+                job.host,
+                job.port
+            );
         }
         match prep.await {
             Ok(Ok(stream)) => self.pump_tunnel(conn, stream, job).await,
@@ -575,15 +604,32 @@ mod tests {
 
     #[test]
     fn names_and_prefixes_match_as_gos() {
-        let r = rules(&["domain:Example.RU.", "full:only.test", "10.0.0.0/8", "192.168.1.1", "2001:db8::/32", "# c", ""]);
+        let r = rules(&[
+            "domain:Example.RU.",
+            "full:only.test",
+            "10.0.0.0/8",
+            "192.168.1.1",
+            "2001:db8::/32",
+            "# c",
+            "",
+        ]);
         assert_eq!(r.summary(), "2 names, 3 prefixes");
         assert!(r.match_domain("example.ru") && r.match_domain("a.b.EXAMPLE.ru."));
         assert!(!r.match_domain("notexample.ru"));
         assert!(r.match_domain("only.test") && !r.match_domain("a.only.test"));
         assert!(r.match_ip("10.255.0.1".parse().unwrap()));
-        assert!(r.match_ip("::ffff:10.1.2.3".parse().unwrap()), "mapped is matched as IPv4");
-        assert!(r.match_ip("192.168.1.1".parse().unwrap()) && !r.match_ip("192.168.1.2".parse().unwrap()));
-        assert!(r.match_ip("2001:db8:ffff::1".parse().unwrap()) && !r.match_ip("2001:db9::".parse().unwrap()));
+        assert!(
+            r.match_ip("::ffff:10.1.2.3".parse().unwrap()),
+            "mapped is matched as IPv4"
+        );
+        assert!(
+            r.match_ip("192.168.1.1".parse().unwrap())
+                && !r.match_ip("192.168.1.2".parse().unwrap())
+        );
+        assert!(
+            r.match_ip("2001:db8:ffff::1".parse().unwrap())
+                && !r.match_ip("2001:db9::".parse().unwrap())
+        );
         assert!(r.match_host("[2001:db8::1]") && r.match_host("x.example.ru"));
         assert_eq!(classify(Some(&r), "10.1.1.1"), Route::Direct("prefix"));
         assert_eq!(classify(Some(&r), "8.8.8.8"), Route::Sniff);
@@ -599,8 +645,13 @@ mod tests {
         assert!(r.match_ip("10.0.1.255".parse().unwrap()));
         assert!(Rules::parse(&["# only a comment"]).unwrap().is_none());
         let err = Rules::parse(&["domain:a", "nonsense here"]).unwrap_err();
-        assert_eq!(err, "route: bad rule: line 2: \"nonsense here\": not a name rule, an address or a prefix");
-        assert!(Rules::parse(&["domain:"]).unwrap_err().ends_with("empty name"));
+        assert_eq!(
+            err,
+            "route: bad rule: line 2: \"nonsense here\": not a name rule, an address or a prefix"
+        );
+        assert!(Rules::parse(&["domain:"])
+            .unwrap_err()
+            .ends_with("empty name"));
     }
 
     #[test]
@@ -627,7 +678,11 @@ mod tests {
         rec.extend_from_slice(&u16::try_from(body.len()).unwrap().to_be_bytes());
         rec.extend_from_slice(&body);
         assert_eq!(sniff_host(&rec), ("sni.example".to_owned(), false));
-        assert_eq!(sniff_host(&rec[..10]), (String::new(), true), "a partial record asks for more");
+        assert_eq!(
+            sniff_host(&rec[..10]),
+            (String::new(), true),
+            "a partial record asks for more"
+        );
         assert_eq!(
             sniff_host(b"GET / HTTP/1.1\r\nHost: Web.Example:8080\r\n\r\n"),
             ("web.example".to_owned(), false)

@@ -37,7 +37,9 @@ pub enum SuperviseError {
     #[error("supervisor: no profiles configured")]
     NoRooms,
     /// `ErrMaxCyclesExceeded`, with the last room's end.
-    #[error("supervisor: max failover cycles exceeded after {cycles} cycle(s): profile {room:?}: {why}")]
+    #[error(
+        "supervisor: max failover cycles exceeded after {cycles} cycle(s): profile {room:?}: {why}"
+    )]
     MaxCycles {
         /// Passes made.
         cycles: u32,
@@ -130,7 +132,13 @@ pub async fn run(
         run_cfg.end_on_empty_room = list.len() > 1;
         let started = Instant::now();
         let ready = on_ready.clone();
-        let ended = Client::run_with(run_cfg, stop.child_token(), move |a| ready(a), on_session_open.clone()).await;
+        let ended = Client::run_with(
+            run_cfg,
+            stop.child_token(),
+            move |a| ready(a),
+            on_session_open.clone(),
+        )
+        .await;
         if stop.is_cancelled() {
             return Ok(());
         }
@@ -196,7 +204,9 @@ mod tests {
 
     async fn no_rooms_is_an_error_body() {
         let cfg = Config::from_json(br#"{"url":"","key":"k"}"#).unwrap();
-        let err = run(cfg, CancellationToken::new(), Arc::new(|_| {}), None).await.unwrap_err();
+        let err = run(cfg, CancellationToken::new(), Arc::new(|_| {}), None)
+            .await
+            .unwrap_err();
         assert_eq!(err.to_string(), "supervisor: no profiles configured");
     }
 }

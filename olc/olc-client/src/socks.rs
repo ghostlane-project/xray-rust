@@ -119,7 +119,12 @@ where
         return Err(SocksError::Version(header[0]));
     }
     let mut methods = [0u8; 255];
-    read(conn, &mut methods[..usize::from(header[1])], "read socks5 methods").await?;
+    read(
+        conn,
+        &mut methods[..usize::from(header[1])],
+        "read socks5 methods",
+    )
+    .await?;
     if user.is_empty() {
         return write(conn, &[VERSION, 0], "write socks5 auth").await;
     }
@@ -238,7 +243,9 @@ async fn write<S: AsyncWrite + Unpin>(
     buf: &[u8],
     what: &'static str,
 ) -> Result<(), SocksError> {
-    conn.write_all(buf).await.map_err(|e| SocksError::Io(what, e))
+    conn.write_all(buf)
+        .await
+        .map_err(|e| SocksError::Io(what, e))
 }
 
 /// One CONNECT on its way out (`connectJob`): the target, what the client
@@ -260,8 +267,17 @@ impl Job {
     }
 
     /// Success when still owed, then the sniffed bytes into the outbound.
-    pub(crate) async fn open<W: AsyncWrite + Unpin>(&self, conn: &mut TcpStream, out: &mut W) -> bool {
-        if !self.replied && conn.write_all(&reply(rep::SUCCESS, &self.host)).await.is_err() {
+    pub(crate) async fn open<W: AsyncWrite + Unpin>(
+        &self,
+        conn: &mut TcpStream,
+        out: &mut W,
+    ) -> bool {
+        if !self.replied
+            && conn
+                .write_all(&reply(rep::SUCCESS, &self.host))
+                .await
+                .is_err()
+        {
             return false;
         }
         self.head.is_empty() || out.write_all(&self.head).await.is_ok()
@@ -276,7 +292,9 @@ impl ConnSlot {
         let n = inner.socks_conns.fetch_add(1, Ordering::Relaxed);
         if n >= MAX_SOCKS_CONNS {
             inner.socks_conns.fetch_sub(1, Ordering::Relaxed);
-            crate::info!("SOCKS5: {MAX_SOCKS_CONNS} concurrent connections reached, refusing new ones");
+            crate::info!(
+                "SOCKS5: {MAX_SOCKS_CONNS} concurrent connections reached, refusing new ones"
+            );
             return None;
         }
         Some(Self(inner.clone()))
@@ -472,11 +490,21 @@ mod tests {
         client.read_exact(&mut m).await.unwrap();
         assert_eq!(m, [5, 0]);
         client
-            .write_all(&[5, 1, 0, 3, 11, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c', b'o', b'm', 1, 187])
+            .write_all(&[
+                5, 1, 0, 3, 11, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c', b'o', b'm',
+                1, 187,
+            ])
             .await
             .unwrap();
         let req = srv.await.unwrap();
-        assert_eq!(req, Request { cmd: cmd::CONNECT, addr: "example.com".into(), port: 443 });
+        assert_eq!(
+            req,
+            Request {
+                cmd: cmd::CONNECT,
+                addr: "example.com".into(),
+                port: 443
+            }
+        );
     }
 
     #[tokio::test]
@@ -485,7 +513,11 @@ mod tests {
     }
 
     async fn a_login_is_checked_and_a_wrong_one_gets_1_1_body() {
-        for (user, pass, ok) in [(&b"u"[..], &b"p"[..], true), (b"u", b"x", false), (b"uu", b"p", false)] {
+        for (user, pass, ok) in [
+            (&b"u"[..], &b"p"[..], true),
+            (b"u", b"x", false),
+            (b"uu", b"p", false),
+        ] {
             let (mut client, mut server) = duplex(256);
             let srv = tokio::spawn(async move { handshake(&mut server, "u", "p").await });
             client.write_all(&[5, 1, 0]).await.unwrap();
@@ -509,7 +541,10 @@ mod tests {
 
     #[tokio::test]
     async fn requests_read_as_gos_and_fwd_udp_is_refused_with_7_when_udp_is_off() {
-        crate::testing::bounded(requests_read_as_gos_and_fwd_udp_is_refused_with_7_when_udp_is_off_body()).await;
+        crate::testing::bounded(
+            requests_read_as_gos_and_fwd_udp_is_refused_with_7_when_udp_is_off_body(),
+        )
+        .await;
     }
 
     async fn requests_read_as_gos_and_fwd_udp_is_refused_with_7_when_udp_is_off_body() {
@@ -519,21 +554,36 @@ mod tests {
         v6.extend_from_slice(&[0, 53]);
         client.write_all(&v6).await.unwrap();
         let req = read_request(&mut server, false).await.unwrap();
-        assert_eq!((req.cmd, req.addr.as_str(), req.port), (cmd::UDP_ASSOCIATE, "2001:db8::1", 53));
+        assert_eq!(
+            (req.cmd, req.addr.as_str(), req.port),
+            (cmd::UDP_ASSOCIATE, "2001:db8::1", 53)
+        );
         let mut mapped = vec![5, 1, 0, 4];
         mapped.extend_from_slice(&Ipv4Addr::new(1, 2, 3, 4).to_ipv6_mapped().octets());
         mapped.extend_from_slice(&[0, 80]);
         client.write_all(&mapped).await.unwrap();
-        assert_eq!(read_request(&mut server, false).await.unwrap().addr, "1.2.3.4");
+        assert_eq!(
+            read_request(&mut server, false).await.unwrap().addr,
+            "1.2.3.4"
+        );
         client.write_all(&[5, 2, 0, 1]).await.unwrap();
         assert_eq!(
-            read_request(&mut server, false).await.unwrap_err().to_string(),
+            read_request(&mut server, false)
+                .await
+                .unwrap_err()
+                .to_string(),
             "unsupported socks command: 2"
         );
         client.write_all(&[5, 1, 0, 3, 0]).await.unwrap();
-        assert!(matches!(read_request(&mut server, false).await, Err(SocksError::EmptyDomain)));
+        assert!(matches!(
+            read_request(&mut server, false).await,
+            Err(SocksError::EmptyDomain)
+        ));
         client.write_all(&[5, 5, 0, 1]).await.unwrap();
-        assert!(matches!(read_request(&mut server, true).await, Err(SocksError::UdpDisabled)));
+        assert!(matches!(
+            read_request(&mut server, true).await,
+            Err(SocksError::UdpDisabled)
+        ));
         let mut r = [0u8; 10];
         client.read_exact(&mut r).await.unwrap();
         assert_eq!(r, [5, 7, 0, 1, 0, 0, 0, 0, 0, 0]);
@@ -547,7 +597,10 @@ mod tests {
             d = next_accept_delay(d);
             seen.push(go_duration(d));
         }
-        assert_eq!(seen, ["10ms", "20ms", "40ms", "80ms", "160ms", "320ms", "640ms", "1s", "1s"]);
+        assert_eq!(
+            seen,
+            ["10ms", "20ms", "40ms", "80ms", "160ms", "320ms", "640ms", "1s", "1s"]
+        );
         assert_eq!(go_duration(Duration::from_secs(120)), "2m0s");
     }
 }

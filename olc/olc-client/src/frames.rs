@@ -18,7 +18,13 @@ pub async fn read_frame<R: AsyncRead + Unpin + ?Sized>(
     buf: &mut Vec<u8>,
 ) -> Result<(), ReadError> {
     let mut hdr = [0u8; HEADER_SIZE];
-    fill(r, &mut hdr, ReadError::EofHeader, ReadError::TruncatedHeader).await?;
+    fill(
+        r,
+        &mut hdr,
+        ReadError::EofHeader,
+        ReadError::TruncatedHeader,
+    )
+    .await?;
     let len = u32::from_be_bytes(hdr) as usize;
     if max > 0 && len > max {
         return Err(ReadError::TooLarge(FrameTooLarge {

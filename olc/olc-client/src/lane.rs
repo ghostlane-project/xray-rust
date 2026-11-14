@@ -269,12 +269,10 @@ async fn flush(lane: Arc<Lane>) {
             }
         };
         // `awaitLink`: a wait that runs out marks the lane stalled.
-        if !lane.link.can_send() {
-            if !lane.link.wait_ready(WRITE_READY_TIMEOUT).await {
-                lane.stats.note_write_stall();
-                lane.fail(io::ErrorKind::TimedOut);
-                return;
-            }
+        if !lane.link.can_send() && !lane.link.wait_ready(WRITE_READY_TIMEOUT).await {
+            lane.stats.note_write_stall();
+            lane.fail(io::ErrorKind::TimedOut);
+            return;
         }
         lane.stats.note_write_ready();
         let sent = match batch.seal(&lane.keys, RecordLane::Data) {

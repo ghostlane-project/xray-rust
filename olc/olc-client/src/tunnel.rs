@@ -95,7 +95,8 @@ pub async fn send_connect(stream: &mut Stream, host: &str, port: u16) -> Result<
 /// A SOCKS5 reply with code `rep` (`socks5Reply`): the bound address is
 /// zero, IPv6 when the target is an IPv6 literal, IPv4 otherwise.
 pub fn reply(rep: u8, target: &str) -> Vec<u8> {
-    let v6 = matches!(target.parse::<IpAddr>(), Ok(IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none());
+    let v6 =
+        matches!(target.parse::<IpAddr>(), Ok(IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none());
     let (atyp, len) = if v6 { (4u8, 16) } else { (1u8, 4) };
     let mut out = vec![0u8; 4 + len + 2];
     out[0] = 5;
@@ -115,13 +116,21 @@ mod tests {
 
     #[test]
     fn replies_are_gos() {
-        assert_eq!(reply(rep::SUCCESS, "example.com"), [5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(reply(rep::HOST_UNREACHABLE, "10.0.0.1"), [5, 4, 0, 1, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            reply(rep::SUCCESS, "example.com"),
+            [5, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            reply(rep::HOST_UNREACHABLE, "10.0.0.1"),
+            [5, 4, 0, 1, 0, 0, 0, 0, 0, 0]
+        );
         let v6 = reply(rep::NETWORK_UNREACHABLE, "2001:db8::1");
         assert_eq!(v6.len(), 22);
         assert_eq!(&v6[..4], &[5, 3, 0, 4]);
         // Go's To4() reads a mapped address as IPv4.
         assert_eq!(reply(rep::SUCCESS, "::ffff:1.2.3.4").len(), 10);
-        assert!(is_ipv6_literal("::1") && !is_ipv6_literal("::ffff:1.2.3.4") && !is_ipv6_literal("a"));
+        assert!(
+            is_ipv6_literal("::1") && !is_ipv6_literal("::ffff:1.2.3.4") && !is_ipv6_literal("a")
+        );
     }
 }

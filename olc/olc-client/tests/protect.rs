@@ -23,6 +23,8 @@ async fn refused_then_allowed() {
     set_protector(Some(Arc::new(|_| false)));
     let err = dial_tcp(addr).await.unwrap_err();
     set_protector(None);
-    assert!(err.to_string().contains("socket protector rejected the socket"));
+    assert!(err
+        .to_string()
+        .contains("socket protector rejected the socket"));
     dial_tcp(addr).await.unwrap();
 }

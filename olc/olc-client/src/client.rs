@@ -442,11 +442,12 @@ impl Inner {
     /// The datagram lane's inbound side goes to the flows.
     fn install_datagram_sink(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
-        self.link.set_datagram(Some(Arc::new(move |record: &mut [u8]| {
-            if let Some(inner) = weak.upgrade() {
-                inner.on_datagram(record);
-            }
-        })));
+        self.link
+            .set_datagram(Some(Arc::new(move |record: &mut [u8]| {
+                if let Some(inner) = weak.upgrade() {
+                    inner.on_datagram(record);
+                }
+            })));
     }
 
     /// A fresh lane and smux session over the link; the link hands its
@@ -473,22 +474,18 @@ impl Inner {
     async fn bring_up(self: &Arc<Self>) -> Result<(), RunError> {
         let _g = self.reconnect_mu.lock().await;
         let (lane, session) = self.new_session()?;
-        let opened = match hello::open_control_stream(
-            &session,
-            &self.device_id,
-            DEFAULT_TIMEOUT,
-            &self.run,
-        )
-        .await
-        {
-            Ok(o) => o,
-            Err(err) => {
-                let classified = self.classify(err, &lane);
-                let _ = session.close();
-                lane.close();
-                return Err(RunError::Handshake(classified));
-            }
-        };
+        let opened =
+            match hello::open_control_stream(&session, &self.device_id, DEFAULT_TIMEOUT, &self.run)
+                .await
+            {
+                Ok(o) => o,
+                Err(err) => {
+                    let classified = self.classify(err, &lane);
+                    let _ = session.close();
+                    lane.close();
+                    return Err(RunError::Handshake(classified));
+                }
+            };
         let sid = opened.welcome.session_id.clone();
         crate::info!("session {sid} opened (device={})", self.device_id);
         self.install(session, sid.clone(), opened.stream);
@@ -792,13 +789,16 @@ impl Inner {
             }
         };
         let opened =
-            match hello::open_control_stream(&session, &self.device_id, DEFAULT_TIMEOUT, run).await {
+            match hello::open_control_stream(&session, &self.device_id, DEFAULT_TIMEOUT, run).await
+            {
                 Ok(o) => o,
                 Err(err) => {
                     let refused = err.refused();
                     let classified = self.classify(err, &lane);
                     if !run.is_cancelled() {
-                        crate::info!("handshake on reconnect failed (attempt {attempt}): {classified}");
+                        crate::info!(
+                            "handshake on reconnect failed (attempt {attempt}): {classified}"
+                        );
                     }
                     let _ = session.close();
                     return if run.is_cancelled() {
@@ -902,8 +902,14 @@ mod tests {
     #[test]
     fn a_close_from_the_peer_is_peer_close_and_any_other_end_liveness() {
         assert_eq!(death_reason(&End::ClosedByPeer), "peer-close");
-        assert_eq!(death_reason(&End::Failed("control: EOF".into())), "liveness");
-        assert_eq!(death_reason(&End::Unhealthy("control stream unhealthy".into())), "liveness");
+        assert_eq!(
+            death_reason(&End::Failed("control: EOF".into())),
+            "liveness"
+        );
+        assert_eq!(
+            death_reason(&End::Unhealthy("control stream unhealthy".into())),
+            "liveness"
+        );
     }
 
     #[test]

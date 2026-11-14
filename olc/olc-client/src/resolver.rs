@@ -128,7 +128,10 @@ pub fn has_servers() -> bool {
 /// No ring, the socket's error, or [`QUERY_TIMEOUT`] of silence.
 pub async fn exchange(query: &[u8]) -> io::Result<Vec<u8>> {
     let server = pick().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotConnected, "protect: no dns server reachable")
+        io::Error::new(
+            io::ErrorKind::NotConnected,
+            "protect: no dns server reachable",
+        )
     })?;
     let sock = net::udp_socket(server.ip()).await?;
     sock.connect(server).await?;
@@ -146,7 +149,10 @@ pub async fn exchange(query: &[u8]) -> io::Result<Vec<u8>> {
         }
         Err(_) => {
             note(false);
-            Err(io::Error::new(io::ErrorKind::TimedOut, "read answer: i/o timeout"))
+            Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "read answer: i/o timeout",
+            ))
         }
     }
 }

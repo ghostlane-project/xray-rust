@@ -117,7 +117,12 @@ pub async fn udp_socket(family: IpAddr) -> io::Result<UdpSocket> {
 /// # Errors
 /// `InvalidInput` for an address without a port.
 pub fn split_host_port(s: &str) -> io::Result<(&str, u16)> {
-    let bad = || io::Error::new(io::ErrorKind::InvalidInput, format!("address {s}: missing port"));
+    let bad = || {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("address {s}: missing port"),
+        )
+    };
     let (host, port) = s.rsplit_once(':').ok_or_else(bad)?;
     let host = host
         .strip_prefix('[')
@@ -138,5 +143,4 @@ mod tests {
         assert_eq!(split_host_port("a.example:80").unwrap(), ("a.example", 80));
         assert!(split_host_port("a.example").is_err());
     }
-
 }

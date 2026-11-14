@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use olc_smux::Stream;
-use olc_wire::control::{self, Message, MsgType, CLOSE_LINGER, CLOSE_WRITE_DEADLINE, MAX_MESSAGE_SIZE};
+use olc_wire::control::{
+    self, Message, MsgType, CLOSE_LINGER, CLOSE_WRITE_DEADLINE, MAX_MESSAGE_SIZE,
+};
 use tokio::io::{AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -164,18 +166,19 @@ fn unix_nanos() -> i64 {
 
 /// Runs the loop on `stream` until it ends or `stop` is cancelled; a stop
 /// announces the close to the peer first, within [`CLOSE_NOTICE_BUDGET`].
-pub async fn run(
-    stream: Stream,
-    liveness: Liveness,
-    hooks: Hooks,
-    stop: CancellationToken,
-) -> End {
+pub async fn run(stream: Stream, liveness: Liveness, hooks: Hooks, stop: CancellationToken) -> End {
     let (rd, wr) = tokio::io::split(stream);
     let probes = Arc::new(Mutex::new(Probes::default()));
     let hooks = Arc::new(hooks);
     let (out_tx, out_rx) = mpsc::channel::<Message>(OUT_QUEUE);
     let inner = stop.child_token();
-    let reader = tokio::spawn(read_loop(rd, out_tx.clone(), probes.clone(), hooks.clone(), inner.clone()));
+    let reader = tokio::spawn(read_loop(
+        rd,
+        out_tx.clone(),
+        probes.clone(),
+        hooks.clone(),
+        inner.clone(),
+    ));
     let writer = tokio::spawn(write_loop(wr, out_rx, inner.clone()));
     let prober = probe_loop(liveness, out_tx, probes, hooks.clone(), inner.clone());
     tokio::pin!(reader, writer, prober);
@@ -354,12 +357,53 @@ mod tests {
         let mut p = Probes::default();
         let t0 = Instant::now();
         let at = |s: u64| t0 + Duration::from_secs(s);
-        assert_eq!(p.tick(at(10), 0, false, T, 4), Tick::Ping { seq: 1, missed: None, late: 0 });
-        assert_eq!(p.tick(at(20), 0, false, T, 4), Tick::Ping { seq: 2, missed: None, late: 0 });
-        assert_eq!(p.tick(at(30), 0, false, T, 4), Tick::Ping { seq: 3, missed: Some(1), late: 0 });
-        assert_eq!(p.tick(at(40), 0, false, T, 4), Tick::Ping { seq: 4, missed: Some(2), late: 0 });
-        assert_eq!(p.tick(at(50), 0, false, T, 4), Tick::Ping { seq: 5, missed: Some(3), late: 0 });
-        assert_eq!(p.tick(at(60), 0, false, T, 4), Tick::Unhealthy { missed: 4, missed_now: true });
+        assert_eq!(
+            p.tick(at(10), 0, false, T, 4),
+            Tick::Ping {
+                seq: 1,
+                missed: None,
+                late: 0
+            }
+        );
+        assert_eq!(
+            p.tick(at(20), 0, false, T, 4),
+            Tick::Ping {
+                seq: 2,
+                missed: None,
+                late: 0
+            }
+        );
+        assert_eq!(
+            p.tick(at(30), 0, false, T, 4),
+            Tick::Ping {
+                seq: 3,
+                missed: Some(1),
+                late: 0
+            }
+        );
+        assert_eq!(
+            p.tick(at(40), 0, false, T, 4),
+            Tick::Ping {
+                seq: 4,
+                missed: Some(2),
+                late: 0
+            }
+        );
+        assert_eq!(
+            p.tick(at(50), 0, false, T, 4),
+            Tick::Ping {
+                seq: 5,
+                missed: Some(3),
+                late: 0
+            }
+        );
+        assert_eq!(
+            p.tick(at(60), 0, false, T, 4),
+            Tick::Unhealthy {
+                missed: 4,
+                missed_now: true
+            }
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -379,13 +423,23 @@ mod tests {
         let mut late = 0;
         for (i, s) in [40u64, 60, 80].into_iter().enumerate() {
             match p.tick(at(s), 2 + i as u64, false, T, 4) {
-                Tick::Ping { missed: None, late: l, .. } => late += l,
+                Tick::Ping {
+                    missed: None,
+                    late: l,
+                    ..
+                } => late += l,
                 other => panic!("{other:?}"),
             }
         }
         assert_eq!(late, 3);
         // The fourth timed-out ping counts, progress or not.
-        assert!(matches!(p.tick(at(100), 9, false, T, 4), Tick::Ping { missed: Some(1), .. }));
+        assert!(matches!(
+            p.tick(at(100), 9, false, T, 4),
+            Tick::Ping {
+                missed: Some(1),
+                ..
+            }
+        ));
     }
 
     /// A client and a server smux session over memory, keepalive off.
@@ -418,7 +472,13 @@ mod tests {
             let mut out = Vec::new();
             control::encode(&Message::close(), &mut out).unwrap();
             theirs.write_all(&out).await.unwrap();
-            let end = run(ours, Liveness::default(), quiet_hooks(), CancellationToken::new()).await;
+            let end = run(
+                ours,
+                Liveness::default(),
+                quiet_hooks(),
+                CancellationToken::new(),
+            )
+            .await;
             assert_eq!(end, End::ClosedByPeer);
             assert_eq!(end.to_string(), "control stream closed by peer");
         })
@@ -436,7 +496,9 @@ mod tests {
             stop.cancel();
             assert_eq!(looped.await.unwrap(), End::Stopped);
             let mut buf = Vec::new();
-            crate::frames::read_frame(&mut theirs, MAX_MESSAGE_SIZE, &mut buf).await.unwrap();
+            crate::frames::read_frame(&mut theirs, MAX_MESSAGE_SIZE, &mut buf)
+                .await
+                .unwrap();
             assert_eq!(control::parse(&buf).unwrap().kind, MsgType::Close);
         })
         .await;

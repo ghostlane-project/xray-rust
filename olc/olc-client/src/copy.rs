@@ -175,7 +175,11 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_silent_half_open_connection_ends_after_the_grace() {
-        crate::testing::bounded_for(HALF_OPEN_GRACE + Duration::from_secs(10), a_silent_half_open_connection_ends_after_the_grace_body()).await;
+        crate::testing::bounded_for(
+            HALF_OPEN_GRACE + Duration::from_secs(10),
+            a_silent_half_open_connection_ends_after_the_grace_body(),
+        )
+        .await;
     }
 
     async fn a_silent_half_open_connection_ends_after_the_grace_body() {

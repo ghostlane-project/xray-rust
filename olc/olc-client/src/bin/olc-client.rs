@@ -69,7 +69,9 @@ fn main() -> ExitCode {
             });
         }
         let ended = if cfg.rooms.is_empty() {
-            Client::run(cfg, stop, |_| {}).await.map_err(|e| e.to_string())
+            Client::run(cfg, stop, |_| {})
+                .await
+                .map_err(|e| e.to_string())
         } else {
             supervisor::run(cfg, stop, Arc::new(|_| {}), None)
                 .await

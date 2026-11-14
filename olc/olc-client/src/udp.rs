@@ -514,7 +514,9 @@ struct Source {
 impl Source {
     fn allows(&self, src: SocketAddr) -> bool {
         let ip = unmap(src.ip());
-        ip == self.peer && self.request.is_none_or(|r| r == ip) && (self.port == 0 || src.port() == self.port)
+        ip == self.peer
+            && self.request.is_none_or(|r| r == ip)
+            && (self.port == 0 || src.port() == self.port)
     }
 }
 
@@ -538,7 +540,9 @@ impl Inner {
     pub(crate) async fn udp_associate(self: &Arc<Self>, mut conn: TcpStream, req: Request) {
         let peer = conn.peer_addr().map(|a| unmap(a.ip()));
         let (true, Ok(peer)) = (self.prepare_udp().await, peer) else {
-            let _ = conn.write_all(&reply(rep::HOST_UNREACHABLE, &req.addr)).await;
+            let _ = conn
+                .write_all(&reply(rep::HOST_UNREACHABLE, &req.addr))
+                .await;
             return;
         };
         let allowed = Source {
@@ -559,13 +563,17 @@ impl Inner {
             Ok(s) => Arc::new(s),
             Err(e) => {
                 crate::info!("socks udp associate listen failed: listen udp associate: {e}");
-                let _ = conn.write_all(&reply(rep::HOST_UNREACHABLE, &req.addr)).await;
+                let _ = conn
+                    .write_all(&reply(rep::HOST_UNREACHABLE, &req.addr))
+                    .await;
                 return;
             }
         };
         self.ensure_sweeper();
         let Ok(addr) = sock.local_addr() else {
-            let _ = conn.write_all(&reply(rep::HOST_UNREACHABLE, &req.addr)).await;
+            let _ = conn
+                .write_all(&reply(rep::HOST_UNREACHABLE, &req.addr))
+                .await;
             return;
         };
         if conn.write_all(&reply_success_udp(addr)).await.is_err() {
@@ -634,7 +642,9 @@ impl Inner {
     pub(crate) async fn fwd_udp(self: &Arc<Self>, mut conn: TcpStream, req: Request) {
         let peer = conn.peer_addr();
         let (true, Ok(peer)) = (self.prepare_udp().await, peer) else {
-            let _ = conn.write_all(&reply(rep::HOST_UNREACHABLE, &req.addr)).await;
+            let _ = conn
+                .write_all(&reply(rep::HOST_UNREACHABLE, &req.addr))
+                .await;
             return;
         };
         if conn.write_all(&reply(rep::SUCCESS, "")).await.is_err() {
@@ -742,7 +752,13 @@ impl Inner {
         let mut record = [0u8; UDP_MAX_RECORD];
         let len = {
             let mut lane = self.datagram.lock().unwrap_or_else(PoisonError::into_inner);
-            match lane.seal(FrameType::Packet, id, dg.host.as_bytes(), dg.port, dg.payload) {
+            match lane.seal(
+                FrameType::Packet,
+                id,
+                dg.host.as_bytes(),
+                dg.port,
+                dg.payload,
+            ) {
                 Ok(r) => {
                     record[..r.len()].copy_from_slice(r);
                     r.len()
@@ -921,10 +937,8 @@ impl Inner {
         let me = Arc::downgrade(self);
         let run = self.run.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval_at(
-                Instant::now() + FLOW_SWEEP_INTERVAL,
-                FLOW_SWEEP_INTERVAL,
-            );
+            let mut tick =
+                tokio::time::interval_at(Instant::now() + FLOW_SWEEP_INTERVAL, FLOW_SWEEP_INTERVAL);
             loop {
                 tokio::select! {
                     () = run.cancelled() => return,
@@ -1004,18 +1018,42 @@ mod tests {
     fn socks_udp_packets_parse_and_build_as_gos() {
         let pkt = [0, 0, 0, 1, 8, 8, 8, 8, 0, 53, 0xab];
         let dg = parse_socks_udp(&pkt).unwrap();
-        assert_eq!((dg.host.as_str(), dg.port, dg.payload), ("8.8.8.8", 53, &[0xab][..]));
+        assert_eq!(
+            (dg.host.as_str(), dg.port, dg.payload),
+            ("8.8.8.8", 53, &[0xab][..])
+        );
         let built = build_socks_udp(&Addr::parse(&dg.host), dg.port, dg.payload).unwrap();
         assert_eq!(built, pkt);
-        assert_eq!(parse_socks_udp(&[0, 0, 1, 1]).unwrap_err().to_string(), "fragmentation unsupported");
-        assert_eq!(parse_socks_udp(&[0, 1, 0, 1]).unwrap_err(), PacketError::Reserved);
-        assert_eq!(parse_socks_udp(&[0, 0, 0, 3, 0, 0, 1]).unwrap_err(), PacketError::ShortDomain);
-        assert_eq!(parse_socks_udp(&[0, 0, 0, 1, 1, 2, 3, 4, 0]).unwrap_err(), PacketError::MissingPort);
-        assert_eq!(parse_socks_udp(&[0, 0, 0, 9]).unwrap_err().to_string(), "unsupported address type: 9");
-        assert_eq!(Addr::parse("::ffff:1.2.3.4"), Addr::V4(Ipv4Addr::new(1, 2, 3, 4)));
+        assert_eq!(
+            parse_socks_udp(&[0, 0, 1, 1]).unwrap_err().to_string(),
+            "fragmentation unsupported"
+        );
+        assert_eq!(
+            parse_socks_udp(&[0, 1, 0, 1]).unwrap_err(),
+            PacketError::Reserved
+        );
+        assert_eq!(
+            parse_socks_udp(&[0, 0, 0, 3, 0, 0, 1]).unwrap_err(),
+            PacketError::ShortDomain
+        );
+        assert_eq!(
+            parse_socks_udp(&[0, 0, 0, 1, 1, 2, 3, 4, 0]).unwrap_err(),
+            PacketError::MissingPort
+        );
+        assert_eq!(
+            parse_socks_udp(&[0, 0, 0, 9]).unwrap_err().to_string(),
+            "unsupported address type: 9"
+        );
+        assert_eq!(
+            Addr::parse("::ffff:1.2.3.4"),
+            Addr::V4(Ipv4Addr::new(1, 2, 3, 4))
+        );
         assert!(build_socks_udp(&Addr::Domain(String::new()), 1, b"").is_none());
         let addr: SocketAddr = "127.0.0.1:5353".parse().unwrap();
-        assert_eq!(reply_success_udp(addr), [5, 0, 0, 1, 127, 0, 0, 1, 0x14, 0xe9]);
+        assert_eq!(
+            reply_success_udp(addr),
+            [5, 0, 0, 1, 127, 0, 0, 1, 0x14, 0xe9]
+        );
     }
 
     #[test]
@@ -1028,7 +1066,10 @@ mod tests {
         let mut two = frame.clone();
         two.extend_from_slice(&frame);
         let (dg, used) = decode_fwd_frame(&two).unwrap().unwrap();
-        assert_eq!((dg.host.as_str(), dg.port, dg.payload, used), ("192.0.2.53", 53, &b"q"[..], 11));
+        assert_eq!(
+            (dg.host.as_str(), dg.port, dg.payload, used),
+            ("192.0.2.53", 53, &b"q"[..], 11)
+        );
         // A header length that is not the address's: a frame error once the
         // whole header (12 bytes here) has arrived.
         let mut bad = frame.clone();
@@ -1049,27 +1090,52 @@ mod tests {
     async fn fwd_replies() {
         let (tx, mut rx) = mpsc::channel(4);
         let to = Addr::V4(Ipv4Addr::new(198, 18, 0, 7));
-        let reply = Reply::Fwd { tx, to: to.clone(), to_port: 443 };
+        let reply = Reply::Fwd {
+            tx,
+            to: to.clone(),
+            to_port: 443,
+        };
         reply.deliver(&Addr::V6("2001:db8::35".parse().unwrap()), 9, b"a");
         let f = rx.recv().await.unwrap();
-        assert_eq!(&f[3..10], &[1, 198, 18, 0, 7, 1, 187], "the other family is answered as the target");
+        assert_eq!(
+            &f[3..10],
+            &[1, 198, 18, 0, 7, 1, 187],
+            "the other family is answered as the target"
+        );
         reply.deliver(&Addr::V4(Ipv4Addr::new(192, 0, 2, 9)), 4433, b"b");
         let f = rx.recv().await.unwrap();
         assert_eq!(&f[3..10], &[1, 192, 0, 2, 9, 0x11, 0x51]);
         reply.deliver(&Addr::V4(Ipv4Addr::LOCALHOST), 1, &[0; 1494]);
         reply.deliver(&Addr::V4(Ipv4Addr::LOCALHOST), 1, &[0; 1493]);
-        assert_eq!(rx.recv().await.unwrap().len(), 10 + 1493, "the oversize one alone is dropped");
+        assert_eq!(
+            rx.recv().await.unwrap().len(),
+            10 + 1493,
+            "the oversize one alone is dropped"
+        );
     }
 
     #[test]
     fn flows_take_random_ids_under_the_cap_and_idle_out() {
         let flows = Flows::new(2);
         let (tx, _rx) = mpsc::channel(1);
-        let reply = Reply::Fwd { tx, to: Addr::V4(Ipv4Addr::LOCALHOST), to_port: 1 };
-        let key = |port| FlowKey { owner: 1, client: "127.0.0.1:1".parse().unwrap(), host: "h".into(), port };
+        let reply = Reply::Fwd {
+            tx,
+            to: Addr::V4(Ipv4Addr::LOCALHOST),
+            to_port: 1,
+        };
+        let key = |port| FlowKey {
+            owner: 1,
+            client: "127.0.0.1:1".parse().unwrap(),
+            host: "h".into(),
+            port,
+        };
         let a = flows.id(key(1), &reply).unwrap();
         assert_ne!(a, 0);
-        assert_eq!(flows.id(key(1), &reply), Some(a), "the same flow keeps its id");
+        assert_eq!(
+            flows.id(key(1), &reply),
+            Some(a),
+            "the same flow keeps its id"
+        );
         assert!(flows.id(key(2), &reply).is_some());
         assert_eq!(flows.id(key(3), &reply), None, "the cap");
         assert!(flows.reply(a).is_some());
@@ -1080,7 +1146,11 @@ mod tests {
 
     #[test]
     fn an_association_source_is_the_peer_narrowed_by_the_request() {
-        let any = Source { peer: "127.0.0.1".parse().unwrap(), request: None, port: 0 };
+        let any = Source {
+            peer: "127.0.0.1".parse().unwrap(),
+            request: None,
+            port: 0,
+        };
         assert!(any.allows("127.0.0.1:5000".parse().unwrap()));
         assert!(any.allows("[::ffff:127.0.0.1]:5000".parse().unwrap()));
         assert!(!any.allows("127.0.0.2:5000".parse().unwrap()));

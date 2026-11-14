@@ -58,7 +58,8 @@ pub fn budget() -> Vec<Row> {
         },
         Row {
             layer: "FWD_UDP reply queues",
-            cap: MAX_SOCKS_CONNS * (FWD_REPLY_QUEUE * crate::udp::FWD_CLIENT_BUFFER + FWD_WRITE_BATCH),
+            cap: MAX_SOCKS_CONNS
+                * (FWD_REPLY_QUEUE * crate::udp::FWD_CLIENT_BUFFER + FWD_WRITE_BATCH),
             burst: 4 * (FWD_REPLY_QUEUE * crate::udp::FWD_CLIENT_BUFFER + FWD_WRITE_BATCH),
             formula: "per connection FWD_REPLY_QUEUE (32) x 1500 + one FWD_WRITE_BATCH (16 KiB)",
         },
@@ -108,16 +109,43 @@ mod tests {
     #[test]
     fn per_session_and_per_stream_state_stays_small() {
         // The session every request waits for: handles, not buffers.
-        assert!(size_of::<crate::client::Sess>() <= 128, "{}", size_of::<crate::client::Sess>());
+        assert!(
+            size_of::<crate::client::Sess>() <= 128,
+            "{}",
+            size_of::<crate::client::Sess>()
+        );
         // Per CONNECT: the job and the stream handle.
-        assert!(size_of::<crate::socks::Job>() <= 64, "{}", size_of::<crate::socks::Job>());
-        assert!(size_of::<olc_smux::Stream>() <= 24, "{}", size_of::<olc_smux::Stream>());
+        assert!(
+            size_of::<crate::socks::Job>() <= 64,
+            "{}",
+            size_of::<crate::socks::Job>()
+        );
+        assert!(
+            size_of::<olc_smux::Stream>() <= 24,
+            "{}",
+            size_of::<olc_smux::Stream>()
+        );
         // Per UDP flow.
-        assert!(size_of::<crate::udp::Flow>() <= 128, "{}", size_of::<crate::udp::Flow>());
-        assert!(size_of::<crate::udp::Reply>() <= 64, "{}", size_of::<crate::udp::Reply>());
-        assert!(size_of::<crate::udp::DirectFlow>() <= 48, "{}", size_of::<crate::udp::DirectFlow>());
+        assert!(
+            size_of::<crate::udp::Flow>() <= 128,
+            "{}",
+            size_of::<crate::udp::Flow>()
+        );
+        assert!(
+            size_of::<crate::udp::Reply>() <= 64,
+            "{}",
+            size_of::<crate::udp::Reply>()
+        );
+        assert!(
+            size_of::<crate::udp::DirectFlow>() <= 48,
+            "{}",
+            size_of::<crate::udp::DirectFlow>()
+        );
         let entry = size_of::<crate::udp::Flow>() + size_of::<crate::udp::FlowKey>() + 39 + 16;
-        assert!(entry <= FLOW_ENTRY, "a flow with an address host costs {entry}");
+        assert!(
+            entry <= FLOW_ENTRY,
+            "a flow with an address host costs {entry}"
+        );
     }
 
     #[test]

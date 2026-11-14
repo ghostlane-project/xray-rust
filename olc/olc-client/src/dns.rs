@@ -277,7 +277,11 @@ fn deliver_dns(reply: &Reply, from: &Addr, resp: &[u8]) {
     match reply {
         Reply::Assoc { .. } => reply.deliver(from, DNS_PORT, resp),
         Reply::Fwd { to, .. } => {
-            let named = if matches!(from, Addr::Domain(_)) { to } else { from };
+            let named = if matches!(from, Addr::Domain(_)) {
+                to
+            } else {
+                from
+            };
             if let Some(cut) = truncate_response(resp, crate::udp::fwd_max_reply(named)) {
                 reply.deliver(from, DNS_PORT, &cut);
             }
@@ -295,7 +299,10 @@ mod tests {
 
     #[test]
     fn a_question_names_its_name() {
-        assert_eq!(question_name(&query("Ya.Example.RU")).as_deref(), Some("Ya.Example.RU"));
+        assert_eq!(
+            question_name(&query("Ya.Example.RU")).as_deref(),
+            Some("Ya.Example.RU")
+        );
         let mut resp = query("a.b");
         resp[2] |= 0x80;
         assert_eq!(question_name(&resp), None, "a response is not a query");
@@ -313,7 +320,11 @@ mod tests {
         assert_eq!(cut.len(), q.len());
         assert_eq!(cut[2] & 0x02, 0x02);
         assert_eq!(&cut[6..12], &[0; 6]);
-        assert_eq!(truncate_response(&q, 1493).unwrap(), q, "a small one is untouched");
+        assert_eq!(
+            truncate_response(&q, 1493).unwrap(),
+            q,
+            "a small one is untouched"
+        );
     }
 
     #[tokio::test]
@@ -334,7 +345,10 @@ mod tests {
             assert_eq!(exchange_tcp(&mut a, b"qq").await.unwrap(), b"ans");
             // The second query goes out before the server task is awaited:
             // the server answers it only once it has read it.
-            assert!(matches!(exchange_tcp(&mut a, b"q").await, Err(ExchangeError::Empty)));
+            assert!(matches!(
+                exchange_tcp(&mut a, b"q").await,
+                Err(ExchangeError::Empty)
+            ));
             assert_eq!(srv.await.unwrap(), b"qq");
         })
         .await;

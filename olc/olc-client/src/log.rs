@@ -24,7 +24,9 @@ static VERBOSE: AtomicBool = AtomicBool::new(false);
 
 /// Sends every line to `sink`; `None` sends them to stderr again.
 pub fn set_sink(sink: Option<Sink>) {
-    *SINK.write().unwrap_or_else(std::sync::PoisonError::into_inner) = sink;
+    *SINK
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = sink;
 }
 
 /// Turns the debug lines on or off (`logger.SetVerbose`).
@@ -55,9 +57,7 @@ pub fn write(args: Arguments<'_>) {
 
 /// `log.Printf`'s stamp, `2006/01/02 15:04:05`, in UTC.
 pub fn stamp(at: SystemTime) -> String {
-    let secs = at
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let secs = at.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let days = i64::try_from(secs / 86_400).unwrap_or(0);
     let rem = secs % 86_400;
     // Howard Hinnant's civil_from_days.
