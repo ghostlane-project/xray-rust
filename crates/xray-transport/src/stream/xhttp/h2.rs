@@ -18,16 +18,16 @@ use std::task::{ready, Context, Poll, Waker};
 use bytes::Bytes;
 use futures_util::FutureExt;
 use h2::client::{self, ResponseFuture, SendRequest};
-use h2::{FlowControl, Ping, PingPong, Reason, RecvStream, SendStream};
+use h2::{Ping, PingPong, Reason, RecvStream, SendStream};
 use http::{HeaderMap, Method, Request, StatusCode};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
 
-use crate::memory_budget::{ByteBudget, ReceiveGate};
+use crate::memory_budget::ByteBudget;
 use crate::stream::h2_bdp::{BdpEstimator, BdpPings, BdpSampler};
-use crate::stream::h2_budget::hand_back;
+use crate::stream::h2_budget::SharedGate;
 use crate::{BoxedTransportStream, MemoryClass};
 
 use super::config::{
@@ -918,7 +918,6 @@ pub struct H2ResponseBody {
     headers: HeaderMap,
     /// Absent for a response that ended with its HEADERS.
     received: Option<Arc<Mutex<ReceivedBody>>>,
-    flow: Option<FlowControl>,
     drain: Option<JoinHandle<()>>,
     pending: Bytes,
     trailers: Option<HeaderMap>,
@@ -927,8 +926,8 @@ pub struct H2ResponseBody {
     shared: Arc<SharedSend>,
     bdp: Option<Arc<BdpSampler>>,
     /// The response's queue within the client's byte budget, and the
-    /// credit its reads free ([`hand_back`]).
-    window: ReceiveGate<'static>,
+    /// credit its reads free, with the stream's flow control.
+    window: Arc<SharedGate>,
 }
 
 /// DATA received for one response and not yet read, filled by
@@ -1025,7 +1024,6 @@ impl H2ResponseBody {
             return Self {
                 headers,
                 received: None,
-                flow: None,
                 drain: None,
                 pending: Bytes::new(),
                 trailers: None,
@@ -1033,7 +1031,7 @@ impl H2ResponseBody {
                 failure: None,
                 shared,
                 bdp,
-                window: ReceiveGate::new(byte_budget),
+                window: SharedGate::new(byte_budget, None),
             };
         };
         let flow = recv.flow_control().clone();
@@ -1042,7 +1040,6 @@ impl H2ResponseBody {
         Self {
             headers,
             received: Some(received),
-            flow: Some(flow),
             drain: Some(drain),
             pending: Bytes::new(),
             trailers: None,
@@ -1050,17 +1047,14 @@ impl H2ResponseBody {
             failure: None,
             shared,
             bdp,
-            window: ReceiveGate::new(byte_budget),
+            window: SharedGate::new(byte_budget, Some(flow)),
         }
     }
 
-    /// Settles the response's queue with the budget and hands back the
-    /// credit it grants.
-    fn hand_back(&mut self) -> Result<(), io::Error> {
-        let Some(flow) = self.flow.as_mut() else {
-            return Ok(());
-        };
-        if let Err(source) = hand_back(&mut self.window, flow) {
+    /// Settles the response's queue with the budget, `consumed` bytes read
+    /// since the last time, and hands back the credit it grants.
+    fn hand_back(&mut self, consumed: usize) -> Result<(), io::Error> {
+        if let Err(source) = self.window.hand_back(consumed) {
             return Err(self.fail(format!("HTTP/2 response flow control failed: {source}")));
         }
         Ok(())
@@ -1072,14 +1066,6 @@ impl H2ResponseBody {
     /// half still open keeps the stream, and with it that credit, until it
     /// ends too. Then the queue's bytes of the budget come back.
     fn close_window(&mut self) {
-        let owed = self.window.owed();
-        if let Some(flow) = self.flow.as_mut().filter(|_| owed > 0) {
-            // h2 still counts the owed bytes as received and not released,
-            // so it takes them back, and for a stream it has reset it sends
-            // no stream WINDOW_UPDATE. An error leaves nothing to return: the
-            // connection is gone.
-            let _ = flow.release_capacity(owed);
-        }
         self.window.close();
     }
 
@@ -1162,7 +1148,6 @@ impl AsyncRead for H2ResponseBody {
                     this.trailers = trailers;
                     this.received = None;
                     this.close_window();
-                    this.flow = None;
                     this.eof = true;
                     return Poll::Ready(Ok(()));
                 }
@@ -1174,7 +1159,7 @@ impl AsyncRead for H2ResponseBody {
                     guard.reader = Some(cx.waker().clone());
                     drop(guard);
                     // Nothing is queued: credit held back goes out now.
-                    if let Err(error) = this.hand_back() {
+                    if let Err(error) = this.hand_back(0) {
                         return Poll::Ready(Err(error));
                     }
                     return Poll::Pending;
@@ -1185,8 +1170,7 @@ impl AsyncRead for H2ResponseBody {
         if copied > 0 {
             // Credit goes back as the reader takes bytes, at once unless the
             // byte budget is spent and the queue holds more than the floor.
-            this.window.consumed(copied);
-            if let Err(error) = this.hand_back() {
+            if let Err(error) = this.hand_back(copied) {
                 return Poll::Ready(Err(error));
             }
             if let Some(bdp) = &this.bdp {

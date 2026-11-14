@@ -42,7 +42,10 @@
 //!   an idle stream holds no bytes of `B` however large its window; when the
 //!   windows' part of `B` is spent, a stream that queues more than its floor
 //!   hands credit back only once that part covers its queue again, at the
-//!   latest when its reader has taken the queue down to the floor.
+//!   latest when its reader has taken the queue down to the floor. A gate
+//!   that holds credit back is settled again whenever bytes come back while
+//!   `B` has room, by one task per budget, so the credit goes back then
+//!   whether or not its reader reads again.
 //!
 //! The windows' part of `B` is what it leaves after a reserve for the relays
 //! (`B / 8`, [`RELAY_RESERVE_DIVISOR`]): the gates together hold no more than
@@ -53,9 +56,10 @@
 //! the windows it announced (`HysteriaWindows`).
 
 use std::collections::VecDeque;
+use std::future::poll_fn;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::task::{Context, Waker};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::task::{Context, Poll, Waker};
 
 use crate::{memory_class, MemoryClass};
 
@@ -170,6 +174,16 @@ pub struct ByteBudget {
     queue: Mutex<VecDeque<Arc<Waiter>>>,
     /// Bytes the receive gates hold, part of `in_use`.
     window_bytes: AtomicUsize,
+    /// The gates listed in `withheld`; read before the lock is taken.
+    withholding: AtomicUsize,
+    /// Receive gates holding back credit their readers took, for the
+    /// settler to hand back once `B` has room.
+    withheld: Mutex<Withheld>,
+    /// A settle round is due: set when bytes come back while gates are
+    /// listed, cleared by the settler as a round begins.
+    settle_due: AtomicBool,
+    /// The settler's task while it waits for a round.
+    settler: Mutex<Option<Waker>>,
 }
 
 impl Default for ByteBudget {
@@ -189,6 +203,13 @@ impl ByteBudget {
             waiting: AtomicUsize::new(0),
             queue: Mutex::new(VecDeque::new()),
             window_bytes: AtomicUsize::new(0),
+            withholding: AtomicUsize::new(0),
+            withheld: Mutex::new(Withheld {
+                gates: Vec::new(),
+                settling: false,
+            }),
+            settle_due: AtomicBool::new(false),
+            settler: Mutex::new(None),
         }
     }
 
@@ -217,8 +238,12 @@ impl ByteBudget {
                     .store(settings.capacity.saturating_add(1), Ordering::SeqCst);
             }
         }
-        // A larger budget may have room for a waiter now.
+        // A larger budget may have room for a waiter now, or for a gate's
+        // queue.
         self.serve(&mut self.lock_queue());
+        if self.withholding.load(Ordering::SeqCst) != 0 {
+            self.settle_soon();
+        }
     }
 
     pub fn settings(&self) -> ByteBudgetSettings {
@@ -298,13 +323,24 @@ impl ByteBudget {
             let mut queue = self.lock_queue();
             let rest = self.hand_out(&mut queue, bytes);
             self.in_use.fetch_sub(rest, Ordering::SeqCst);
-            return;
+        } else {
+            self.in_use.fetch_sub(bytes, Ordering::SeqCst);
+            // A holder that began to wait after the check above has missed
+            // these bytes, or else it found them free (`wait`).
+            if self.waiting.load(Ordering::SeqCst) != 0 {
+                self.serve(&mut self.lock_queue());
+            }
         }
-        self.in_use.fetch_sub(bytes, Ordering::SeqCst);
-        // A holder that began to wait after the check above has missed
-        // these bytes, or else it found them free (`wait`).
-        if self.waiting.load(Ordering::SeqCst) != 0 {
-            self.serve(&mut self.lock_queue());
+        self.settle_if_room();
+    }
+
+    /// Has the settler run a round if gates hold credit back and `B` has
+    /// room: after bytes come back, and after the gates' share of the
+    /// windows' part falls. One load while no gate holds credit back, so
+    /// the relays' path pays nothing more.
+    fn settle_if_room(&self) {
+        if self.withholding.load(Ordering::SeqCst) != 0 && self.in_use() < self.capacity() {
+            self.settle_soon();
         }
     }
 
@@ -322,6 +358,67 @@ impl ByteBudget {
 
     fn lock_queue(&self) -> MutexGuard<'_, VecDeque<Arc<Waiter>>> {
         self.queue.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn lock_withheld(&self) -> MutexGuard<'_, Withheld> {
+        self.withheld.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn lock_settler(&self) -> MutexGuard<'_, Option<Waker>> {
+        self.settler.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Lists `gate`, which holds back credit its reader took, for the settler
+    /// to settle again whenever bytes come back while `B` has room, until it
+    /// holds none back. Starts the settler, one task per budget, on the
+    /// runtime of the caller; without a runtime the gate's own reader is
+    /// left to settle it.
+    pub(crate) fn list_withheld(&'static self, gate: Weak<dyn WithheldCredit>) {
+        let start = {
+            let mut withheld = self.lock_withheld();
+            withheld.gates.push(gate);
+            self.withholding
+                .store(withheld.gates.len(), Ordering::SeqCst);
+            !std::mem::replace(&mut withheld.settling, true)
+        };
+        // `B` may have had room again before the gate was listed, when no
+        // give could see it: a round now.
+        self.settle_soon();
+        if start {
+            // The guard goes with the task: dropped unpolled, or with its
+            // runtime, it lets the next gate listed start a settler again.
+            let running = Settling(self);
+            match tokio::runtime::Handle::try_current() {
+                Ok(runtime) => drop(runtime.spawn(settle_withheld(running))),
+                Err(_) => drop(running),
+            }
+        }
+    }
+
+    /// Has the settler run a round.
+    fn settle_soon(&self) {
+        if self.settle_due.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let waker = self.lock_settler().take();
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    /// Ready once a round is due, which it clears.
+    fn poll_settle_due(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut settler = self.lock_settler();
+        if self.settle_due.swap(false, Ordering::SeqCst) {
+            return Poll::Ready(());
+        }
+        if !settler
+            .as_ref()
+            .is_some_and(|waker| waker.will_wake(cx.waker()))
+        {
+            *settler = Some(cx.waker().clone());
+        }
+        Poll::Pending
     }
 
     /// Hands `bytes`, taken already, to the waiters at the front of the
@@ -410,6 +507,82 @@ struct WaitState {
 impl Waiter {
     fn lock(&self) -> MutexGuard<'_, WaitState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// A receive gate that holds back credit its reader took: settled again from
+/// outside its reader, so the credit goes back once `B` has room whether or
+/// not the reader reads again ([`ByteBudget::list_withheld`]).
+pub(crate) trait WithheldCredit: Send + Sync {
+    /// Settles the gate against what its stream holds now, and hands back
+    /// the credit that grants.
+    fn settle(&self);
+    /// Whether the gate still holds credit back. One that does not leaves
+    /// the list, and is listed again when it next holds some back.
+    fn still_withheld(&self) -> bool;
+}
+
+/// The gates a budget's settler settles.
+struct Withheld {
+    gates: Vec<Weak<dyn WithheldCredit>>,
+    /// The settler's task is running.
+    settling: bool,
+}
+
+impl std::fmt::Debug for Withheld {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Withheld")
+            .field("gates", &self.gates.len())
+            .field("settling", &self.settling)
+            .finish()
+    }
+}
+
+/// A budget's settler is running; dropped, it is not.
+struct Settling(&'static ByteBudget);
+
+impl Drop for Settling {
+    fn drop(&mut self) {
+        self.0.lock_withheld().settling = false;
+    }
+}
+
+/// The settler: one task per budget, on the runtime of the gate whose
+/// listing started it, while gates are listed. Each round settles every
+/// listed gate and keeps those that still hold credit back; it ends once
+/// none does, and a gate listed later starts it again. A round runs when
+/// bytes come back while `B` has room, so it never runs on the relays'
+/// path, and it waits for nothing: one runtime worker serves it.
+async fn settle_withheld(running: Settling) {
+    let budget = running.0;
+    loop {
+        poll_fn(|cx| budget.poll_settle_due(cx)).await;
+        let gates: Vec<Arc<dyn WithheldCredit>> = budget
+            .lock_withheld()
+            .gates
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        for gate in &gates {
+            gate.settle();
+        }
+        drop(gates);
+        let mut withheld = budget.lock_withheld();
+        withheld
+            .gates
+            .retain(|gate| gate.upgrade().is_some_and(|gate| gate.still_withheld()));
+        budget
+            .withholding
+            .store(withheld.gates.len(), Ordering::SeqCst);
+        if withheld.gates.is_empty() {
+            // Cleared here, under the lock that lists gates, not by the
+            // guard after it: a gate listed meanwhile starts a settler.
+            withheld.settling = false;
+            drop(withheld);
+            std::mem::forget(running);
+            return;
+        }
     }
 }
 
@@ -535,9 +708,13 @@ impl Drop for BudgetPermits<'_> {
 /// unless the budget is spent and the queue still holds more than the floor:
 /// then the credit waits until the reader has taken the queue down to the
 /// floor or the budget has room again, and a peer that outruns a pressed
-/// process pauses on its window. The reader's next read decides again, so no
-/// task waits on the budget and a stream's credit never depends on another
-/// stream's.
+/// process pauses on its window. The reader's next read decides again, and
+/// so does the budget's settler, a task that settles every gate holding
+/// credit back whenever bytes come back while `B` has room, whether or not
+/// its reader reads; no task waits on the budget. While `B` is spent, the
+/// credit a paused reader took and its gate holds back still counts in the
+/// connection's window, so the connection's other streams can wait on it:
+/// up to the stream's window, until `B` has room.
 ///
 /// A gate holds at most the windows' part of `B`
 /// ([`ByteBudget::window_cap`]) less what the other gates hold, so the
@@ -988,5 +1165,87 @@ mod tests {
         assert_eq!(budget.in_use(), 8 * KIB);
         gate.close();
         assert_eq!(budget.in_use(), 0);
+    }
+
+    /// A gate a test lists: counts its rounds, holds credit back while told.
+    struct CountingGate {
+        settled: AtomicUsize,
+        withheld: AtomicBool,
+    }
+
+    impl WithheldCredit for CountingGate {
+        fn settle(&self) {
+            self.settled.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn still_withheld(&self) -> bool {
+            self.withheld.load(Ordering::SeqCst)
+        }
+    }
+
+    impl CountingGate {
+        fn settled(&self) -> usize {
+            self.settled.load(Ordering::SeqCst)
+        }
+    }
+
+    /// Lets the settler, on this runtime's one thread, run what is due.
+    async fn let_the_settler_run() {
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn the_settler_settles_listed_gates_once_bytes_come_back_and_never_on_the_givers_path() {
+        let budget: &'static ByteBudget = Box::leak(Box::new(budget(64 * KIB, 4 * KIB)));
+        let mut relay = BudgetPermits::new(budget);
+        assert_eq!(relay.try_hold(64 * KIB), 64 * KIB);
+        let gate = Arc::new(CountingGate {
+            settled: AtomicUsize::new(0),
+            withheld: AtomicBool::new(true),
+        });
+        let listed: Weak<CountingGate> = Arc::downgrade(&gate);
+        budget.list_withheld(listed as Weak<dyn WithheldCredit>);
+        assert_eq!(gate.settled(), 0, "a listing settles nothing itself");
+        let_the_settler_run().await;
+        assert_eq!(gate.settled(), 1, "a listing has a round run");
+        let_the_settler_run().await;
+        assert_eq!(gate.settled(), 1, "no round without bytes coming back");
+
+        relay.try_hold(60 * KIB);
+        assert_eq!(gate.settled(), 1, "a give settles nothing itself");
+        let_the_settler_run().await;
+        assert_eq!(gate.settled(), 2, "bytes came back with room: a round");
+
+        relay.try_hold(56 * KIB);
+        relay.try_hold(52 * KIB);
+        let_the_settler_run().await;
+        assert_eq!(gate.settled(), 3, "gives before a round make one round");
+
+        // A gate that holds nothing back leaves the list; the settler ends.
+        gate.withheld.store(false, Ordering::SeqCst);
+        relay.try_hold(48 * KIB);
+        let_the_settler_run().await;
+        assert_eq!(gate.settled(), 4);
+        assert_eq!(budget.withholding.load(Ordering::SeqCst), 0);
+        assert!(!budget.lock_withheld().settling, "the settler ended");
+        relay.try_hold(44 * KIB);
+        let_the_settler_run().await;
+        assert_eq!(gate.settled(), 4, "no round with no gate listed");
+
+        // Listed again, it starts a settler again.
+        gate.withheld.store(true, Ordering::SeqCst);
+        let listed: Weak<CountingGate> = Arc::downgrade(&gate);
+        budget.list_withheld(listed as Weak<dyn WithheldCredit>);
+        let_the_settler_run().await;
+        assert_eq!(gate.settled(), 5);
+
+        // A gate dropped while listed leaves the list at the next round.
+        drop(gate);
+        relay.try_hold(40 * KIB);
+        let_the_settler_run().await;
+        assert_eq!(budget.withholding.load(Ordering::SeqCst), 0);
+        assert!(!budget.lock_withheld().settling, "the settler ended");
     }
 }

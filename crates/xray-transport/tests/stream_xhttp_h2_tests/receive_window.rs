@@ -708,6 +708,69 @@ async fn a_body_dropped_mid_download_hands_its_withheld_credit_to_the_connection
     server.close().await;
 }
 
+/// Credit paused readers took under a spent budget goes back once the budget
+/// has room, though neither reads again; and not before. Two responses fill
+/// the connection's 16 MiB, their readers take all but 8 KiB each and stop:
+/// while `B` is spent, a third response gets nothing, even after a few bytes
+/// of `B` come back, fewer than the queues need; once `B` is free it gets its
+/// window, and the paused queues hold their bytes of `B`.
+#[tokio::test(start_paused = true)]
+async fn paused_readers_hand_back_their_withheld_credit_once_the_budget_has_room() {
+    const WINDOW: usize = 8 * 1024 * 1024;
+    const KIB: usize = 1024;
+    const LEFT: usize = 8 * KIB;
+    const FLOOR: usize = 4 * KIB;
+    let budget: &'static ByteBudget =
+        Box::leak(Box::new(ByteBudget::with_settings(ByteBudgetSettings {
+            capacity: 1024 * KIB,
+            floor: FLOOR,
+        })));
+    // Another holder has all of `B`.
+    let mut other = xray_transport::memory_budget::BudgetPermits::new(budget);
+    assert_eq!(other.try_hold(1024 * KIB), 1024 * KIB);
+    let (client, mut server) = pair_with_window(server::Builder::new(), Some(WINDOW as u32)).await;
+    let client = client.with_byte_budget(budget);
+    let (mut first, mut send_first) = response_pair(&client, &mut server).await;
+    let (mut second, mut send_second) = response_pair(&client, &mut server).await;
+    timeout(DEADLINE, send_bytes(&mut send_first, WINDOW))
+        .await
+        .unwrap();
+    timeout(DEADLINE, send_bytes(&mut send_second, WINDOW))
+        .await
+        .unwrap();
+    // Every byte is queued before a reader starts.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let mut bytes = vec![0; WINDOW - LEFT];
+    first.read_exact(&mut bytes).await.unwrap();
+    second.read_exact(&mut bytes).await.unwrap();
+    let (_victim_body, mut victim) = response_pair(&client, &mut server).await;
+    assert_blocked(&mut victim).await;
+
+    // 2 KiB of `B` come back, less than each queue's 4 KiB beyond the floor:
+    // the queues still cannot be held, and their credit stays back.
+    assert_eq!(other.try_hold(1022 * KIB), 1022 * KIB);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_blocked(&mut victim).await;
+    assert!(
+        budget.free() < LEFT - FLOOR,
+        "B still has less free than one queue needs: {:?}",
+        budget.usage()
+    );
+
+    drop(other);
+    timeout(DEADLINE, send_bytes(&mut victim, WINDOW))
+        .await
+        .expect("the paused readers' credit goes back once B has room");
+    assert_eq!(
+        budget.in_use(),
+        2 * (LEFT - FLOOR),
+        "each paused queue holds its bytes beyond the floor"
+    );
+    drop((first, second));
+    assert_eq!(budget.in_use(), 0);
+    server.close().await;
+}
+
 /// Mbit/s of `streams` downloads of `each` bytes at once on one connection,
 /// through a link that holds every byte 60 ms each way, with a phone's
 /// adaptive windows and the process's byte budget, if it has one, at a

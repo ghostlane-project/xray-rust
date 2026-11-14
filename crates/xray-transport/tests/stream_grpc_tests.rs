@@ -6046,6 +6046,74 @@ mod stream_grpc_budget_tests {
         assert_eq!(usage.in_use, 0, "a call read to its end holds {usage:?}");
         drop(flow);
     }
+
+    /// A call whose reader took most of its window under a spent budget and
+    /// paused gets the credit back once the budget has room, though it does
+    /// not read again; and not before: while another holder has all of `B`,
+    /// and after a few bytes of it come back, fewer than the queue needs, the
+    /// peer sends nothing more.
+    #[tokio::test]
+    async fn a_paused_call_gets_its_withheld_credit_back_once_the_budget_has_room() {
+        const WINDOW: usize = 4 * 1024 * 1024;
+        const MIB: usize = 1024 * 1024;
+        const KIB: usize = 1024;
+        const TOTAL: usize = 2 * WINDOW;
+        let budget = budget_with(ByteBudgetSettings {
+            capacity: MIB,
+            floor: 4 * KIB,
+        });
+        let mut other = xray_transport::memory_budget::BudgetPermits::new(budget);
+        assert_eq!(other.try_hold(MIB), MIB);
+        let (addr, sent) = spawn_counting_peer(TOTAL).await;
+        let dialer = TransportDialer::system().expect("a system dialer");
+        let config = GrpcConfig {
+            initial_windows_size: WINDOW as u32,
+            ..config()
+        };
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config).with_byte_budget(budget));
+        let mut flow = open_flow(&dialer, &transport, addr).await;
+
+        let filled = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert!(
+            filled > WINDOW / 2 && filled < WINDOW,
+            "the peer sent {filled} B into a 4 MiB window"
+        );
+        // All but 64 KiB read, with `B` spent: the credit stays back.
+        let mut bytes = vec![0; filled - 64 * KIB];
+        flow.read_exact(&mut bytes).await.expect("the call reads");
+        let after = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert_eq!(after, filled, "credit went back with B spent");
+
+        // 2 KiB of `B` come back, less than the queue needs.
+        assert_eq!(other.try_hold(MIB - 2 * KIB), MIB - 2 * KIB);
+        let after = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert_eq!(after, filled, "credit went back with B still spent");
+
+        drop(other);
+        let more = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert!(
+            more > filled,
+            "the paused call's credit went back once B had room: {more} B sent, {filled} before"
+        );
+
+        let mut rest = vec![0; TOTAL - bytes.len()];
+        tokio::time::timeout(DEADLINE, flow.read_exact(&mut rest))
+            .await
+            .expect("the call stalled")
+            .expect("the call reads");
+        assert!(rest.iter().chain(&bytes).all(|byte| *byte == 0xa5));
+        let usage = budget.usage();
+        assert_eq!(usage.in_use, 0, "a call read to its end holds {usage:?}");
+        drop(flow);
+    }
 }
 
 mod stream_grpc_bench_tests {
