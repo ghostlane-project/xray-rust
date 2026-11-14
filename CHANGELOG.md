@@ -32,6 +32,26 @@ long-term supported release series.
   and the threads keep, for a host under memory pressure.
 - Vision gives back its frame buffers once a frame is written or read,
   rather than keeping up to 64 KiB and its padding for the flow's life.
+- The byte budget also counts what HTTP/2 and QUIC windows hold. An XHTTP or
+  gRPC response holds bytes of it for what it has received and its reader
+  has not taken, beyond its floor, and hands each read's credit back at
+  once, unless the budget is spent and the queue still holds more than the
+  floor; then the credit waits until the reader's next reads take the queue
+  down. No stream waits on the budget or on another stream, and a stream
+  left open with nothing queued holds nothing. A Hysteria2 connection's
+  receive and send windows are one `memory_budget::WindowLease`: while the
+  connection moves data its windows run at the floor plus what the lease
+  takes, split by what each direction moved, at most as announced; a
+  second without traffic brings them back to the floor. Leases together
+  take at most `B` less `B / RELAY_RESERVE_DIVISOR` (an eighth, kept for
+  relays); a lone one may take all of that, and each falls to a fair share
+  once another is held below its own. A smaller budget takes back what
+  leases hold above it. `ByteBudgetUsage` gains `windows` and
+  `window_bytes`; `memory_budget::ReceiveGate` is public. SETTINGS, the
+  first WINDOW_UPDATE and QUIC transport parameters are unchanged.
+- Vendored quinn-proto: growing the connection receive window pays the
+  credit an earlier shrink left with the peer before it grants more, so
+  shrink and growth turns never leave a peer more credit than the window.
 
 - `xray_core_reset_network(handle, closed, error)` (ABI 1.18, under
   `CONNECTION_MANAGEMENT`; no new capability bit) resets the network under a
