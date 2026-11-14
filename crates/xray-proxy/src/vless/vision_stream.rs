@@ -365,10 +365,10 @@ where
             self.pending_write.advance(written);
         }
         // The frame is written: its copy, up to 64 KiB and its padding, goes
-        // now rather than stay with the flow for its life.
-        if self.pending_write.capacity() != 0 {
-            self.pending_write = BytesMut::new();
-        }
+        // now rather than stay with the flow for its life, whatever its
+        // capacity reads. A frame fills what it reserved, so once written the
+        // buffer reads capacity 0 and still holds the allocation.
+        self.pending_write = BytesMut::new();
 
         if self.pending_direct_write_mode {
             std::task::ready!(Pin::new(&mut self.inner).poll_flush(cx))?;
@@ -577,7 +577,29 @@ mod tests {
             .unwrap();
 
         assert!(stream.padding_write_mode, "the frames were padded");
-        assert_eq!(stream.pending_write.capacity(), 0);
+        assert!(!stream.pending_write.try_reclaim(1));
+        let mut written = vec![0; USER_ID_LEN + HEADER_LEN];
+        peer.read_exact(&mut written).await.unwrap();
+        assert_eq!(&written[..USER_ID_LEN], &USER_ID);
+    }
+
+    #[tokio::test]
+    async fn a_frame_that_filled_its_reservation_leaves_no_buffer_once_written() {
+        // A frame reserves its exact length, so once it is written the buffer
+        // reads capacity 0 whether or not it still holds the allocation; only
+        // a buffer that holds one can reclaim from it.
+        let (inner, mut peer) = tokio::io::duplex(64 * 1024);
+        let mut stream = VisionStream::new(inner, USER_ID, DEFAULT_SEED);
+
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &[7u8; 4096])
+            .await
+            .unwrap();
+
+        assert!(stream.padding_write_mode, "the frame was padded");
+        assert!(
+            !stream.pending_write.try_reclaim(1),
+            "the written frame's buffer is still held"
+        );
         let mut written = vec![0; USER_ID_LEN + HEADER_LEN];
         peer.read_exact(&mut written).await.unwrap();
         assert_eq!(&written[..USER_ID_LEN], &USER_ID);
@@ -609,8 +631,8 @@ mod tests {
         }
 
         assert!(!stream.padding_read_mode);
-        assert_eq!(stream.raw_read.capacity(), 0, "raw frames");
-        assert_eq!(stream.decoded_read.capacity(), 0, "decoded bytes");
+        assert!(!stream.raw_read.try_reclaim(1), "raw frames");
+        assert!(!stream.decoded_read.try_reclaim(1), "decoded bytes");
         stream.read_to_end(&mut output).await.unwrap();
         assert_eq!(output.len(), 3 * 5000 + 10 + 700);
         assert!(output[..15000].iter().all(|byte| *byte == 1));
