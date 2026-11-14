@@ -774,13 +774,15 @@ pub(crate) async fn handle_socks_connect<const SOCKS_REPLY: bool>(
         protocol: protocol.map(crate::sniffing::SniffedProtocol::name),
         attributes: attributes.as_ref(),
     };
-    let selected = match Box::pin(outbound_router.select_tcp_session_outbound_with_tag_and_resolver(
-        &route,
-        &route_target,
-        &dial_target,
-        true,
-        dns_resolvers.destination.as_ref(),
-    ))
+    let selected = match Box::pin(
+        outbound_router.select_tcp_session_outbound_with_tag_and_resolver(
+            &route,
+            &route_target,
+            &dial_target,
+            true,
+            dns_resolvers.destination.as_ref(),
+        ),
+    )
     .await
     {
         Ok(outbound) => outbound,

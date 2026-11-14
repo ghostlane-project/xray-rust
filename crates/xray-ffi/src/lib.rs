@@ -4547,11 +4547,11 @@ mod tests {
     use libc::c_char;
 
     use super::{
-        ffi_panic_message, ffi_status, free_error,
-        runtime_plan_for, xray_core_free, RuntimePlan,
+        ffi_panic_message, ffi_status, free_error, runtime_plan_for, xray_core_free,
         xray_core_load_config_json, xray_core_new, xray_core_replace_routing_policy_json,
         xray_core_routing_policy_snapshot_json, xray_core_set_dns_bootstrap_mode, DnsBootstrapMode,
-        OutStrArgs, OutStrBuf, XrayCoreHandle, XrayDnsBootstrapMode, XrayError, XrayStatus,
+        OutStrArgs, OutStrBuf, RuntimePlan, XrayCoreHandle, XrayDnsBootstrapMode, XrayError,
+        XrayStatus,
     };
 
     #[test]
