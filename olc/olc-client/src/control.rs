@@ -183,30 +183,41 @@ pub async fn run(stream: Stream, liveness: Liveness, hooks: Hooks, stop: Cancell
     let prober = probe_loop(liveness, out_tx, probes, hooks.clone(), inner.clone());
     tokio::pin!(reader, writer, prober);
     let mut wr_back = None;
+    let mut writer_done = false;
     let end = tokio::select! {
         () = stop.cancelled() => End::Stopped,
         r = &mut reader => r.unwrap_or_else(|e| End::Failed(e.to_string())),
-        r = &mut writer => match r {
-            Ok((end, half)) => { wr_back = half; end }
-            Err(e) => End::Failed(e.to_string()),
+        r = &mut writer => {
+            writer_done = true;
+            match r {
+                Ok((end, half)) => { wr_back = half; end }
+                Err(e) => End::Failed(e.to_string()),
+            }
         },
         end = &mut prober => end,
     };
     inner.cancel();
-    if end == End::Stopped {
-        if wr_back.is_none() {
-            if let Ok((_, half)) = writer.await {
-                wr_back = half;
-            }
-        }
-        if let Some(half) = wr_back.as_mut() {
-            let _ = tokio::time::timeout(CLOSE_NOTICE_BUDGET, notify_close(half)).await;
-        }
-    } else {
-        reader.abort();
-    }
+    // Go logs as Run returns (tunnelcore/control.go:50-56); Run's watcher
+    // announces the close on every end, not only a stop (control.go:219-223).
     if !matches!(end, End::Stopped) {
         crate::info!("control stream ended {}: {end}", hooks.fields);
+    }
+    reader.abort();
+    if !writer_done {
+        if let Ok((_, half)) = writer.await {
+            wr_back = half;
+        }
+    }
+    if let Some(mut half) = wr_back {
+        if end == End::Stopped {
+            let _ = tokio::time::timeout(CLOSE_NOTICE_BUDGET, notify_close(&mut half)).await;
+        } else {
+            // A death goes on to the reconnect at once, as in Go, while the
+            // notice is sent beside it.
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(CLOSE_NOTICE_BUDGET, notify_close(&mut half)).await;
+            });
+        }
     }
     end
 }
@@ -286,7 +297,7 @@ async fn write_loop(
             r = wr.write_all(&out) => r,
         };
         if let Err(e) = wrote {
-            return (End::Failed(format!("control: write: {e}")), Some(wr));
+            return (End::Failed(format!("control: write frame: {e}")), Some(wr));
         }
     }
 }
@@ -300,6 +311,8 @@ async fn probe_loop(
 ) -> End {
     let interval = liveness.interval();
     let mut tick = tokio::time::interval_at(Instant::now() + interval, interval);
+    // A Go Ticker drops the ticks a slow receiver missed.
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             () = stop.cancelled() => return End::Stopped,
@@ -495,6 +508,59 @@ mod tests {
             let looped = tokio::spawn(run(ours, Liveness::default(), quiet_hooks(), stop.clone()));
             stop.cancel();
             assert_eq!(looped.await.unwrap(), End::Stopped);
+            let mut buf = Vec::new();
+            crate::frames::read_frame(&mut theirs, MAX_MESSAGE_SIZE, &mut buf)
+                .await
+                .unwrap();
+            assert_eq!(control::parse(&buf).unwrap().kind, MsgType::Close);
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_session_that_dies_under_the_loop_ends_it_with_the_closed_pipe_text() {
+        crate::testing::bounded(async {
+            let (c, s) = smux_pair();
+            let ours = c.open_stream().await.unwrap();
+            let _theirs = s.accept_stream().await.unwrap();
+            let looped = tokio::spawn(run(
+                ours,
+                Liveness::default(),
+                quiet_hooks(),
+                CancellationToken::new(),
+            ));
+            // Let the read park, then the session dies (smux's waitRead:
+            // a parked read gets io.ErrClosedPipe).
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = c.close();
+            let end = looped.await.unwrap();
+            assert_eq!(
+                end.to_string(),
+                "control: read hdr: io: read/write on closed pipe",
+                "the line the apps react to"
+            );
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn every_end_says_control_close_to_the_peer() {
+        crate::testing::bounded(async {
+            let (c, s) = smux_pair();
+            let ours = c.open_stream().await.unwrap();
+            let mut theirs = s.accept_stream().await.unwrap();
+            // A frame that is not a control message ends the loop (Go's
+            // Run cancels its context on every end, and the watcher
+            // announces the close: control.go:219-223).
+            theirs.write_all(&[0, 0, 0, 3, b'b', b'a', b'd']).await.unwrap();
+            let end = run(
+                ours,
+                Liveness::default(),
+                quiet_hooks(),
+                CancellationToken::new(),
+            )
+            .await;
+            assert!(matches!(end, End::Failed(_)), "{end:?}");
             let mut buf = Vec::new();
             crate::frames::read_frame(&mut theirs, MAX_MESSAGE_SIZE, &mut buf)
                 .await

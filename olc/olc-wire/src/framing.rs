@@ -47,9 +47,12 @@ pub enum ReadError {
     /// The stream ended inside the body.
     #[error("read body: unexpected EOF")]
     TruncatedBody,
-    /// The reader failed.
-    #[error("read frame: {0}")]
-    Io(#[source] io::Error),
+    /// The reader failed in the header (`read hdr: %w`).
+    #[error("read hdr: {0}")]
+    IoHeader(#[source] io::Error),
+    /// The reader failed in the body (`read body: %w`).
+    #[error("read body: {0}")]
+    IoBody(#[source] io::Error),
 }
 
 impl ReadError {
@@ -62,7 +65,7 @@ impl ReadError {
             Self::TruncatedHeader => "truncated_header",
             Self::EofBody => "eof_body",
             Self::TruncatedBody => "truncated_body",
-            Self::Io(_) => "io",
+            Self::IoHeader(_) | Self::IoBody(_) => "io",
         }
     }
 }
@@ -166,7 +169,7 @@ pub fn try_decode(buf: &[u8], max: usize) -> Result<Option<(&[u8], usize)>, Fram
 pub fn read<R: Read + ?Sized>(r: &mut R, max: usize, out: &mut Vec<u8>) -> Result<(), ReadError> {
     out.clear();
     let mut header = [0u8; HEADER_SIZE];
-    match read_full(r, &mut header).map_err(ReadError::Io)? {
+    match read_full(r, &mut header).map_err(ReadError::IoHeader)? {
         0 => return Err(ReadError::EofHeader),
         HEADER_SIZE => {}
         _ => return Err(ReadError::TruncatedHeader),
@@ -180,7 +183,7 @@ pub fn read<R: Read + ?Sized>(r: &mut R, max: usize, out: &mut Vec<u8>) -> Resul
         .into());
     }
     let len = len as usize;
-    let got = r.take(len as u64).read_to_end(out).map_err(ReadError::Io)?;
+    let got = r.take(len as u64).read_to_end(out).map_err(ReadError::IoBody)?;
     match got {
         n if n == len => Ok(()),
         0 => Err(ReadError::EofBody),

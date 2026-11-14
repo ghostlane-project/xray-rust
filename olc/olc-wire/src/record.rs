@@ -485,8 +485,8 @@ impl KeySet {
         let [data, control, udp] = prefixes;
         Ok(Self {
             role,
-            send: XChaCha20Poly1305::new(&Key::from(*send)),
-            receive: XChaCha20Poly1305::new(&Key::from(*receive)),
+            send: cipher(send),
+            receive: cipher(receive),
             lanes: [lane(data), lane(control), lane(udp)],
             replay: Mutex::new(ReplayCache::default()),
         })
@@ -504,13 +504,15 @@ impl KeySet {
         self.lanes[lane.index()].prefix
     }
 
-    /// Sets the counter `lane` used last, so its next record carries
-    /// `counter + 1`. For the vectors, which seal at fixed counters.
+    /// Moves the counter `lane` used last up to `counter`, so its next record
+    /// carries `counter + 1`. For the vectors, which seal at fixed counters.
+    /// It only ever moves forward: a counter once used is never used again,
+    /// whoever calls this.
     #[doc(hidden)]
     pub fn set_last_counter(&self, lane: Lane, counter: u64) {
         self.lanes[lane.index()]
             .counter
-            .store(counter, Ordering::Release);
+            .fetch_max(counter, Ordering::AcqRel);
     }
 
     /// Seals the record laid out in `record` in place:
@@ -688,6 +690,16 @@ fn nonce(prefix: &[u8; NONCE_PREFIX_SIZE], counter: u64) -> XNonce {
     XNonce::from(nonce)
 }
 
+/// A cipher under `key`, built through a key buffer that is wiped after; the
+/// cipher wipes its own copy when dropped (chacha20poly1305's `zeroize`).
+fn cipher(key: &[u8; 32]) -> XChaCha20Poly1305 {
+    let mut k = Key::default();
+    k.copy_from_slice(key);
+    let c = XChaCha20Poly1305::new(&k);
+    k.as_mut_slice().zeroize();
+    c
+}
+
 /// Decodes hex as Go's `hex.DecodeString` does: either case; the pairs are
 /// checked first, then the odd byte, then the length (`hex.Decode`).
 fn decode_hex(text: &str) -> Result<Vec<u8>, HexError> {
@@ -702,14 +714,17 @@ fn decode_hex(text: &str) -> Result<Vec<u8>, HexError> {
     let text = text.as_bytes();
     let pairs = text.chunks_exact(2);
     let odd = pairs.remainder().first().copied();
-    let out = pairs
-        .map(|pair| Ok(digit(pair[0])? << 4 | digit(pair[1])?))
-        .collect::<Result<Vec<u8>, HexError>>()?;
+    // Sized once, so no key byte is left behind in a grown-out buffer; wiped
+    // on every refusal.
+    let mut out = zeroize::Zeroizing::new(Vec::with_capacity(text.len() / 2));
+    for pair in pairs {
+        out.push(digit(pair[0])? << 4 | digit(pair[1])?);
+    }
     if let Some(c) = odd {
         digit(c)?;
         return Err(HexError::OddLength);
     }
-    Ok(out)
+    Ok(std::mem::take(&mut *out))
 }
 
 #[cfg(test)]
@@ -728,6 +743,19 @@ mod tests {
             MAX_REPLAY_SENDERS * std::mem::size_of::<ReplayEntry>(),
             64 * 1024
         );
+    }
+
+    #[test]
+    fn the_counter_hook_never_moves_a_counter_back() {
+        let keys = KeySet::new(&PSK, Role::Client).unwrap();
+        let mut out = Vec::new();
+        keys.set_last_counter(Lane::Data, 10);
+        keys.seal_into(Lane::Data, b"a", &mut out).unwrap();
+        assert_eq!(out[4..12], 11u64.to_be_bytes());
+        keys.set_last_counter(Lane::Data, 3);
+        out.clear();
+        keys.seal_into(Lane::Data, b"b", &mut out).unwrap();
+        assert_eq!(out[4..12], 12u64.to_be_bytes(), "a nonce is never reused");
     }
 
     #[test]
