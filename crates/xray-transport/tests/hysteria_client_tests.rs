@@ -409,7 +409,7 @@ async fn a_constrained_host_holds_less_unread_and_still_moves_more_than_its_wind
             held_config.limits.max_tcp_streams,
             held_config.limits.max_udp_sessions,
         ),
-        (MIB as u64, 3 * MIB as u64, 48, 32)
+        (MIB as u64, 3 * MIB as u64, 64, 32)
     );
 
     // The server can send a stream the client does not read its window less

@@ -672,8 +672,7 @@ open class XrayPacketTunnelProvider: NEPacketTunnelProvider {
 
     /// Override to bound concurrent streams on each Hysteria2 QUIC session.
     /// Called once per configured start, before DNS bootstrap and network settings.
-    /// Returning nil keeps the core defaults: 64 TCP streams / 32 UDP sessions, or
-    /// 48 / 32 under a constrained runtime profile such as `.mobile`.
+    /// Returning nil preserves the core defaults (64 TCP streams / 32 UDP sessions).
     /// Throwing fails startup; settings are immutable for the running tunnel.
     open func hysteriaStreamLimits() throws -> XrayHysteriaStreamLimits? { nil }
 

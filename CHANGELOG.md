@@ -13,9 +13,8 @@ long-term supported release series.
 - On a constrained host (a phone, or the `MOBILE`, `MOBILE_PLUS` and
   `LOW_MEMORY` runtime profiles) a Hysteria outbound whose `quicParams` set
   no window holds its stream window at 1 MiB instead of 2 MiB, keeps the
-  3 MiB connection window, grows its send window to 4 MiB instead of 10 MB,
-  and opens at most 48 TCP streams instead of 64 unless the host sets its
-  stream limits. quinn keeps these windows fixed where quic-go grows them, so
+  3 MiB connection window and grows its send window to 4 MiB instead of
+  10 MB; its stream limits stay 64/32. quinn keeps these windows fixed where quic-go grows them, so
   they are also the most a connection holds unread; sing-box's Hysteria2
   client pins 8 MiB and 20 MiB. ChromeParrot keeps Chrome's 6 MiB and 15 MiB
   on every host. Standard hosts are unchanged.

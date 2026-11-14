@@ -180,7 +180,11 @@ impl HysteriaOutbound {
                 socket_options: socket_options::compile(&config.stream),
                 address_port: super::carrier::address_port_strategy(&config.stream),
                 socket_dialer: Mutex::new(None),
-                limits: limits.transport_limits(class),
+                limits: xray_transport::hysteria::HysteriaLimits {
+                    max_send_window: xray_transport::hysteria::HysteriaLimits::for_class(class)
+                        .max_send_window,
+                    ..limits.transport_limits()
+                },
                 carrier,
                 quic,
                 receive_bytes_per_second,

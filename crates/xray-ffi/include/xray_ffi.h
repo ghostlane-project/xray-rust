@@ -288,11 +288,9 @@ XrayStatus xray_profile_import_json(
     char *buffer, size_t buffer_len, size_t *written, XrayError **error);
 
 XrayCoreHandle *xray_core_new(XrayError **error);
-/* ABI 1.10. Host resource policy, independent of Xray JSON.
- * Set before config load. Per Hysteria outbound: TCP 1..256, UDP 1..128.
- * Unset, they follow the TUN runtime profile's memory class: 64/32, or 48/32
- * on a constrained host (MOBILE, MOBILE_PLUS, LOW_MEMORY, or DEFAULT on a
- * phone). All inbounds share these limits. Invalid calls change nothing.
+/* ABI 1.10. Host resource policy, independent of Xray JSON and TUN profiles.
+ * Set before config load. Per Hysteria outbound: TCP 1..256, UDP 1..128;
+ * defaults 64/32. All inbounds share these limits. Invalid calls change nothing.
  * Lifecycle call: do not race any other handle call. */
 XrayStatus xray_core_set_hysteria_stream_limits(
     XrayCoreHandle *handle, uint32_t max_tcp_streams,

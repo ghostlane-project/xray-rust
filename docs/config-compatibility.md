@@ -155,10 +155,9 @@ and 3 MiB connection windows remain, or 1 MiB and 3 MiB on a constrained host,
 no more than the 2 MiB and 3 MiB quic-go starts a connection with; Xray's
 Hysteria dialer defaults to 8 MiB and 20 MiB, as sing-box's Hysteria2 client
 does. ChromeParrot replaces both with Chrome's on any host. A constrained host
-also grows its send window to 4 MiB instead of 10 MB and opens at most 48 TCP
-streams on a connection unless the host sets its
-[stream limits](ffi.md#hysteria-concurrency-limits). `disableGSO` turns off
-segmentation offload. `maxIncomingStreams`
+also grows its send window to 4 MiB instead of 10 MB; the
+[stream limits](ffi.md#hysteria-concurrency-limits) are the same on every host.
+`disableGSO` turns off segmentation offload. `maxIncomingStreams`
 has no effect, as in Xray's dialer, and `disableStatelessReset` only affects
 Xray-core's servers. `debug: true` fails before the outbound starts.
 

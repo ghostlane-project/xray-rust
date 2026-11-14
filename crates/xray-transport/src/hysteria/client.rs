@@ -39,10 +39,6 @@ const CONSTRAINED_STREAM_RECEIVE_WINDOW: u64 = 1024 * 1024;
 /// connection with and grows, which quinn does not, so it is also all its
 /// streams may hold unread together. 252 Mbit/s at 100 ms.
 const CONSTRAINED_CONNECTION_RECEIVE_WINDOW: u64 = 3 * 1024 * 1024;
-/// The TCP streams a constrained host opens on one connection: each busy
-/// one may keep a relay buffer of its own, and 48 still leaves room above a
-/// burst of 32.
-const CONSTRAINED_MAX_TCP_STREAMS: usize = 48;
 /// The most a constrained host's send window grows to: the 4 MiB all of its
 /// XHTTP H3 uploads share.
 const CONSTRAINED_MAX_SEND_WINDOW: u64 = 4 * 1024 * 1024;
@@ -112,15 +108,13 @@ impl Default for HysteriaLimits {
 }
 
 impl HysteriaLimits {
-    /// The limits on a host of `class`. A constrained host opens at most 48
-    /// TCP streams and grows its send window to 4 MiB. UDP sessions stay 32:
-    /// their queued datagrams already share one byte budget, and DNS over the
-    /// connection takes a session for each query in flight.
+    /// The limits on a host of `class`: a constrained host grows its send
+    /// window to 4 MiB. The stream limits are the same on every host, as
+    /// every flow behind a TUN is a stream on one connection.
     pub fn for_class(class: MemoryClass) -> Self {
         match class {
             MemoryClass::Standard => Self::default(),
             MemoryClass::Constrained => Self {
-                max_tcp_streams: CONSTRAINED_MAX_TCP_STREAMS,
                 max_send_window: CONSTRAINED_MAX_SEND_WINDOW,
                 ..Self::default()
             },
@@ -757,16 +751,15 @@ mod tests {
                 constrained.max_udp_sessions,
                 constrained.max_send_window
             ),
-            (48, 32, 4 * MIB)
+            (64, 32, 4 * MIB)
         );
         assert_eq!(
             HysteriaLimits {
-                max_tcp_streams: standard.max_tcp_streams,
                 max_send_window: standard.max_send_window,
                 ..constrained
             },
             standard,
-            "queues and timeouts stay"
+            "streams, queues and timeouts stay"
         );
         assert!(standard.validate().is_ok() && constrained.validate().is_ok());
         for max_send_window in [2 * MIB - 1, 10_000_001] {

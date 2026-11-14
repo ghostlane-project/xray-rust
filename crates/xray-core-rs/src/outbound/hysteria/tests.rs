@@ -329,7 +329,7 @@ fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
 }
 
 #[test]
-fn unset_hysteria_windows_and_stream_limits_follow_the_memory_class() {
+fn unset_hysteria_windows_follow_the_memory_class() {
     const MIB: u64 = 1024 * 1024;
     let without_parrot = QuicParamsSettings {
         disable_chrome_parrot: true,
@@ -384,33 +384,6 @@ fn unset_hysteria_windows_and_stream_limits_follow_the_memory_class() {
             quic.initial_connection_receive_window
         ),
         (MIB, 20 * MIB)
-    );
-
-    let unset = crate::HysteriaStreamLimits::default();
-    let standard = unset.transport_limits(MemoryClass::Standard);
-    let constrained = unset.transport_limits(MemoryClass::Constrained);
-    assert_eq!(
-        (standard.max_tcp_streams, standard.max_udp_sessions),
-        (64, 32)
-    );
-    assert_eq!(
-        (constrained.max_tcp_streams, constrained.max_udp_sessions),
-        (48, 32)
-    );
-    assert_eq!(
-        (standard.max_send_window, constrained.max_send_window),
-        (10_000_000, 4 * MIB)
-    );
-    // Limits the host sets are kept on any host; the send window is not one.
-    let set = crate::HysteriaStreamLimits::new(64, 32).unwrap();
-    for class in [MemoryClass::Standard, MemoryClass::Constrained] {
-        let limits = set.transport_limits(class);
-        assert_eq!((limits.max_tcp_streams, limits.max_udp_sessions), (64, 32));
-    }
-    assert_eq!(
-        set.transport_limits(MemoryClass::Constrained)
-            .max_send_window,
-        4 * MIB
     );
 }
 
@@ -524,9 +497,8 @@ async fn hysteria_stream_budgets_reject_overflow_and_release_slots_without_recon
             crate::HysteriaStreamLimits::new(80, 48).unwrap(),
         ] {
             let outbound = HysteriaOutbound::with_stream_limits(&config, limits).unwrap();
-            let limits = outbound.inner.limits;
             let mut streams = Vec::new();
-            for _ in 0..limits.max_tcp_streams {
+            for _ in 0..limits.max_tcp_streams() {
                 streams.push(outbound.open_tcp(&target, &dns, &dialer).await.unwrap());
             }
             assert!(matches!(
@@ -536,7 +508,7 @@ async fn hysteria_stream_budgets_reject_overflow_and_release_slots_without_recon
             drop(streams.pop());
             streams.push(outbound.open_tcp(&target, &dns, &dialer).await.unwrap());
             let mut sessions = Vec::new();
-            for _ in 0..limits.max_udp_sessions {
+            for _ in 0..limits.max_udp_sessions() {
                 sessions.push(outbound.open_udp(&dns, &dialer).await.unwrap());
             }
             assert!(matches!(
@@ -550,7 +522,10 @@ async fn hysteria_stream_budgets_reject_overflow_and_release_slots_without_recon
             streams[0].read_exact(&mut reply).await.unwrap();
             assert_eq!(&reply, b"still live");
             let client = outbound.client(&dns, &dialer).await.unwrap();
-            assert_eq!(client.active_udp_sessions(), limits.max_udp_sessions);
+            assert_eq!(
+                client.active_udp_sessions(),
+                limits.max_udp_sessions() as usize
+            );
             outbound.close();
             assert!(!client.is_live());
         }

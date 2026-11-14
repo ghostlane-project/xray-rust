@@ -124,12 +124,9 @@ usable-network selection, event coalescing and callback teardown; see the
 
 ABI 1.10 adds `xray_core_set_hysteria_stream_limits(handle, tcp, udp, error)`
 and capability bit 23, `HYSTERIA_STREAM_LIMITS`. Call before config load;
-accepted ranges are TCP 1..256 and UDP 1..128. Unset, they follow the memory
-class of the runtime profile: 64/32, or 48/32 on a constrained host (`MOBILE`,
-`MOBILE_PLUS`, `LOW_MEMORY`, or `DEFAULT` on Android and iOS). Limits the host
-sets apply on every profile. Invalid values leave the previous policy intact. A
-loaded handle rejects changes, including after stop; create a new core to
-change them.
+accepted ranges are TCP 1..256 and UDP 1..128. Defaults stay 64/32 for every
+runtime profile. Invalid values leave the previous policy intact. A loaded
+handle rejects changes, including after stop; create a new core to change them.
 
 These are per-outbound concurrent-flow limits shared by SOCKS, HTTP, TUN, DNS
 and probes using that node, not Xray JSON fields or a device-wide guarantee.
@@ -140,7 +137,7 @@ apply. Exhaustion fails the new flow without closing existing flows or opening
 extra carrier connections; closing a flow releases its slot.
 
 Swift and Kotlin constructors accept optional `XrayHysteriaStreamLimits`.
-Omission keeps the profile's defaults. An explicit value
+Omission preserves the existing defaults. An explicit value
 requires ABI 1.10 and the new capability. Rust hosts set
 `TunRuntimeOptions.hysteria_stream_limits` using validated `HysteriaStreamLimits`.
 
