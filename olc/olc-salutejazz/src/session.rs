@@ -73,12 +73,6 @@ pub const WS_READ_TIMEOUT: Duration = Duration::from_secs(25);
 pub const WS_READ_LIMIT: usize = 8 << 20;
 /// `pingInterval`.
 pub const PING_INTERVAL: Duration = Duration::from_secs(5);
-/// How long another participant must have been in the roster before the
-/// first hello goes out ([`Link::wait_peer_settled`]): olc-client's
-/// `pipe::PEER_SETTLE`, for the same reason. The pinned server installs its
-/// session only after its rejoin (server/link.go:141-200), and nothing on
-/// the wire says when that is done. Not Go's: Go sends the hello at once.
-pub const PEER_SETTLE: Duration = Duration::from_millis(5);
 /// `pongTimeout`.
 pub const PONG_TIMEOUT: Duration = Duration::from_secs(15);
 /// `answerTimeout`.
@@ -405,9 +399,9 @@ struct Gen {
     ice: Mutex<HashMap<&'static str, Vec<Candidate>>>,
     ice_servers: Mutex<Vec<wire::IceServer>>,
     roster: Mutex<Roster>,
-    /// When another participant last arrived in [`Gen::roster`]; `None`
-    /// while it holds nobody ([`Gen::wait_peer_settled`]).
-    arrived: watch::Sender<Option<tokio::time::Instant>>,
+    /// Whether [`Gen::roster`] holds another participant
+    /// ([`Gen::wait_peer_settled`]).
+    present: watch::Sender<bool>,
     confirmed: Mutex<String>,
     win: Mutex<Windows>,
     relay_peers: Mutex<(u32, HashMap<String, RelayPeer>)>,
@@ -440,7 +434,7 @@ impl Gen {
             ice: Mutex::default(),
             ice_servers: Mutex::default(),
             roster: Mutex::default(),
-            arrived: watch::channel(None).0,
+            present: watch::channel(false).0,
             confirmed: Mutex::default(),
             win: Mutex::new(Windows::new(relay_timing())),
             relay_peers: Mutex::new((0, HashMap::new())),
@@ -492,38 +486,39 @@ impl Gen {
         self.roster_moved(false, empty);
     }
 
-    /// The roster changed: an empty one forgets the last arrival, and one
-    /// that gained a participant starts the settle again (it may be the
-    /// server rejoining while the SFU still lists its old self).
+    /// The roster changed: whether it holds anybody now.
     fn roster_moved(&self, arrived: bool, empty: bool) {
         if empty {
-            self.arrived.send_replace(None);
+            self.present.send_replace(false);
         } else if arrived {
-            self.arrived.send_replace(Some(tokio::time::Instant::now()));
+            self.present.send_replace(true);
         }
     }
 
-    /// Waits until a participant has been in this generation's roster for
-    /// [`PEER_SETTLE`] since the last one arrived, and on for as long as the
-    /// roster is empty; the caller bounds it.
+    /// This generation's data path: the publisher's reliable lane (the hello
+    /// goes out on it) and the subscriber's (the answer comes in on it).
+    fn data_path_up(&self) -> bool {
+        self.rel_open.load(Ordering::Acquire) && self.sub_open.load(Ordering::Acquire)
+    }
+
+    /// Waits until another participant is in this generation's roster and
+    /// its data path is up, with no fixed delay; on for as long as either is
+    /// missing. The caller bounds it.
     async fn wait_peer_settled(&self) {
-        let mut rx = self.arrived.subscribe();
+        let mut rx = self.present.subscribe();
         loop {
-            let since = *rx.borrow_and_update();
-            match since {
-                Some(at) => tokio::select! {
-                    () = tokio::time::sleep_until(at + PEER_SETTLE) => {
-                        if *rx.borrow() == Some(at) {
-                            return;
-                        }
-                    }
-                    r = rx.changed() => if r.is_err() { return },
-                },
-                None => {
-                    if rx.changed().await.is_err() {
-                        return;
-                    }
-                }
+            let publisher = self.pub_ready.notified();
+            let subscriber = self.sub_ready.notified();
+            tokio::pin!(publisher, subscriber);
+            publisher.as_mut().enable();
+            subscriber.as_mut().enable();
+            if *rx.borrow_and_update() && self.data_path_up() {
+                return;
+            }
+            tokio::select! {
+                r = rx.changed() => if r.is_err() { return },
+                () = publisher => {}
+                () = subscriber => {}
             }
         }
     }
@@ -785,13 +780,16 @@ impl Link {
             .unwrap_or_default()
     }
 
-    /// Waits until another participant has settled in the room, for the
-    /// first hello (olc-client's `PipeLink::wait_peer_settled`):
-    /// [`PEER_SETTLE`] past the last arrival in the current generation's
-    /// roster, and on while the roster is empty or no generation is up;
-    /// the caller bounds it. The roster says when the server joined, not
-    /// when its lanes are up: the fake SFU lists everyone `ACTIVE` from its
-    /// join, and the real SFU's states have not been seen.
+    /// Waits until the first hello can reach somebody (olc-client's
+    /// `PipeLink::wait_peer_settled`, without its fixed delay): another
+    /// participant in the current generation's roster and this end's data
+    /// path up (both reliable lanes); on while either is missing or no
+    /// generation is up; the caller bounds it. Go sends the hello once its
+    /// own lanes are up and does not look at the roster. The roster says
+    /// when the server joined, not when its lanes are up: the fake SFU lists
+    /// everyone `ACTIVE` from its join, the real SFU's states have not been
+    /// seen, and the server sends nothing before a hello, so there is no
+    /// signal for the far end's data path.
     pub async fn wait_peer_settled(&self) {
         loop {
             let moved = self.sh.lanes.notified();
@@ -2151,43 +2149,58 @@ mod tests {
         take_join(0).unwrap();
     }
 
-    /// The first hello's wait: on while the roster is empty,
-    /// [`PEER_SETTLE`] past the last arrival (the join's
-    /// `otherParticipants`, `rtc:participants`, a sender seen in data), and
-    /// an empty roster forgets it.
+    /// The first hello's wait: until another participant is in the roster
+    /// (the join's `otherParticipants`, `rtc:participants`, a sender seen in
+    /// data) and this generation's data path is up (the publisher's and the
+    /// subscriber's reliable lanes), with no fixed delay; an empty roster
+    /// holds it again.
     #[tokio::test]
-    async fn a_peer_settles_from_the_last_arrival_and_an_empty_roster_forgets_it() {
+    async fn the_first_hello_waits_for_a_participant_and_the_data_path() {
         tokio::time::timeout(Duration::from_secs(10), async {
             let settling = |g: &Arc<Gen>| {
                 let g = g.clone();
-                tokio::spawn(async move {
-                    let from = tokio::time::Instant::now();
-                    g.wait_peer_settled().await;
-                    from.elapsed()
-                })
+                tokio::spawn(async move { g.wait_peer_settled().await })
             };
             let entry = |id: &str, state: &str| wire::Participant {
                 sid: format!("PA_{id}"),
                 identity: id.to_owned(),
                 state: state.to_owned(),
             };
+            let lanes_up = |g: &Gen, publisher: bool| {
+                if publisher {
+                    g.rel_open.store(true, Ordering::Release);
+                    g.pub_ready.notify_waiters();
+                } else {
+                    g.sub_open.store(true, Ordering::Release);
+                    g.sub_ready.notify_waiters();
+                }
+            };
+            let pause = || tokio::time::sleep(Duration::from_millis(100));
+
             let g = Arc::new(Gen::new());
             let wait = settling(&g);
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            pause().await;
             assert!(!wait.is_finished(), "settled with nobody in the room");
-            let came = tokio::time::Instant::now();
             g.apply_participants(&[entry("srv", "ACTIVE")]);
+            pause().await;
+            assert!(!wait.is_finished(), "settled before the data path was up");
+            lanes_up(&g, true);
+            pause().await;
+            assert!(!wait.is_finished(), "settled with the subscriber lane down");
+            lanes_up(&g, false);
+            // Up and somebody there: at once, no fixed delay.
+            let up = tokio::time::Instant::now();
             wait.await.unwrap();
             assert!(
-                came.elapsed() >= PEER_SETTLE,
-                "settled {:?} after the arrival",
-                came.elapsed()
+                up.elapsed() < Duration::from_millis(50),
+                "{:?}",
+                up.elapsed()
             );
 
             // It left (the SFU's roster): nobody again, so the wait goes on.
             g.apply_participants(&[entry("srv", "DISCONNECTED")]);
             let wait = settling(&g);
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            pause().await;
             assert!(!wait.is_finished(), "settled after the room emptied");
             // A sender seen in data counts as an arrival.
             g.note_peer("srv2");
@@ -2196,7 +2209,7 @@ mod tests {
             // `participant-left` empties it as well.
             g.depart("srv2");
             let wait = settling(&g);
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            pause().await;
             assert!(!wait.is_finished(), "settled after participant-left");
             g.apply_participants(&[entry("srv3", "ACTIVE")]);
             wait.await.unwrap();
