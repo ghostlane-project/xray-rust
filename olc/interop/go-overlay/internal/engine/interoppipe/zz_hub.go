@@ -158,6 +158,14 @@ func (h *Hub) accept() {
 		if err != nil {
 			return
 		}
+		// The SFU's end of the link holds no more than the participant's:
+		// without the bound a loopback socket autotunes its receive buffer to
+		// megabytes, a queue in front of the room's own (memberQueue) that
+		// no carrier's SFU keeps, and a connect opened under an upload waits
+		// behind all of it (both clients failed chaos S2/S3 on that alone).
+		if tc, ok := conn.(*net.TCPConn); ok {
+			_ = tc.SetReadBuffer(SendHighWater)
+		}
 		h.members.Add(1)
 		go h.serve(conn)
 	}

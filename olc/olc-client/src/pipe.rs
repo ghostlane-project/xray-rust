@@ -45,6 +45,15 @@ pub const MAX_PAYLOAD: usize = 64 << 10;
 /// The frame header: length and kind.
 pub const FRAME_HEADER: usize = 5;
 
+/// What the link lets the kernel hold unsent: a carrier's datachannel
+/// high-water mark (`defaultBufferHighWaterMark`, goolom/session.go:37;
+/// `bufferHighWaterMark`, salutejazz/data.go:42: 512 KiB), which the carriers
+/// wait under before they send more (goolom/sendqueue.go:54). Without it a
+/// loopback socket autotunes to megabytes, a queue no carrier has, and a
+/// connect opened under an upload waits behind all of it. The Go pipe sets
+/// the same bound (zz_pipe.go).
+pub const SEND_HIGH_WATER: u32 = 512 * 1024;
+
 /// The first pause between rejoins, doubled up to [`REJOIN_MAX`].
 pub const REJOIN_BACKOFF: Duration = Duration::from_millis(100);
 /// The longest pause between rejoins.
@@ -155,7 +164,7 @@ impl PipeLink {
     }
 
     async fn join(&self) -> io::Result<OwnedReadHalf> {
-        let stream = net::dial_tcp_host(&self.addr).await?;
+        let stream = net::dial_tcp_host_with(&self.addr, Some(SEND_HIGH_WATER)).await?;
         stream.set_nodelay(true)?;
         let (read, mut half) = stream.into_split();
         let mut buf = Vec::with_capacity(FRAME_HEADER + MAX_PAYLOAD);

@@ -52,6 +52,14 @@ const (
 // message, so no message a transport sends is refused.
 const MaxPayload = 64 << 10
 
+// SendHighWater is what a participant lets the kernel hold unsent: a
+// carrier's datachannel high-water mark (defaultBufferHighWaterMark,
+// goolom/session.go; bufferHighWaterMark, salutejazz/data.go: 512 KiB), which
+// the carriers wait under before they send more. Without it a loopback socket
+// autotunes to megabytes, a queue no carrier has. The Rust pipe sets the same
+// bound (olc-client's pipe.rs SEND_HIGH_WATER).
+const SendHighWater = 512 * 1024
+
 // rejoinBackoff and rejoinMax pace the rejoins after a lost hub connection.
 const (
 	rejoinBackoff = 100 * time.Millisecond
@@ -176,6 +184,12 @@ func (s *Session) join(ctx context.Context) (net.Conn, error) {
 	conn, err := d.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
 		return nil, fmt.Errorf("interop-pipe: dial hub: %w", err)
+	}
+	if tc, ok := conn.(*net.TCPConn); ok {
+		if err := tc.SetWriteBuffer(SendHighWater); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("interop-pipe: send buffer: %w", err)
+		}
 	}
 	if err := WriteFrame(conn, KindJoin, []byte(s.room)); err != nil {
 		_ = conn.Close()

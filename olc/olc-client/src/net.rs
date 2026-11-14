@@ -63,12 +63,31 @@ pub fn protect(fd: RawFd) -> io::Result<()> {
 /// # Errors
 /// The protector's refusal, the dial's error, or a timeout.
 pub async fn dial_tcp(addr: SocketAddr) -> io::Result<TcpStream> {
+    dial_tcp_with(addr, None).await
+}
+
+/// A protected TCP socket for `addr`'s family; `send_buffer`, when given,
+/// bounds what the kernel holds unsent (`SO_SNDBUF`), set before the dial so
+/// autotuning never grows it.
+fn tcp_socket(addr: SocketAddr, send_buffer: Option<u32>) -> io::Result<TcpSocket> {
     let socket = if addr.is_ipv4() {
         TcpSocket::new_v4()?
     } else {
         TcpSocket::new_v6()?
     };
     protect(socket.as_raw_fd())?;
+    if let Some(n) = send_buffer {
+        socket.set_send_buffer_size(n)?;
+    }
+    Ok(socket)
+}
+
+/// [`dial_tcp`] with the kernel's send buffer bounded to `send_buffer`.
+///
+/// # Errors
+/// As [`dial_tcp`], or the socket option's.
+pub async fn dial_tcp_with(addr: SocketAddr, send_buffer: Option<u32>) -> io::Result<TcpStream> {
+    let socket = tcp_socket(addr, send_buffer)?;
     match tokio::time::timeout(DIAL_TIMEOUT, socket.connect(addr)).await {
         Ok(r) => r,
         Err(_) => Err(io::Error::new(
@@ -84,11 +103,22 @@ pub async fn dial_tcp(addr: SocketAddr) -> io::Result<TcpStream> {
 /// # Errors
 /// The last dial's error, or the lookup's.
 pub async fn dial_tcp_host(host_port: &str) -> io::Result<TcpStream> {
+    dial_tcp_host_with(host_port, None).await
+}
+
+/// [`dial_tcp_host`] with the kernel's send buffer bounded to `send_buffer`.
+///
+/// # Errors
+/// As [`dial_tcp_host`].
+pub async fn dial_tcp_host_with(
+    host_port: &str,
+    send_buffer: Option<u32>,
+) -> io::Result<TcpStream> {
     let (host, port) = split_host_port(host_port)?;
     let addrs = crate::resolver::lookup(host).await?;
     let mut last = io::Error::new(io::ErrorKind::NotFound, format!("no address for {host}"));
     for ip in addrs {
-        match dial_tcp(SocketAddr::new(ip, port)).await {
+        match dial_tcp_with(SocketAddr::new(ip, port), send_buffer).await {
             Ok(s) => return Ok(s),
             Err(e) => last = e,
         }
@@ -135,6 +165,17 @@ pub fn split_host_port(s: &str) -> io::Result<(&str, u16)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_send_buffer_bound_is_set_on_the_socket_before_it_dials() {
+        let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let bounded = tcp_socket(addr, Some(512 * 1024)).unwrap();
+        // Linux keeps twice what was asked (the kernel's bookkeeping share).
+        let got = bounded.send_buffer_size().unwrap();
+        assert!((512 * 1024..=1024 * 1024).contains(&got), "{got}");
+        let small = tcp_socket(addr, Some(64 * 1024)).unwrap();
+        assert!(small.send_buffer_size().unwrap() < got);
+    }
 
     #[test]
     fn host_port_splits_as_go() {
