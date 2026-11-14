@@ -304,6 +304,64 @@ async fn fwd_udp_answers_dns_through_the_port_53_hijack_with_fake_ips() {
     .unwrap();
 }
 
+/// An answer from the DNS outbound that a hev-socks5 client could not read
+/// whole is cut to an empty one with TC set, which sends the resolver to
+/// TCP, instead of being dropped as any other oversize reply is.
+#[tokio::test]
+async fn fwd_udp_truncates_a_dns_answer_to_what_hev_socks5_reads() {
+    timeout(Duration::from_secs(5), async {
+        // 100 A records: a 1,641-byte answer, past the 1,493 bytes a frame
+        // from an IPv4 address carries and within the 4,096 the query offers.
+        let hosts = (1..=100)
+            .map(|host| format!(r#""198.51.100.{host}""#))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let raw = format!(
+            r#"{{
+            "dns": {{"hosts": {{"many.example": [{hosts}]}},
+                     "fakeIp": {{"enabled": true, "ipv4Pool": "198.18.0.0/15"}}}},
+            "inbounds": [{{"tag": "in", "protocol": "socks", "listen": "127.0.0.1", "port": 0,
+                "settings": {{{LOGIN}, "udp": true}}}}],
+            "outbounds": [
+                {{"tag": "direct", "protocol": "freedom"}},
+                {{"tag": "dns-out", "protocol": "dns"}}
+            ],
+            "routing": {{"rules": [
+                {{"type": "field", "inboundTag": ["in"], "network": "udp", "port": 53,
+                  "outboundTag": "dns-out"}}
+            ]}}
+        }}"#
+        );
+        let (mut core, protector, socks_addr) = start_core(&raw).await;
+        let mut control = open_fwd_udp(socks_addr).await;
+        let mut received = BytesMut::new();
+
+        let resolver = SocketAddr::from((Ipv4Addr::new(192, 0, 2, 53), 53));
+        let mut query = build_dns_a_query(0x7c01, "many.example");
+        // One additional record: EDNS's OPT, offering 4,096 bytes.
+        query[10..12].copy_from_slice(&1_u16.to_be_bytes());
+        query.extend_from_slice(&[0, 0, 41, 0x10, 0x00, 0, 0, 0, 0, 0, 0]);
+        control.write_all(&frame(resolver, &query)).await.unwrap();
+        let answer = timeout(
+            Duration::from_secs(2),
+            read_frame(&mut control, &mut received),
+        )
+        .await
+        .expect("the answer comes back, cut to what the client reads");
+        assert_eq!(answer.target, udp_target(resolver));
+        assert!(answer.payload.len() <= 1493, "{}", answer.payload.len());
+        assert_eq!(answer.payload[..2], query[..2], "the query's id");
+        assert_ne!(answer.payload[2] & 0x02, 0, "TC is set");
+        assert_eq!(answer.payload[6..8], [0, 0], "no answer record");
+        assert_eq!(protector.calls(), 0, "the hijacked query left the core");
+
+        drop(control);
+        core.stop().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 /// `FWD_UDP` is a request on the control connection, so it goes no further
 /// than the login: without one, with a wrong one, or under `"udp": false`
 /// nothing is dialed. `UDP ASSOCIATE` for `0.0.0.0:0` stays refused.
