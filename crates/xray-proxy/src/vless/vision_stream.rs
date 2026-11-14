@@ -181,7 +181,13 @@ impl<S> VisionStream<S> {
             return false;
         }
 
-        output.put_slice(&self.decoded_read.split_to(len));
+        output.put_slice(&self.decoded_read[..len]);
+        self.decoded_read.advance(len);
+        if self.decoded_read.is_empty() {
+            // Nothing decoded waits: the buffer goes with it, so a flow
+            // whose padding ended keeps none.
+            self.decoded_read = BytesMut::new();
+        }
         true
     }
 
@@ -300,6 +306,11 @@ where
         };
 
         let frame = self.raw_read.split_to(frame_len);
+        if self.raw_read.is_empty() {
+            // The frame takes the buffer's bytes along, and nothing is
+            // left for the buffer to keep.
+            self.raw_read = BytesMut::new();
+        }
         let unpadded = unpad_vision_block(&frame, &self.user_id).map_err(vision_to_io)?;
         self.inbound_user_id_seen = true;
         let command = unpadded.command;
@@ -308,7 +319,10 @@ where
         if matches!(command, VisionCommand::End | VisionCommand::Direct) {
             self.padding_read_mode = false;
             self.direct_read_mode = command == VisionCommand::Direct;
-            self.decoded_read.extend_from_slice(&self.raw_read.split());
+            // What followed the block in the last read is the stream's; the
+            // frame buffer is not needed again.
+            let rest = std::mem::take(&mut self.raw_read);
+            self.decoded_read.extend_from_slice(&rest);
             if command == VisionCommand::End {
                 // The peer will never switch this stream to direct mode; the
                 // transport can stop aligning reads to TLS record boundaries.
@@ -349,6 +363,11 @@ where
             }
 
             self.pending_write.advance(written);
+        }
+        // The frame is written: its copy, up to 64 KiB and its padding, goes
+        // now rather than stay with the flow for its life.
+        if self.pending_write.capacity() != 0 {
+            self.pending_write = BytesMut::new();
         }
 
         if self.pending_direct_write_mode {
@@ -539,12 +558,65 @@ fn is_complete_tls_application_data_records(input: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vless::DEFAULT_VISION_SEED as DEFAULT_SEED;
     use tokio::io::AsyncReadExt;
 
     const USER_ID: [u8; USER_ID_LEN] = [
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
         0x0f,
     ];
+
+    #[tokio::test]
+    async fn a_written_frame_leaves_no_copy_behind() {
+        let (inner, mut peer) = tokio::io::duplex(256 * 1024);
+        let mut stream = VisionStream::new(inner, USER_ID, DEFAULT_SEED);
+        let payload = vec![7u8; 64 * 1024];
+
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &payload)
+            .await
+            .unwrap();
+
+        assert!(stream.padding_write_mode, "the frames were padded");
+        assert_eq!(stream.pending_write.capacity(), 0);
+        let mut written = vec![0; USER_ID_LEN + HEADER_LEN];
+        peer.read_exact(&mut written).await.unwrap();
+        assert_eq!(&written[..USER_ID_LEN], &USER_ID);
+    }
+
+    #[tokio::test]
+    async fn read_frames_leave_no_buffer_behind_once_padding_ended() {
+        let mut padding = VisionPadding::new(USER_ID, [0, 0, 0, 0]);
+        let mut wire = Vec::new();
+        for _ in 0..3 {
+            let frame = padding
+                .pad(BytesMut::from(&[1u8; 5000][..]), VisionCommand::Continue, 0)
+                .unwrap();
+            wire.extend_from_slice(&frame);
+        }
+        let end = padding
+            .pad(BytesMut::from(&[2u8; 10][..]), VisionCommand::End, 0)
+            .unwrap();
+        wire.extend_from_slice(&end);
+        wire.extend_from_slice(&[3u8; 700]);
+        let mut stream = VisionStream::new(std::io::Cursor::new(wire), USER_ID, [0, 0, 0, 0]);
+
+        let mut output = Vec::new();
+        let mut chunk = [0; 1000];
+        while output.len() < 3 * 5000 + 10 + 700 {
+            let len = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(len, 0);
+            output.extend_from_slice(&chunk[..len]);
+        }
+
+        assert!(!stream.padding_read_mode);
+        assert_eq!(stream.raw_read.capacity(), 0, "raw frames");
+        assert_eq!(stream.decoded_read.capacity(), 0, "decoded bytes");
+        stream.read_to_end(&mut output).await.unwrap();
+        assert_eq!(output.len(), 3 * 5000 + 10 + 700);
+        assert!(output[..15000].iter().all(|byte| *byte == 1));
+        assert!(output[15000..15010].iter().all(|byte| *byte == 2));
+        assert!(output[15010..].iter().all(|byte| *byte == 3));
+    }
 
     #[tokio::test]
     async fn reads_raw_bytes_after_direct_block() {
