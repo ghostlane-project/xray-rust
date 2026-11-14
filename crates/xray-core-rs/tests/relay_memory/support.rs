@@ -159,6 +159,19 @@ pub enum Uplink {
     Slow,
 }
 
+/// How fast the far client takes a download.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Downlink {
+    /// As fast as it comes.
+    Fast,
+    /// As a phone's app would: 4 KiB a millisecond a flow, through a small
+    /// receive buffer at the client and a 16 KiB send buffer on the core's
+    /// end of the SOCKS connection, so that what the core reads waits in the
+    /// core rather than in the kernel. Loopback's buffers would otherwise
+    /// take a whole download.
+    Slow,
+}
+
 /// Starts a TLS VLESS Vision server; returns its address and the client
 /// config that trusts it. Must run inside the far ends' runtime.
 pub async fn start_vision_server(uplink: Uplink) -> (SocketAddr, Arc<rustls::ClientConfig>) {
@@ -381,7 +394,20 @@ pub async fn start_sink() -> SocketAddr {
 
 /// A SOCKS5 flow through `socks` to `target`.
 pub async fn socks_connect(socks: SocketAddr, target: SocketAddr) -> TcpStream {
-    let mut stream = TcpStream::connect(socks).await.expect("the SOCKS inbound");
+    socks_connect_at(socks, target, Downlink::Fast).await
+}
+
+/// A SOCKS5 flow through `socks` to `target`, read at `downlink`'s pace.
+pub async fn socks_connect_at(
+    socks: SocketAddr,
+    target: SocketAddr,
+    downlink: Downlink,
+) -> TcpStream {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    if downlink == Downlink::Slow {
+        socket.set_recv_buffer_size(4 * KIB as u32).unwrap();
+    }
+    let mut stream = socket.connect(socks).await.expect("the SOCKS inbound");
     stream.set_nodelay(true).unwrap();
     stream.write_all(&[5, 1, 0]).await.unwrap();
     let mut method = [0; 2];
@@ -397,7 +423,46 @@ pub async fn socks_connect(socks: SocketAddr, target: SocketAddr) -> TcpStream {
     let mut reply = [0; 10];
     stream.read_exact(&mut reply).await.unwrap();
     assert_eq!(reply[1], 0, "the SOCKS inbound connected");
+    if downlink == Downlink::Slow {
+        set_core_send_buffer(&stream, 16 * KIB);
+    }
     stream
+}
+
+/// Gives the core's end of `stream` a send buffer of `bytes`. The core
+/// takes the SOCKS connection in this process, so its socket is one of this
+/// process's descriptors, the one whose addresses are `stream`'s swapped.
+fn set_core_send_buffer(stream: &TcpStream, bytes: usize) {
+    use std::os::fd::{BorrowedFd, RawFd};
+
+    let ours = stream.local_addr().unwrap();
+    let theirs = stream.peer_addr().unwrap();
+    let descriptors = std::fs::read_dir("/proc/self/fd")
+        .or_else(|_| std::fs::read_dir("/dev/fd"))
+        .expect("this process's descriptors");
+    for entry in descriptors.flatten() {
+        let Some(fd) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<RawFd>().ok())
+        else {
+            continue;
+        };
+        // SAFETY: the descriptor is borrowed only for the calls below. One
+        // closed meanwhile fails them, and one opened again for something
+        // else does not have both of the addresses looked for.
+        let fd = unsafe { BorrowedFd::borrow_raw(fd) };
+        let socket = socket2::SockRef::from(&fd);
+        let local = socket.local_addr().ok().and_then(|addr| addr.as_socket());
+        let peer = socket.peer_addr().ok().and_then(|addr| addr.as_socket());
+        if local == Some(theirs) && peer == Some(ours) {
+            socket
+                .set_send_buffer_size(bytes)
+                .expect("the core's socket takes a send buffer");
+            return;
+        }
+    }
+    panic!("the core's end of {ours} to {theirs} is not among this process's sockets");
 }
 
 /// The target a Vision flow names; the server is its far end whatever it is.
@@ -405,9 +470,9 @@ pub fn any_target() -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 9)
 }
 
-/// Opens a Vision flow: `o`, answered `k`.
-pub async fn open_vision_flow(socks: SocketAddr) -> TcpStream {
-    let mut stream = socks_connect(socks, any_target()).await;
+/// Opens a Vision flow, read at `downlink`'s pace: `o`, answered `k`.
+pub async fn open_vision_flow(socks: SocketAddr, downlink: Downlink) -> TcpStream {
+    let mut stream = socks_connect_at(socks, any_target(), downlink).await;
     stream.write_all(b"o").await.unwrap();
     let mut answer = [0; 1];
     stream.read_exact(&mut answer).await.unwrap();
@@ -426,16 +491,23 @@ pub async fn ping(stream: &mut TcpStream, times: usize) {
     }
 }
 
-/// Asks for a MiB and reads it.
-pub async fn download(stream: &mut TcpStream) {
+/// Asks for a MiB and reads it at `downlink`'s pace.
+pub async fn download(stream: &mut TcpStream, downlink: Downlink) {
     stream.write_all(b"d").await.unwrap();
-    let mut buf = vec![0; 64 * KIB];
+    let chunk = match downlink {
+        Downlink::Fast => 64 * KIB,
+        Downlink::Slow => 4 * KIB,
+    };
+    let mut buf = vec![0; chunk];
     let mut left = MIB;
     while left > 0 {
-        let want = left.min(buf.len());
+        let want = left.min(chunk);
         let len = stream.read(&mut buf[..want]).await.unwrap();
         assert_ne!(len, 0, "the download ended early");
         left -= len;
+        if downlink == Downlink::Slow {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
     }
 }
 
@@ -466,7 +538,7 @@ pub async fn send_and_close(mut stream: TcpStream, bytes: usize) {
 
 /// Opens a Vision flow that sends `bytes` raw to the server and closes.
 pub async fn vision_send_and_close(socks: SocketAddr, bytes: usize) {
-    let mut stream = open_vision_flow(socks).await;
+    let mut stream = open_vision_flow(socks, Downlink::Fast).await;
     stream.write_all(b"s").await.unwrap();
     send_and_close(stream, bytes).await;
 }
