@@ -89,27 +89,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_reader_that_keeps_up_hands_all_its_credit_back_and_holds_nothing() {
+    async fn a_reader_within_the_budget_hands_every_read_back_at_once_and_ends_holding_nothing() {
+        // B covers the whole window: no read's credit ever waits, whatever
+        // the queue.
         let budget: &'static ByteBudget =
             Box::leak(Box::new(ByteBudget::with_settings(ByteBudgetSettings {
-                capacity: 64 * KIB,
+                capacity: 4 * WINDOW as usize,
                 floor: 4 * KIB,
             })));
         let (mut body, server) = download(2 * 1024 * 1024).await;
         let mut gate = ReceiveGate::new(budget);
         let mut read = 0;
+        let mut most_held = 0;
         while let Some(chunk) = body.data().await {
             let chunk = chunk.unwrap();
             read += chunk.len();
             gate.consumed(chunk.len());
-            hand_back(&mut gate, body.flow_control()).unwrap();
-            assert!(gate.held() <= 64 * KIB);
+            let granted = hand_back(&mut gate, body.flow_control()).unwrap();
+            assert_eq!(granted, chunk.len(), "the read's credit went back");
+            assert_eq!(gate.owed(), 0);
+            most_held = most_held.max(gate.held());
         }
-        assert_eq!(
-            read,
-            2 * 1024 * 1024,
-            "through a 256 KiB window and 64 KiB of B"
-        );
+        assert_eq!(read, 2 * 1024 * 1024, "through a 256 KiB window");
+        assert!(most_held > 0, "the queue never passed the floor");
         hand_back(&mut gate, body.flow_control()).unwrap();
         assert_eq!(gate.owed(), 0);
         assert_eq!(
@@ -121,27 +123,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pressed_stream_still_finishes_a_floor_at_a_time() {
-        // Another holder has all of B: the stream's queue stays within its
-        // floor, credit goes back as the reader drains it, and it finishes.
+    async fn a_pressed_stream_gets_credit_back_only_with_its_queue_within_the_floor_and_finishes() {
+        // Another holder has all of B: the stream's credit goes back only
+        // when its reader has taken the queue down to the floor, and the
+        // stream still finishes.
+        const FLOOR: usize = 4 * KIB;
         let budget: &'static ByteBudget =
             Box::leak(Box::new(ByteBudget::with_settings(ByteBudgetSettings {
                 capacity: 64 * KIB,
-                floor: 4 * KIB,
+                floor: FLOOR,
             })));
         let mut other = BudgetPermits::new(budget);
         other.try_hold(64 * KIB);
         let (mut body, server) = download(1024 * 1024).await;
         let mut gate = ReceiveGate::new(budget);
         let mut read = 0;
+        let mut held_back = 0;
         while let Some(chunk) = body.data().await {
             let chunk = chunk.unwrap();
             read += chunk.len();
             gate.consumed(chunk.len());
-            hand_back(&mut gate, body.flow_control()).unwrap();
+            let queued = body.flow_control().used_capacity() - gate.owed();
+            let granted = hand_back(&mut gate, body.flow_control()).unwrap();
+            if queued > FLOOR {
+                assert_eq!(granted, 0, "{queued} B queued, beyond the floor");
+                held_back += 1;
+            } else {
+                assert!(granted >= chunk.len(), "within the floor it never waits");
+                assert_eq!(gate.owed(), 0);
+            }
+            assert_eq!(gate.held(), 0, "B has nothing for it");
         }
         assert_eq!(read, 1024 * 1024);
-        assert_eq!(gate.held(), 0);
+        assert!(held_back > 0, "the queue never passed the floor");
         drop(other);
         server.await.unwrap();
     }
