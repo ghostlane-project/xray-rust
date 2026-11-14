@@ -13,4 +13,4 @@ pub mod relaywin;
 pub mod session;
 pub mod wire;
 
-pub use session::{Config, Error, Link};
+pub use session::{Config, Error, Link, Refresh, RefreshFuture};

@@ -26,8 +26,10 @@
 //! state ([`crate::relaywin`]).
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::io;
 use std::net::IpAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -41,9 +43,10 @@ use olc_rtc::str0m::channel::{ChannelConfig, ChannelId, Reliability};
 use olc_rtc::str0m::Candidate;
 use olc_rtc::{CryptoProvider, DtlsVersion};
 use serde::Serialize;
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, oneshot, watch, Notify};
 use tokio_util::sync::CancellationToken;
 
+use crate::auth::Credentials;
 use crate::lk;
 use crate::relaywin::{Timing, Windows};
 use crate::wire::{self, event, method, TARGET_PUBLISHER, TARGET_SUBSCRIBER};
@@ -70,6 +73,12 @@ pub const WS_READ_TIMEOUT: Duration = Duration::from_secs(25);
 pub const WS_READ_LIMIT: usize = 8 << 20;
 /// `pingInterval`.
 pub const PING_INTERVAL: Duration = Duration::from_secs(5);
+/// How long another participant must have been in the roster before the
+/// first hello goes out ([`Link::wait_peer_settled`]): olc-client's
+/// `pipe::PEER_SETTLE`, for the same reason. The pinned server installs its
+/// session only after its rejoin (server/link.go:141-200), and nothing on
+/// the wire says when that is done. Not Go's: Go sends the hello at once.
+pub const PEER_SETTLE: Duration = Duration::from_millis(5);
 /// `pongTimeout`.
 pub const PONG_TIMEOUT: Duration = Duration::from_secs(15);
 /// `answerTimeout`.
@@ -271,6 +280,24 @@ pub struct Config {
     /// the real service spends a fixed number and no more: past it a join
     /// fails without dialing.
     pub max_joins: u32,
+    /// Asks for the room's credentials again before a rejoin
+    /// (`Config.Refresh`): the preconnect the official client makes before
+    /// every join, which names the connector. `None` rejoins on what the
+    /// link was given.
+    pub refresh: Option<Refresh>,
+}
+
+/// What a [`Refresh`] returns: the room's credentials, fetched again.
+pub type RefreshFuture = Pin<Box<dyn Future<Output = Result<Credentials, Error>> + Send>>;
+
+/// [`Config::refresh`]: asks for the room's credentials again.
+pub type Refresh = Arc<dyn Fn() -> RefreshFuture + Send + Sync>;
+
+/// The credentials a join uses: the link's, then each refresh's.
+struct Creds {
+    url: String,
+    password: String,
+    room_id: String,
 }
 
 impl std::fmt::Debug for Config {
@@ -282,6 +309,7 @@ impl std::fmt::Debug for Config {
             .field("host_ip", &self.host_ip)
             .field("relay_only", &self.relay_only)
             .field("max_joins", &self.max_joins)
+            .field("refresh", &self.refresh.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -294,13 +322,15 @@ pub struct Link {
 impl std::fmt::Debug for Link {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Link")
-            .field("room", &self.sh.cfg.room_id.len())
+            .field("room", &lock(&self.sh.creds).room_id.len())
             .finish_non_exhaustive()
     }
 }
 
 struct Shared {
     cfg: Config,
+    /// The url, password and room the next join uses.
+    creds: Mutex<Creds>,
     host_ip: IpAddr,
     crypto: Arc<CryptoProvider>,
     events: mpsc::Sender<LinkEvent>,
@@ -375,6 +405,9 @@ struct Gen {
     ice: Mutex<HashMap<&'static str, Vec<Candidate>>>,
     ice_servers: Mutex<Vec<wire::IceServer>>,
     roster: Mutex<Roster>,
+    /// When another participant last arrived in [`Gen::roster`]; `None`
+    /// while it holds nobody ([`Gen::wait_peer_settled`]).
+    arrived: watch::Sender<Option<tokio::time::Instant>>,
     confirmed: Mutex<String>,
     win: Mutex<Windows>,
     relay_peers: Mutex<(u32, HashMap<String, RelayPeer>)>,
@@ -407,6 +440,7 @@ impl Gen {
             ice: Mutex::default(),
             ice_servers: Mutex::default(),
             roster: Mutex::default(),
+            arrived: watch::channel(None).0,
             confirmed: Mutex::default(),
             win: Mutex::new(Windows::new(relay_timing())),
             relay_peers: Mutex::new((0, HashMap::new())),
@@ -443,13 +477,62 @@ impl Gen {
         let mut r = lock(&self.roster);
         if !r.peers.contains_key(id) && !r.has_left(id) {
             r.peers.insert(id.to_owned(), String::new());
+            drop(r);
+            self.roster_moved(true, false);
+        }
+    }
+
+    /// `participant-left`: `id` is gone from the room.
+    fn depart(&self, id: &str) {
+        let empty = {
+            let mut r = lock(&self.roster);
+            r.depart(id);
+            r.peers.is_empty()
+        };
+        self.roster_moved(false, empty);
+    }
+
+    /// The roster changed: an empty one forgets the last arrival, and one
+    /// that gained a participant starts the settle again (it may be the
+    /// server rejoining while the SFU still lists its old self).
+    fn roster_moved(&self, arrived: bool, empty: bool) {
+        if empty {
+            self.arrived.send_replace(None);
+        } else if arrived {
+            self.arrived.send_replace(Some(tokio::time::Instant::now()));
+        }
+    }
+
+    /// Waits until a participant has been in this generation's roster for
+    /// [`PEER_SETTLE`] since the last one arrived, and on for as long as the
+    /// roster is empty; the caller bounds it.
+    async fn wait_peer_settled(&self) {
+        let mut rx = self.arrived.subscribe();
+        loop {
+            let since = *rx.borrow_and_update();
+            match since {
+                Some(at) => tokio::select! {
+                    () = tokio::time::sleep_until(at + PEER_SETTLE) => {
+                        if *rx.borrow() == Some(at) {
+                            return;
+                        }
+                    }
+                    r = rx.changed() => if r.is_err() { return },
+                },
+                None => {
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+            }
         }
     }
 
     fn apply_participants(&self, list: &[wire::Participant]) {
         let local = self.local_identity();
         let mut gone = Vec::new();
-        {
+        let mut arrived = false;
+        let empty = {
             let mut r = lock(&self.roster);
             for p in list {
                 if p.identity.is_empty() || p.identity == local {
@@ -463,9 +546,11 @@ impl Gen {
                 if r.has_left(&p.identity) {
                     continue;
                 }
-                r.peers.insert(p.identity.clone(), p.sid.clone());
+                arrived |= r.peers.insert(p.identity.clone(), p.sid.clone()).is_none();
             }
-        }
+            r.peers.is_empty()
+        };
+        self.roster_moved(arrived, empty);
         for id in gone {
             self.forget_relay_peer(&id);
         }
@@ -611,6 +696,40 @@ fn unix_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
+impl Shared {
+    /// The link's shared state, and its reconnect requests' receiver.
+    fn new(
+        cfg: Config,
+        host_ip: IpAddr,
+        events: mpsc::Sender<LinkEvent>,
+    ) -> (Arc<Shared>, mpsc::Receiver<()>) {
+        let (req_tx, req_rx) = mpsc::channel(1);
+        let sh = Arc::new(Shared {
+            creds: Mutex::new(Creds {
+                url: cfg.url.clone(),
+                password: cfg.password.clone(),
+                room_id: cfg.room_id.clone(),
+            }),
+            cfg,
+            host_ip,
+            crypto: olc_rtc::crypto(),
+            events,
+            data: RwLock::new(None),
+            datagram: RwLock::new(None),
+            cur: Mutex::new(None),
+            server: Mutex::default(),
+            closed: AtomicBool::new(false),
+            terminated: AtomicBool::new(false),
+            ended: AtomicBool::new(false),
+            reconnecting: AtomicBool::new(false),
+            requests: req_tx,
+            stop: CancellationToken::new(),
+            lanes: Notify::new(),
+        });
+        (sh, req_rx)
+    }
+}
+
 impl Link {
     /// `New` and `Connect`: joins the room and returns once the publisher's
     /// reliable lane is open; the reconnect watcher runs from then on and
@@ -634,24 +753,7 @@ impl Link {
             None => olc_rtc::ice::default_ipv4()
                 .map_err(|e| Error::Other(format!("salutejazz local address: {e}")))?,
         };
-        let (req_tx, req_rx) = mpsc::channel(1);
-        let sh = Arc::new(Shared {
-            cfg,
-            host_ip,
-            crypto: olc_rtc::crypto(),
-            events,
-            data: RwLock::new(None),
-            datagram: RwLock::new(None),
-            cur: Mutex::new(None),
-            server: Mutex::default(),
-            closed: AtomicBool::new(false),
-            terminated: AtomicBool::new(false),
-            ended: AtomicBool::new(false),
-            reconnecting: AtomicBool::new(false),
-            requests: req_tx,
-            stop: CancellationToken::new(),
-            lanes: Notify::new(),
-        });
+        let (sh, req_rx) = Shared::new(cfg, host_ip, events);
         if let Err(e) = sh.connect_gen().await {
             sh.terminate();
             return Err(e);
@@ -681,6 +783,32 @@ impl Link {
             .current()
             .map(|g| g.local_identity())
             .unwrap_or_default()
+    }
+
+    /// Waits until another participant has settled in the room, for the
+    /// first hello (olc-client's `PipeLink::wait_peer_settled`):
+    /// [`PEER_SETTLE`] past the last arrival in the current generation's
+    /// roster, and on while the roster is empty or no generation is up;
+    /// the caller bounds it. The roster says when the server joined, not
+    /// when its lanes are up: the fake SFU lists everyone `ACTIVE` from its
+    /// join, and the real SFU's states have not been seen.
+    pub async fn wait_peer_settled(&self) {
+        loop {
+            let moved = self.sh.lanes.notified();
+            tokio::pin!(moved);
+            moved.as_mut().enable();
+            match self.sh.current() {
+                Some(g) if !g.is_done() => tokio::select! {
+                    () = g.wait_peer_settled() => return,
+                    () = g.done.cancelled() => {}
+                    () = self.sh.stop.cancelled() => return,
+                },
+                _ => tokio::select! {
+                    () = moved => {}
+                    () = self.sh.stop.cancelled() => return,
+                },
+            }
+        }
     }
 
     /// `PeerSeen`: the confirmed server is in the room.
@@ -872,6 +1000,31 @@ impl Shared {
         lock(&self.cur).take()
     }
 
+    /// `refreshCredentials`: the room's credentials asked for again before
+    /// a rejoin; a field the answer leaves empty keeps what was there
+    /// (`ApplyRefreshedCredentials`).
+    async fn refresh_credentials(&self) -> Result<(), Error> {
+        let Some(refresh) = &self.cfg.refresh else {
+            return Ok(());
+        };
+        let fresh = tokio::select! {
+            r = refresh() => r.map_err(|e| Error::Other(format!("salutejazz reconnect refresh: {e}")))?,
+            () = self.stop.cancelled() => return Err(Error::SessionClosed),
+        };
+        let mut held = lock(&self.creds);
+        let c = &mut *held;
+        for (have, got) in [
+            (&mut c.url, fresh.url),
+            (&mut c.password, fresh.token),
+            (&mut c.room_id, fresh.room_id),
+        ] {
+            if !got.is_empty() {
+                *have = got;
+            }
+        }
+        Ok(())
+    }
+
     /// `queueReconnect`: coalesced into one pending request.
     fn queue_reconnect(&self) {
         if self.closed.load(Ordering::Acquire) || self.reconnecting.load(Ordering::Acquire) {
@@ -905,8 +1058,9 @@ impl Shared {
         request_id: &str,
     ) -> Result<(), Error> {
         let group = lock(&gen.group).clone();
+        let room_id = lock(&self.creds).room_id.clone();
         let env = wire::EnvOut {
-            room_id: &self.cfg.room_id,
+            room_id: &room_id,
             payload,
             event: ev,
             group_id: &group,
@@ -943,7 +1097,8 @@ impl Shared {
             self.abandon(&gen).await;
             return Err(e);
         }
-        let reader = match dial(&self.cfg.url).await {
+        let url = lock(&self.creds).url.clone();
+        let reader = match dial(&url).await {
             Ok((reader, writer)) => {
                 *lock(&gen.ws) = Some(writer);
                 reader
@@ -958,8 +1113,9 @@ impl Shared {
         tokio::spawn(negotiate(self.clone(), gen.clone()));
         let join_id = uuid4();
         join_id.clone_into(&mut lock(&gen.join_req));
+        let password = lock(&self.creds).password.clone();
         let join = wire::JoinRequest {
-            password: &self.cfg.password,
+            password: &password,
             participant_name: &self.cfg.name,
             supported_features: wire::SupportedFeatures {
                 attached_rooms: true,
@@ -1278,7 +1434,10 @@ async fn watch(sh: Arc<Shared>, mut requests: mpsc::Receiver<()>) {
             let result = if sh.terminated.load(Ordering::Acquire) {
                 Err(Error::SessionClosed)
             } else {
-                sh.connect_gen().await
+                match sh.refresh_credentials().await {
+                    Ok(()) => sh.connect_gen().await,
+                    Err(e) => Err(e),
+                }
             };
             sh.reconnecting.store(false, Ordering::Release);
             match result {
@@ -1388,7 +1547,7 @@ async fn handle_envelope(sh: &Arc<Shared>, gen: &Arc<Gen>, frame: wire::EnvIn) {
                 olc_net::debug!("salutejazz: participant-left named nobody");
                 return;
             }
-            lock(&gen.roster).depart(&id);
+            gen.depart(&id);
             gen.forget_relay_peer(&id);
             olc_net::debug!(
                 "salutejazz: participant-left, {} others still in the room",
@@ -1990,6 +2149,121 @@ mod tests {
         assert!(matches!(take_join(max), Err(Error::JoinBudget(m)) if m == max));
         assert!(matches!(take_join(max), Err(Error::JoinBudget(_))));
         take_join(0).unwrap();
+    }
+
+    /// The first hello's wait: on while the roster is empty,
+    /// [`PEER_SETTLE`] past the last arrival (the join's
+    /// `otherParticipants`, `rtc:participants`, a sender seen in data), and
+    /// an empty roster forgets it.
+    #[tokio::test]
+    async fn a_peer_settles_from_the_last_arrival_and_an_empty_roster_forgets_it() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let settling = |g: &Arc<Gen>| {
+                let g = g.clone();
+                tokio::spawn(async move {
+                    let from = tokio::time::Instant::now();
+                    g.wait_peer_settled().await;
+                    from.elapsed()
+                })
+            };
+            let entry = |id: &str, state: &str| wire::Participant {
+                sid: format!("PA_{id}"),
+                identity: id.to_owned(),
+                state: state.to_owned(),
+            };
+            let g = Arc::new(Gen::new());
+            let wait = settling(&g);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!wait.is_finished(), "settled with nobody in the room");
+            let came = tokio::time::Instant::now();
+            g.apply_participants(&[entry("srv", "ACTIVE")]);
+            wait.await.unwrap();
+            assert!(
+                came.elapsed() >= PEER_SETTLE,
+                "settled {:?} after the arrival",
+                came.elapsed()
+            );
+
+            // It left (the SFU's roster): nobody again, so the wait goes on.
+            g.apply_participants(&[entry("srv", "DISCONNECTED")]);
+            let wait = settling(&g);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!wait.is_finished(), "settled after the room emptied");
+            // A sender seen in data counts as an arrival.
+            g.note_peer("srv2");
+            wait.await.unwrap();
+
+            // `participant-left` empties it as well.
+            g.depart("srv2");
+            let wait = settling(&g);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!wait.is_finished(), "settled after participant-left");
+            g.apply_participants(&[entry("srv3", "ACTIVE")]);
+            wait.await.unwrap();
+        })
+        .await
+        .expect("a settle wait did not end");
+    }
+
+    /// `refreshCredentials`: a rejoin asks for the room's credentials
+    /// before it dials, and dials the connector they name; a field the
+    /// refresh leaves empty keeps what was there.
+    #[tokio::test]
+    async fn a_rejoin_asks_for_fresh_credentials_first() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let old = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let new = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let new_url = format!("ws://{}/connector", new.local_addr().unwrap());
+            let calls = Arc::new(AtomicU32::new(0));
+            let refresh: Refresh = {
+                let calls = calls.clone();
+                let url = new_url.clone();
+                Arc::new(move || -> RefreshFuture {
+                    calls.fetch_add(1, Ordering::AcqRel);
+                    let url = url.clone();
+                    Box::pin(async move {
+                        Ok(Credentials {
+                            url,
+                            token: String::new(),
+                            room_id: "r2".into(),
+                        })
+                    })
+                })
+            };
+            let cfg = Config {
+                url: format!("ws://{}/connector", old.local_addr().unwrap()),
+                room_id: "r1".into(),
+                password: "p1".into(),
+                name: "n".into(),
+                host_ip: Some(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+                relay_only: false,
+                max_joins: 0,
+                refresh: Some(refresh),
+            };
+            let (events, _rx) = mpsc::channel(8);
+            let (sh, requests) =
+                Shared::new(cfg, IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), events);
+            tokio::spawn(watch(sh.clone(), requests));
+            sh.queue_reconnect();
+            let (_held, _) = new.accept().await.unwrap();
+            assert_eq!(calls.load(Ordering::Acquire), 1);
+            {
+                let c = lock(&sh.creds);
+                assert_eq!(
+                    (c.url.as_str(), c.password.as_str(), c.room_id.as_str()),
+                    (new_url.as_str(), "p1", "r2")
+                );
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), old.accept())
+                    .await
+                    .is_err(),
+                "the rejoin dialed the old connector"
+            );
+            sh.terminate();
+        })
+        .await
+        .expect("the rejoin never dialed the refreshed connector");
     }
 
     #[test]

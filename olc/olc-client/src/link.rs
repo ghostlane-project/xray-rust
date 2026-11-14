@@ -89,12 +89,35 @@ impl Link {
             }
             ENGINE_INTEROP_PIPE => Ok(Link::Pipe(PipeLink::connect(&cfg.url, events).await?)),
             ENGINE_SALUTEJAZZ => {
-                let (url, password, room_id) = if cfg.provider == PROVIDER_SALUTEJAZZ {
+                let (url, password, room_id, refresh) = if cfg.provider == PROVIDER_SALUTEJAZZ {
                     let c = olc_salutejazz::auth::issue(olc_salutejazz::auth::API_BASE, &cfg.url)
                         .await?;
-                    (c.url, c.token, c.room_id)
+                    // Go's provider hook: the preconnect again before each rejoin.
+                    let room_ref = cfg.url.clone();
+                    let refresh: olc_salutejazz::Refresh =
+                        Arc::new(move || -> olc_salutejazz::RefreshFuture {
+                            let room_ref = room_ref.clone();
+                            Box::pin(async move {
+                                olc_salutejazz::auth::issue(
+                                    olc_salutejazz::auth::API_BASE,
+                                    &room_ref,
+                                )
+                                .await
+                                .map_err(|e| {
+                                    olc_salutejazz::Error::Other(format!(
+                                        "engineconn: provider refresh: {e}"
+                                    ))
+                                })
+                            })
+                        });
+                    (c.url, c.token, c.room_id, Some(refresh))
                 } else {
-                    (cfg.url.clone(), cfg.token.clone(), cfg.room_id.clone())
+                    (
+                        cfg.url.clone(),
+                        cfg.token.clone(),
+                        cfg.room_id.clone(),
+                        None,
+                    )
                 };
                 let jazz = olc_salutejazz::Config {
                     url,
@@ -104,6 +127,7 @@ impl Link {
                     host_ip: cfg.host_ip()?,
                     relay_only: cfg.relay_only()?,
                     max_joins: cfg.max_joins,
+                    refresh,
                 };
                 Ok(Link::SaluteJazz(
                     olc_salutejazz::Link::connect(jazz, events).await?,
@@ -115,15 +139,15 @@ impl Link {
 
     /// Waits until the peer has settled in the room, so the first hello
     /// reaches a peer whose session is in place; the caller bounds it. The
-    /// pipe: [`PipeLink::wait_peer_settled`]; vp8channel: the peer
-    /// connection up for the same settle time
-    /// ([`Vp8Link::wait_peer_settled`]). SaluteJazz has nothing of the kind
-    /// yet and returns at once (Go sends the hello at once).
+    /// pipe: [`PipeLink::wait_peer_settled`]; SaluteJazz:
+    /// `olc_salutejazz::Link`'s, from the room's roster; vp8channel: the
+    /// peer connection up for the pipe's settle time
+    /// ([`Vp8Link::wait_peer_settled`]).
     pub async fn wait_peer_settled(&self) {
         match self {
             Link::Pipe(p) => p.wait_peer_settled().await,
+            Link::SaluteJazz(j) => j.wait_peer_settled().await,
             Link::Vp8(v) => v.wait_peer_settled().await,
-            Link::SaluteJazz(_) => {}
         }
     }
 
