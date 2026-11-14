@@ -1881,6 +1881,129 @@ mod utls_tls_shaping_tests {
         }
     }
 
+    /// A signing key that signs with ML-DSA-65 whenever the client offers it,
+    /// as a server holding an ML-DSA key would, and otherwise as the key it
+    /// wraps. Nothing here implements ML-DSA, so its signature can be any
+    /// bytes of the right length: a client must refuse it without reading it.
+    #[derive(Debug)]
+    struct MlDsaWhenOffered(Arc<dyn rustls::sign::SigningKey>);
+
+    impl rustls::sign::SigningKey for MlDsaWhenOffered {
+        fn choose_scheme(
+            &self,
+            offered: &[rustls::SignatureScheme],
+        ) -> Option<Box<dyn rustls::sign::Signer>> {
+            if offered.contains(&rustls::SignatureScheme::ML_DSA_65) {
+                Some(Box::new(MlDsaSigner))
+            } else {
+                self.0.choose_scheme(offered)
+            }
+        }
+
+        fn algorithm(&self) -> rustls::SignatureAlgorithm {
+            self.0.algorithm()
+        }
+    }
+
+    #[derive(Debug)]
+    struct MlDsaSigner;
+
+    impl rustls::sign::Signer for MlDsaSigner {
+        fn sign(&self, _message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
+            // ML-DSA-65 signatures are 3309 bytes (FIPS 204).
+            Ok(vec![0x5a; 3309])
+        }
+
+        fn scheme(&self) -> rustls::SignatureScheme {
+            rustls::SignatureScheme::ML_DSA_65
+        }
+    }
+
+    /// A TLS listener whose key signs with ML-DSA-65 when the hello offers
+    /// it (`MlDsaWhenOffered`), reporting how its handshake ended.
+    async fn spawn_ml_dsa_signing_tls_server(
+    ) -> (SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["server.test".to_owned()])
+                .expect("a self-signed certificate must generate");
+        let key = rustls::crypto::aws_lc_rs::sign::any_supported_type(&PrivateKeyDer::Pkcs8(
+            PrivatePkcs8KeyDer::from(signing_key.serialize_der()),
+        ))
+        .expect("an ECDSA key");
+        let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("the provider must support the default TLS versions")
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(rustls::sign::SingleCertAndKey::from(
+            rustls::sign::CertifiedKey::new(
+                vec![cert.der().clone()],
+                Arc::new(MlDsaWhenOffered(key)),
+            ),
+        )));
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("loopback listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener must report its address");
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let served = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+            acceptor
+                .accept(stream)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        });
+
+        (addr, served)
+    }
+
+    /// Chrome 156 offers ML-DSA 44, 65 and 87, which no provider here
+    /// implements. A server that signs its CertificateVerify with one is
+    /// refused with an illegal_parameter alert, even by a dial that skips the
+    /// certificate checks (`allow_insecure`): the signature is still checked,
+    /// and one nothing can check is no signature. The same server completes a
+    /// handshake with a hello that offers no ML-DSA.
+    #[tokio::test]
+    async fn a_server_signing_with_ml_dsa_is_refused() {
+        let (addr, served) = spawn_ml_dsa_signing_tls_server().await;
+
+        let error = dial_shaped("chrome", addr)
+            .await
+            .expect_err("an ML-DSA signature cannot be verified here");
+        let TransportError::Tls(error) = error else {
+            panic!("a TLS error, not {error:?}");
+        };
+        assert_eq!(
+            error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+            Some(&rustls::Error::PeerMisbehaved(
+                rustls::PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme
+            )),
+            "{error}"
+        );
+        let refused = served
+            .await
+            .expect("the server task must finish")
+            .expect_err("the client ends the handshake");
+        assert!(refused.contains("IllegalParameter"), "{refused}");
+
+        let (addr, served) = spawn_ml_dsa_signing_tls_server().await;
+        dial_shaped("hellochrome_133", addr)
+            .await
+            .expect("without ML-DSA on offer the server signs with ECDSA");
+        served
+            .await
+            .expect("the server task must finish")
+            .expect("the server's handshake completes");
+    }
+
     #[tokio::test]
     async fn legacy_cipher_advertisement_has_no_chrome_tls12_legacy_server_overlap() {
         let (addr, served) = spawn_tls12_legacy_only_server().await;
