@@ -343,12 +343,13 @@ impl ByteBudget {
         self.settle_if_room();
     }
 
-    /// Has the settler run a round if gates hold credit back and `B` has
-    /// room: after bytes come back, and after the gates' share of the
+    /// Has the settler run a round if gates hold credit back and `B` holds no
+    /// more than its capacity, as `grant` asks of a gate that holds its
+    /// queue: after bytes come back, and after the gates' share of the
     /// windows' part falls. One load while no gate holds credit back, so
     /// the relays' path pays nothing more.
     fn settle_if_room(&self) {
-        if self.withholding.load(Ordering::SeqCst) != 0 && self.in_use() < self.capacity() {
+        if self.withholding.load(Ordering::SeqCst) != 0 && self.in_use() <= self.capacity() {
             self.settle_soon();
         }
     }
@@ -1280,6 +1281,52 @@ mod tests {
         let_the_settler_run().await;
         assert_eq!(budget.withholding.load(Ordering::SeqCst), 0);
         assert!(!budget.lock_withheld().settling, "the settler ended");
+    }
+
+    /// A gate that holds all its queue withholds while `B` holds more than a
+    /// lowered capacity, and grants once `B` holds no more than it: a give
+    /// that brings `B` down to that capacity, not below it, has a round run.
+    #[tokio::test]
+    async fn a_give_down_to_a_lowered_capacity_has_the_settler_run_a_round() {
+        let budget: &'static ByteBudget = Box::leak(Box::new(budget(64 * KIB, 4 * KIB)));
+        let mut gate = ReceiveGate::new(budget);
+        assert_eq!(gate.grant(4 * KIB + 16 * KIB), 0, "nothing read, nothing owed");
+        assert_eq!(gate.held(), 16 * KIB, "the gate holds its queue");
+        gate.consumed(8 * KIB);
+        let mut relay = BudgetPermits::new(budget);
+        assert_eq!(relay.try_hold(48 * KIB), 48 * KIB);
+        budget.set(Some(ByteBudgetSettings {
+            capacity: 48 * KIB,
+            floor: 4 * KIB,
+        }));
+        assert_eq!(
+            gate.grant(4 * KIB + 16 * KIB),
+            0,
+            "B holds more than its capacity"
+        );
+        let listed = Arc::new(CountingGate {
+            settled: AtomicUsize::new(0),
+            withheld: AtomicBool::new(true),
+        });
+        let weak: Weak<CountingGate> = Arc::downgrade(&listed);
+        budget.list_withheld(weak as Weak<dyn WithheldCredit>);
+        let_the_settler_run().await;
+        assert_eq!(listed.settled(), 1, "a listing has a round run");
+
+        relay.try_hold(32 * KIB);
+        assert_eq!(budget.in_use(), budget.capacity(), "B holds its capacity");
+        let_the_settler_run().await;
+        assert_eq!(
+            listed.settled(),
+            2,
+            "bytes came back down to the capacity: a round"
+        );
+        assert_eq!(
+            gate.grant(4 * KIB + 16 * KIB),
+            8 * KIB,
+            "which hands the credit back"
+        );
+        gate.close();
     }
 
     #[test]
