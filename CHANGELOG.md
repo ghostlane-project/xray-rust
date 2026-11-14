@@ -10,29 +10,6 @@ long-term supported release series.
 
 ## Unreleased
 
-- One byte budget for the payload a process holds in flight
-  (`xray_transport::memory_budget`): `B = rate × RTT`, 3,000,000 bytes on a
-  constrained host (200 Mbit/s over 120 ms) and 15,000,000 on a standard
-  one, with a 4 KiB floor per flow outside it. Relay reads and the bytes a
-  relay wrote into a TLS session and has not flushed take bytes of it
-  before they hold payload and give them back once written and flushed;
-  when it is spent a relay reads less, down to its floor, or flushes
-  first, and never allocates past it. Nothing on the wire changes.
-  `set_byte_budget(Some(ByteBudgetSettings { capacity, floor }))` changes
-  it at run time and `None` returns to the formula; `byte_budget()`,
-  `byte_budget_usage()` and `reset_byte_budget_peak()` read it.
-- A relay direction holds no buffer between reads: each read borrows one
-  sized for it (1 KiB to 1 MiB) from the process's pool and gives it back
-  once written, and a read that brings half of its size or less sets the
-  next size from what it brought. A constrained host's reads stop at
-  32 KiB when the config sets no `bufferSize` (128 KiB before; a standard
-  host keeps 128 KiB): 200 Mbit/s × a 1 ms scheduler slice. The pool keeps
-  at most four 128 KiB buffers' worth on a constrained host (sixteen
-  before), sixty-four on a standard one. `xray_core_rs::release_relay_buffers()` frees what the pool
-  and the threads keep, for a host under memory pressure.
-- Vision gives back its frame buffers once a frame is written or read,
-  rather than keeping up to 64 KiB and its padding for the flow's life.
-
 - `xray_core_reset_network(handle, closed, error)` (ABI 1.18, under
   `CONNECTION_MANAGEMENT`; no new capability bit) resets the network under a
   running core, as sing-box's `resetNetwork` does for a host whose device
@@ -127,6 +104,29 @@ long-term supported release series.
   not be a `dns`, `blackhole` or `loopback` one. Xray-core has no such action
   and refuses a config that uses it. Configs without a forward rule behave as
   before.
+
+- One byte budget for the payload a process holds in flight
+  (`xray_transport::memory_budget`): `B = rate × RTT`, 3,000,000 bytes on a
+  constrained host (200 Mbit/s over 120 ms) and 15,000,000 on a standard
+  one, with a 4 KiB floor per flow outside it. Relay reads and the bytes a
+  relay wrote into a TLS session and has not flushed take bytes of it
+  before they hold payload and give them back once written and flushed;
+  when it is spent a relay reads less, down to its floor, or flushes
+  first, and never allocates past it. Nothing on the wire changes.
+  `set_byte_budget(Some(ByteBudgetSettings { capacity, floor }))` changes
+  it at run time and `None` returns to the formula; `byte_budget()`,
+  `byte_budget_usage()` and `reset_byte_budget_peak()` read it.
+- A relay direction holds no buffer between reads: each read borrows one
+  sized for it (1 KiB to 1 MiB) from the process's pool and gives it back
+  once written, and a read that brings half of its size or less sets the
+  next size from what it brought. A constrained host's reads stop at
+  32 KiB when the config sets no `bufferSize` (128 KiB before; a standard
+  host keeps 128 KiB): 200 Mbit/s × a 1 ms scheduler slice. The pool keeps
+  at most four 128 KiB buffers' worth on a constrained host (sixteen
+  before), sixty-four on a standard one. `xray_core_rs::release_relay_buffers()` frees what the pool
+  and the threads keep, for a host under memory pressure.
+- Vision gives back its frame buffers once a frame is written or read,
+  rather than keeping up to 64 KiB and its padding for the flow's life.
 
 ## 0.10.0 - 2026-11-13
 
