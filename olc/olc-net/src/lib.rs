@@ -17,7 +17,7 @@
 //! Moved out of `olc-client` so the engines (`olc-rtc`, the carriers) share
 //! one protector and one log with the client.
 
-// Only `sys` may use `unsafe`, for its one call into the C library.
+// Only `sys` may use `unsafe`, for its call into the C library.
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
@@ -29,7 +29,7 @@ pub mod resolver;
 #[cfg(feature = "shaped-tls")]
 pub mod shaped_tls;
 pub mod stream;
-pub mod sys;
+mod sys;
 pub mod ws;
 
 /// Bounds for this crate's tests: a stuck test fails instead of holding the

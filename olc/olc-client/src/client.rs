@@ -1066,7 +1066,7 @@ mod tests {
             None,
             move |inner| {
                 let Link::Pipe(link) = &inner.link else {
-                    unreachable!("the test hub's config names the pipe")
+                    panic!("the test hub's run is on the interop pipe");
                 };
                 let _ = tx.send((Arc::downgrade(inner), Arc::downgrade(link)));
             },

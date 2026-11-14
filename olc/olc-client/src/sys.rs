@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The few calls into the C library the client needs: the file limit at
-//! start (a scoped address's interface is `olc_net::sys::if_index`, where
-//! the resolver is). The only `unsafe` in the crate.
+//! start. The only `unsafe` in the crate. (A scoped address's interface,
+//! which the resolver needs, is in `olc_net::sys` with the resolver.)
 //!
 //! [`raise_nofile_limit`] is xray-cli's (`crates/xray-cli/src/lib.rs`,
 //! `raise_nofile_limit`), carried here so the engine needs none of the Xray

@@ -450,14 +450,14 @@ mod tests {
     fn debug_prints_neither_the_key_nor_the_socks_password() {
         let key = "ab".repeat(32);
         let cfg = Config::from_json(
-            format!(r#"{{"url":"u","key":"{key}","token":"roompass1","socks_user":"me","socks_pass":"hunter22"}}"#)
+            format!(r#"{{"url":"u","key":"{key}","token":"room-pass-9","socks_user":"me","socks_pass":"hunter22"}}"#)
                 .as_bytes(),
         )
         .unwrap();
         let shown = format!("{cfg:?}");
         assert!(!shown.contains(&key), "{shown}");
+        assert!(!shown.contains("room-pass-9"), "{shown}");
         assert!(!shown.contains("hunter22"), "{shown}");
-        assert!(!shown.contains("roompass1"), "{shown}");
         assert!(shown.contains("socks_user: \"me\""), "{shown}");
     }
 
