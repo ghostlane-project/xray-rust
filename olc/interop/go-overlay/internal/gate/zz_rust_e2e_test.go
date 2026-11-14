@@ -16,8 +16,13 @@
 //     tears the session down and, once the room relays again, it reopens;
 //   - egress refusal: a server without the private-target switch refuses a
 //     loopback target; the client answers the SOCKS request host-unreachable;
-//   - peer close: the server stops and says CONTROL_CLOSE; the client tears
-//     down with reason peer-close and reopens on the next server.
+//   - server restart (the peer close): the server process stops and another
+//     starts in the room. The pinned server, with no peer ids on this
+//     transport, says CONTROL_CLOSE only from closeSession at its shutdown,
+//     and that notice races shutdown's own close of the transport
+//     (server.go:231-246, link.go:366-424), so the client learns of the stop
+//     from the notice or from liveness; either way it reopens on the new
+//     server. The notice itself is held by olc-client's control tests.
 
 package gate
 
@@ -302,16 +307,27 @@ func TestRustE2E(t *testing.T) {
 		waitLog(t, log, "remote not ready (connect ack=0x04)", 1, 5*time.Second)
 	})
 
-	t.Run("peer close", func(t *testing.T) {
+	t.Run("server restart", func(t *testing.T) {
 		env.t = t
 		_, ep := env.room(env.key())
 		stop := env.server(ep, []string{ep.Key}, true)
 		log := capture.Begin()
-		socks, _ := env.client(ep, nil)
+		socks, _ := env.client(ep, func(c *rustConfig) {
+			c.Liveness = &rustLiveness{IntervalMS: 1000, TimeoutMS: 2000, Failures: 3}
+			c.LivenessFallbackMS = 3000
+		})
 		env.pullSoon(socks, 10*time.Second)
 		stop()
-		waitLog(t, log, "control stream closed by peer", 1, 15*time.Second)
-		waitLog(t, log, "client reconnect reason=peer-close", 1, 15*time.Second)
+		deadline := time.Now().Add(30 * time.Second)
+		for log.Count("client reconnect reason=peer-close")+log.Count("client reconnect reason=liveness") == 0 {
+			if time.Now().After(deadline) {
+				t.Fatalf("the client did not give the stopped server's session up within 30s:\n%s",
+					tail(log.Text(), 30))
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		t.Logf("the stopped server's session ended: peer-close %d, liveness %d",
+			log.Count("client reconnect reason=peer-close"), log.Count("client reconnect reason=liveness"))
 		defer env.server(ep, []string{ep.Key}, true)()
 		waitLog(t, log, " reopened (device=", 1, 90*time.Second)
 		env.pullSoon(socks, 20*time.Second)

@@ -54,6 +54,17 @@ pub const REASON_HANDSHAKE: &str = "handshake";
 /// `reconnectPeerClose`: the server said `CONTROL_CLOSE`.
 pub const REASON_PEER_CLOSE: &str = "peer-close";
 
+/// The reconnect reason for how a control loop that was not stopped ended
+/// (health.go's `OnDeath`): a close the peer sent is peer-close, anything
+/// else liveness.
+fn death_reason(end: &End) -> &'static str {
+    if *end == End::ClosedByPeer {
+        REASON_PEER_CLOSE
+    } else {
+        REASON_LIVENESS
+    }
+}
+
 /// `maxRecoveryPause`: the longest pause between recovery rounds.
 pub const MAX_RECOVERY_PAUSE: Duration = Duration::from_secs(300);
 /// `maxRecoveryBackoff`: the pause doubles at most this many times.
@@ -557,11 +568,7 @@ impl Inner {
             if stop.is_cancelled() {
                 return;
             }
-            let reason = if end == End::ClosedByPeer {
-                REASON_PEER_CLOSE
-            } else {
-                REASON_LIVENESS
-            };
+            let reason = death_reason(&end);
             if let Some(inner) = me.upgrade() {
                 inner.on_session_death(id, reason).await;
             }
@@ -891,6 +898,13 @@ pub(crate) enum WaitRefused {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_close_from_the_peer_is_peer_close_and_any_other_end_liveness() {
+        assert_eq!(death_reason(&End::ClosedByPeer), "peer-close");
+        assert_eq!(death_reason(&End::Failed("control: EOF".into())), "liveness");
+        assert_eq!(death_reason(&End::Unhealthy("control stream unhealthy".into())), "liveness");
+    }
 
     #[test]
     fn a_device_id_is_a_v4_uuid() {

@@ -388,6 +388,60 @@ mod tests {
         assert!(matches!(p.tick(at(100), 9, false, T, 4), Tick::Ping { missed: Some(1), .. }));
     }
 
+    /// A client and a server smux session over memory, keepalive off.
+    fn smux_pair() -> (olc_smux::Session, olc_smux::Session) {
+        let (a, b) = tokio::io::duplex(1 << 16);
+        let mut cfg = olc_smux::Config::client_data(12288, false);
+        cfg.keep_alive = None;
+        let (c, cd) = olc_smux::Session::client(a, cfg.clone()).unwrap();
+        let (s, sd) = olc_smux::Session::server(b, cfg).unwrap();
+        tokio::spawn(cd);
+        tokio::spawn(sd);
+        (c, s)
+    }
+
+    fn quiet_hooks() -> Hooks {
+        Hooks {
+            fields: "role=client session=t".into(),
+            progress: Box::new(|| 0),
+            send_stalled: Box::new(|| false),
+            on_pong: Box::new(|_| {}),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_close_from_the_peer_ends_the_loop_closed_by_peer() {
+        crate::testing::bounded(async {
+            let (c, s) = smux_pair();
+            let ours = c.open_stream().await.unwrap();
+            let mut theirs = s.accept_stream().await.unwrap();
+            let mut out = Vec::new();
+            control::encode(&Message::close(), &mut out).unwrap();
+            theirs.write_all(&out).await.unwrap();
+            let end = run(ours, Liveness::default(), quiet_hooks(), CancellationToken::new()).await;
+            assert_eq!(end, End::ClosedByPeer);
+            assert_eq!(end.to_string(), "control stream closed by peer");
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_stop_says_control_close_to_the_peer_first() {
+        crate::testing::bounded(async {
+            let (c, s) = smux_pair();
+            let ours = c.open_stream().await.unwrap();
+            let mut theirs = s.accept_stream().await.unwrap();
+            let stop = CancellationToken::new();
+            let looped = tokio::spawn(run(ours, Liveness::default(), quiet_hooks(), stop.clone()));
+            stop.cancel();
+            assert_eq!(looped.await.unwrap(), End::Stopped);
+            let mut buf = Vec::new();
+            crate::frames::read_frame(&mut theirs, MAX_MESSAGE_SIZE, &mut buf).await.unwrap();
+            assert_eq!(control::parse(&buf).unwrap().kind, MsgType::Close);
+        })
+        .await;
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_stalled_data_plane_ends_it_at_once() {
         crate::testing::bounded(a_stalled_data_plane_ends_it_at_once_body()).await;
