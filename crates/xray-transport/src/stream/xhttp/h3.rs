@@ -689,11 +689,17 @@ pub(crate) const QUIC_MAX_SEND_WINDOW: u64 = 10_000_000;
 /// Uploaded bytes between send-window growth samples.
 pub(crate) const QUIC_SEND_WINDOW_SAMPLE_BYTES: usize = 1024 * 1024;
 
-/// One connection's send window, grown toward twice its congestion window.
+/// One connection's send window, grown toward twice its congestion window
+/// and held within the limit a byte budget sets ([`Self::limit`]).
 #[derive(Debug)]
 pub(crate) struct QuicSendWindow {
+    /// The window grown so far.
     window: AtomicU64,
     ceiling: u64,
+    /// The most a byte budget lets the window be: unlimited unless set.
+    limit: AtomicU64,
+    /// The window set on the connection last.
+    set: AtomicU64,
 }
 
 impl QuicSendWindow {
@@ -703,6 +709,8 @@ impl QuicSendWindow {
         Self {
             window: AtomicU64::new(QUIC_INITIAL_SEND_WINDOW),
             ceiling: ceiling.max(QUIC_INITIAL_SEND_WINDOW),
+            limit: AtomicU64::new(u64::MAX),
+            set: AtomicU64::new(QUIC_INITIAL_SEND_WINDOW),
         }
     }
 
@@ -720,8 +728,26 @@ impl QuicSendWindow {
         }
         let target = quic_send_window(connection.stats().path.cwnd, self.ceiling);
         if target > current {
-            connection.set_send_window(target);
             self.window.store(target, Ordering::Relaxed);
+            self.apply(connection);
+        }
+    }
+
+    /// Holds the window at `limit` at most, from now on: a byte budget's
+    /// share. The window grows back to what it has grown to as the limit
+    /// rises.
+    pub(crate) fn limit(&self, connection: &quinn::Connection, limit: u64) {
+        self.limit.store(limit, Ordering::Relaxed);
+        self.apply(connection);
+    }
+
+    fn apply(&self, connection: &quinn::Connection) {
+        let window = self
+            .window
+            .load(Ordering::Relaxed)
+            .min(self.limit.load(Ordering::Relaxed));
+        if self.set.swap(window, Ordering::Relaxed) != window {
+            connection.set_send_window(window);
         }
     }
 }

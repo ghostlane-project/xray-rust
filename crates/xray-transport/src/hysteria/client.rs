@@ -15,6 +15,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use zeroize::Zeroizing;
 
+use crate::memory_budget::{ByteBudget, WindowLease};
 use crate::quic_congestion::ControllerSwitch;
 use crate::stream::{
     configure_quic_datagram_socket, connect_quic_transport_with_datagrams, H3ConnectConfig,
@@ -161,6 +162,12 @@ pub struct HysteriaConfig {
     pub receive_bytes_per_second: u64,
     /// What a `realm` mask in `carrier` takes from the dial.
     pub realm: Option<crate::realm::RealmEnv>,
+    /// The byte budget the connection's windows are held within: the
+    /// process's ([`ByteBudget::process`]) unless set. While TCP streams are
+    /// open the receive window and the send window each run at the flow
+    /// floor plus their share of `B`, at most as configured; with none open,
+    /// at the floor. The handshake still announces `quic`'s windows.
+    pub byte_budget: &'static ByteBudget,
 }
 
 impl HysteriaConfig {
@@ -200,6 +207,7 @@ impl HysteriaConfig {
             },
             receive_bytes_per_second: 0,
             realm: None,
+            byte_budget: ByteBudget::process(),
         }
     }
 }
@@ -283,9 +291,20 @@ struct RebindRequest {
     wake: Notify,
 }
 
+/// A Hysteria connection's windows within a byte budget.
+struct HysteriaBudget {
+    receive: WindowLease<'static>,
+    send: WindowLease<'static>,
+    /// The connection receive window the handshake announced.
+    announced_receive: u64,
+    /// The receive window set on the connection last.
+    receive_window: u64,
+}
+
 pub(super) struct Shared {
     connection: Mutex<Option<Connection>>,
     send_window: QuicSendWindow,
+    budget: Mutex<HysteriaBudget>,
     endpoint: Mutex<Option<Endpoint>>,
     // Last h3 SendRequest drop closes its connection. Retain it after auth.
     auth_sender: Mutex<Option<AuthSender>>,
@@ -315,6 +334,35 @@ impl Shared {
         if let Some(connection) = guard.as_ref() {
             self.send_window.grow(connection);
         }
+    }
+
+    /// Sizes the connection's windows within the byte budget: the floor and
+    /// a share of `B` each while TCP streams are open, the floor when none
+    /// is. Called as streams open and close, and every
+    /// [`super::tcp::BUDGET_SAMPLE_BYTES`] a stream moves, so that the
+    /// shares follow the other windows of the process.
+    ///
+    /// A smaller receive window delays quinn's MAX_DATA until the reader
+    /// has taken the difference; it takes back no credit the peer has.
+    pub(super) fn fit_windows(&self) {
+        let open_streams = self
+            .limits
+            .max_tcp_streams
+            .saturating_sub(self.tcp_slots.available_permits());
+        let active = open_streams > 0 && !self.closed.load(Ordering::Acquire);
+        let guard = self.connection.lock().unwrap_or_else(|e| e.into_inner());
+        let mut budget = self.budget.lock().unwrap_or_else(|e| e.into_inner());
+        let announced = budget.announced_receive;
+        let receive = budget.receive.refresh(announced, active);
+        let send = budget.send.refresh(self.send_window.ceiling(), active);
+        let Some(connection) = guard.as_ref() else {
+            return;
+        };
+        if receive != budget.receive_window {
+            budget.receive_window = receive;
+            connection.set_receive_window(VarInt::from_u64(receive).unwrap_or(VarInt::MAX));
+        }
+        self.send_window.limit(connection, send);
     }
 
     pub fn is_live(&self) -> bool {
@@ -359,6 +407,8 @@ impl Shared {
             task.abort();
         }
         self.tcp_slots.close();
+        // Closed: the windows give their bytes of the budget back.
+        self.fit_windows();
         self.h3_driver.abort();
         if let Some(task) = self
             .udp_driver
@@ -601,6 +651,12 @@ impl HysteriaClient {
         let shared = Arc::new(Shared {
             connection: Mutex::new(Some(pending.connection.clone())),
             send_window: QuicSendWindow::new(config.limits.max_send_window),
+            budget: Mutex::new(HysteriaBudget {
+                receive: WindowLease::new(config.byte_budget),
+                send: WindowLease::new(config.byte_budget),
+                announced_receive: config.quic.populated().initial_connection_receive_window,
+                receive_window: config.quic.populated().initial_connection_receive_window,
+            }),
             endpoint: Mutex::new(pending.endpoint.take()),
             auth_sender: Mutex::new(Some(sender)),
             h3_driver: pending.driver.take().expect("started H3 driver"),

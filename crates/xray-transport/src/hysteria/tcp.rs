@@ -20,6 +20,11 @@ use crate::stream::QUIC_SEND_WINDOW_SAMPLE_BYTES;
 use crate::TransportStream;
 
 const RESPONSE_HEADER_LIMIT: usize = 1 + 8 + MAX_MESSAGE_LENGTH + 8 + MAX_PADDING_LENGTH;
+/// Bytes a stream reads between refits of its connection's windows to the
+/// byte budget ([`Shared::fit_windows`]): 256 KiB, a twelfth of a
+/// constrained connection's 3 MiB, so a share follows the other windows of
+/// the process within a fraction of the window.
+pub(super) const BUDGET_SAMPLE_BYTES: usize = 256 * 1024;
 
 struct PendingStream {
     streams: Option<(SendStream, RecvStream)>,
@@ -39,8 +44,11 @@ pub struct HysteriaTcpStream {
     prefix: Bytes,
     send_finished: bool,
     bytes_since_window_sample: usize,
-    _connection: Arc<Shared>,
-    _slot: OwnedSemaphorePermit,
+    bytes_since_budget_sample: usize,
+    connection: Arc<Shared>,
+    /// Given back first when the stream is dropped, so that the windows are
+    /// fitted to the streams still open.
+    slot: Option<OwnedSemaphorePermit>,
 }
 
 impl HysteriaClient {
@@ -55,7 +63,9 @@ impl HysteriaClient {
                 TryAcquireError::Closed => HysteriaError::Closed,
                 TryAcquireError::NoPermits => HysteriaError::SessionLimit,
             })?;
-        timeout(self.shared.limits.operation_timeout, async {
+        // The response comes through the windows the open stream is due.
+        self.shared.fit_windows();
+        let opened = timeout(self.shared.limits.operation_timeout, async {
             let streams = self
                 .shared
                 .connection()?
@@ -107,12 +117,19 @@ impl HysteriaClient {
                 prefix,
                 send_finished: false,
                 bytes_since_window_sample: 0,
-                _connection: Arc::clone(&self.shared),
-                _slot: slot,
+                bytes_since_budget_sample: 0,
+                connection: Arc::clone(&self.shared),
+                slot: Some(slot),
             })
         })
         .await
-        .map_err(|_| HysteriaError::Timeout)?
+        .map_err(|_| HysteriaError::Timeout)
+        .and_then(|opened| opened);
+        if opened.is_err() {
+            // The slot went with the attempt.
+            self.shared.fit_windows();
+        }
+        opened
     }
 }
 
@@ -132,7 +149,16 @@ impl AsyncRead for HysteriaTcpStream {
             }
             return Poll::Ready(Ok(()));
         }
-        redact_io(AsyncRead::poll_read(Pin::new(&mut this.recv), cx, output))
+        let before = output.filled().len();
+        let result = redact_io(AsyncRead::poll_read(Pin::new(&mut this.recv), cx, output));
+        if let Poll::Ready(Ok(())) = result {
+            this.bytes_since_budget_sample += output.filled().len() - before;
+            if this.bytes_since_budget_sample >= BUDGET_SAMPLE_BYTES {
+                this.bytes_since_budget_sample = 0;
+                this.connection.fit_windows();
+            }
+        }
+        result
     }
 }
 
@@ -148,7 +174,8 @@ impl AsyncWrite for HysteriaTcpStream {
             this.bytes_since_window_sample += written;
             if this.bytes_since_window_sample >= QUIC_SEND_WINDOW_SAMPLE_BYTES {
                 this.bytes_since_window_sample = 0;
-                this._connection.grow_send_window();
+                this.connection.grow_send_window();
+                this.connection.fit_windows();
             }
         }
         result
@@ -192,6 +219,8 @@ impl Drop for HysteriaTcpStream {
             let _ = self.send.reset(VarInt::from_u32(0));
         }
         let _ = self.recv.stop(VarInt::from_u32(0));
+        self.slot.take();
+        self.connection.fit_windows();
     }
 }
 

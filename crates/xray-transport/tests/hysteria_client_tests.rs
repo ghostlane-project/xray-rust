@@ -16,6 +16,7 @@ use tokio::time::timeout;
 use xray_proxy::hysteria::{decode_tcp_request, decode_udp_message};
 use xray_routing::{Network, Target, TargetAddr};
 use xray_transport::hysteria::{HysteriaClient, HysteriaConfig, HysteriaError, HysteriaWindows};
+use xray_transport::memory_budget::{ByteBudget, ByteBudgetSettings};
 use xray_transport::{MemoryClass, SocketHandle, SocketProtector, TlsConnector};
 
 #[derive(Clone, Copy)]
@@ -494,6 +495,56 @@ async fn a_constrained_host_holds_less_unread_and_still_moves_more_than_its_wind
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn a_connection_holds_its_windows_within_a_byte_budget() {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * KIB;
+    let budget: &'static ByteBudget =
+        Box::leak(Box::new(ByteBudget::with_settings(ByteBudgetSettings {
+            capacity: 300 * KIB,
+            floor: 4 * KIB,
+        })));
+    let (echo, echo_tls) = Mock::start(Mode::Echo);
+    let mut config = echo.config_on(MemoryClass::Constrained);
+    config.byte_budget = budget;
+    let client = HysteriaClient::connect(config, &echo_tls).await.unwrap();
+    assert_eq!(budget.in_use(), 0, "no stream is open: nothing held");
+
+    let stream = client.open_tcp(&target()).await.unwrap();
+    // The receive window takes half of B, the send window a third.
+    assert_eq!(budget.usage().windows, 2);
+    assert_eq!(budget.in_use(), 150 * KIB + 100 * KIB);
+
+    // Through those windows 4 MiB go out and come back whole.
+    let data: Vec<u8> = (0..4 * MIB).map(|i| (i % 251) as u8).collect();
+    let (mut reader, mut writer) = tokio::io::split(stream);
+    let sent = data.clone();
+    let writing = async move {
+        writer.write_all(&sent).await.unwrap();
+        writer.shutdown().await.unwrap();
+        writer
+    };
+    let mut echoed = Vec::new();
+    let (writer, read) = timeout(Duration::from_secs(60), async {
+        tokio::join!(writing, reader.read_to_end(&mut echoed))
+    })
+    .await
+    .unwrap();
+    read.unwrap();
+    assert!(
+        echoed == data,
+        "{} of {} bytes came back",
+        echoed.len(),
+        data.len()
+    );
+    assert!(budget.usage().peak <= 300 * KIB);
+
+    drop(reader.unsplit(writer));
+    assert_eq!(budget.in_use(), 0, "the windows gave their bytes back");
+    assert_eq!(budget.usage().windows, 0);
+    client.close();
 }
 
 #[tokio::test]
