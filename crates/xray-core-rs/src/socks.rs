@@ -1,5 +1,6 @@
 mod datagram;
 pub(crate) mod tproxy;
+mod udp_scratch;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -55,7 +56,6 @@ use crate::policy::copy_bidirectional_with_idle_timeout_and_traffic as relay_tcp
 #[cfg(target_os = "linux")]
 use crate::policy::copy_bidirectional_with_splice as relay_tcp;
 
-const SOCKS_UDP_BUFFER_SIZE: usize = 65_536;
 const SOCKS_DNS_UDP_PATH_PAYLOAD_CAP: usize = 65_245;
 const SOCKS_UDP_FLOW_QUEUE: usize = 32;
 const SOCKS_UDP_MAX_FLOWS_PER_ASSOCIATION: usize = 128;
@@ -1192,7 +1192,6 @@ async fn handle_socks_udp_associate(
     let mut flows = HashMap::<(SocketAddr, Target), SocksUdpFlowEntry>::new();
     let mut flow_tasks = JoinSet::new();
     let mut activity_sequence = 0u64;
-    let mut buffer = vec![0; SOCKS_UDP_BUFFER_SIZE];
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -1223,14 +1222,14 @@ async fn handle_socks_udp_associate(
                     None => {}
                 }
             }
-            received = socket.recv_from(&mut buffer) => {
-                let Ok((len, client_addr)) = received else {
+            received = udp_scratch::recv_with(&socket, |datagram, client_addr| {
+                (client_addr, client_lock.as_mut().is_none_or(|lock| lock.admits(client_addr))
+                    .then(|| parse_socks5_udp_datagram(datagram)))
+            }) => {
+                let Ok((client_addr, parsed)) = received else {
                     break;
                 };
-                if client_lock.as_mut().is_some_and(|lock| !lock.admits(client_addr)) {
-                    continue;
-                }
-                let Ok(datagram) = parse_socks5_udp_datagram(&buffer[..len]) else {
+                let Some(Ok(datagram)) = parsed else {
                     continue;
                 };
                 // Xray-core drops a datagram without a payload.
@@ -2398,7 +2397,7 @@ async fn bridge_socks_udp_freedom_flow(
     }
     traffic.record_uplink(first_payload_len as u64);
     drop(pending_open_permit);
-    let mut buffer = vec![0; SOCKS_UDP_BUFFER_SIZE];
+    let mut masked_spare = Vec::new();
 
     loop {
         tokio::select! {
@@ -2422,10 +2421,11 @@ async fn bridge_socks_udp_freedom_flow(
                 }
                 traffic.record_uplink(payload_len as u64);
             }
-            received = remote_socket.recv_from(&mut buffer) => {
-                let Ok((len, source)) = received else {
+            received = udp_scratch::recv_freedom(&remote_socket, &mut masked_spare) => {
+                let Ok((buffer, source)) = received else {
                     break;
                 };
+                let len = buffer.len();
                 if final_rules::blocks(rules, xray_config::Network::Udp, source) {
                     continue;
                 }
