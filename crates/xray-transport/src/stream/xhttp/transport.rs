@@ -381,6 +381,21 @@ impl XhttpTransport {
         &self.endpoint
     }
 
+    /// The HTTP/2 request of one packet-up POST of `payload`, composed and
+    /// converted exactly as the packet worker does it for an H2 upload.
+    /// Seam for the allocation-count tests; the payload is dropped.
+    #[doc(hidden)]
+    pub fn h2_packet_request_for_test(
+        &self,
+        session: &str,
+        sequence: i64,
+        payload: Vec<u8>,
+    ) -> Result<Request<()>, XhttpTransportError> {
+        let mut prepared = self.compose_packet(session, &sequence.to_string(), payload)?;
+        let body = take_packet_body(&mut prepared.request)?;
+        h2_request(&prepared.request, &self.endpoint, Some(body.len()))
+    }
+
     #[doc(hidden)]
     pub fn shares_xmux_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.xmux, &other.xmux)

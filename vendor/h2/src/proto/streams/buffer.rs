@@ -97,3 +97,32 @@ impl Deque {
         }
     }
 }
+
+/// xray-rust: the slots a drained buffer keeps.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A buffer that queued many frames and was drained gives their slots
+    /// back, keeping at most 4 KiB of them; one that queued a few keeps them.
+    #[test]
+    fn a_drained_buffer_gives_its_slots_back() {
+        let slot = std::mem::size_of::<Slot<[u8; 200]>>();
+        let mut buf: Buffer<[u8; 200]> = Buffer::new();
+        let mut deque = Deque::new();
+        for _ in 0..512 {
+            deque.push_back(&mut buf, [0; 200]);
+        }
+        while deque.pop_front(&mut buf).is_some() {}
+        assert!(buf.is_empty());
+        let kept = buf.slab.capacity() * slot;
+        assert!(kept <= 4 * 1024, "a drained buffer keeps {} B of slots", kept);
+
+        for _ in 0..4 {
+            deque.push_back(&mut buf, [0; 200]);
+        }
+        let capacity = buf.slab.capacity();
+        while deque.pop_front(&mut buf).is_some() {}
+        assert_eq!(buf.slab.capacity(), capacity, "a few slots are kept");
+    }
+}

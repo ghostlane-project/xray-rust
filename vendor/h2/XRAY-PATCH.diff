@@ -127,6 +127,236 @@
              },
          );
          let send_request = SendRequest {
+--- a/src/codec/framed_read.rs
++++ b/src/codec/framed_read.rs
+@@ -491,3 +491,227 @@
+         }
+     }
+ }
++
++/// xray-rust: frames as the reader hands them on, however the bytes arrive.
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::codec::Codec;
++    use crate::proto::Initiator;
++
++    use bytes::Bytes;
++    use std::collections::VecDeque;
++    use std::sync::Arc;
++    use std::task::{Wake, Waker};
++    use tokio::io::{AsyncWrite, ReadBuf};
++
++    /// What the peer's side of the connection does at each read.
++    #[derive(Debug)]
++    enum Step {
++        Bytes(Vec<u8>),
++        Pending,
++        Eof,
++    }
++
++    /// A connection that plays `steps`; once they are over, it is at EOF.
++    #[derive(Debug)]
++    struct Script(VecDeque<Step>);
++
++    impl AsyncRead for Script {
++        fn poll_read(
++            mut self: Pin<&mut Self>,
++            cx: &mut Context<'_>,
++            buf: &mut ReadBuf<'_>,
++        ) -> Poll<io::Result<()>> {
++            match self.0.pop_front() {
++                None | Some(Step::Eof) => Poll::Ready(Ok(())),
++                Some(Step::Pending) => {
++                    cx.waker().wake_by_ref();
++                    Poll::Pending
++                }
++                Some(Step::Bytes(mut bytes)) => {
++                    let n = bytes.len().min(buf.remaining());
++                    buf.put_slice(&bytes[..n]);
++                    if n < bytes.len() {
++                        bytes.drain(..n);
++                        self.0.push_front(Step::Bytes(bytes));
++                    }
++                    Poll::Ready(Ok(()))
++                }
++            }
++        }
++    }
++
++    impl AsyncWrite for Script {
++        fn poll_write(
++            self: Pin<&mut Self>,
++            _: &mut Context<'_>,
++            buf: &[u8],
++        ) -> Poll<io::Result<usize>> {
++            Poll::Ready(Ok(buf.len()))
++        }
++
++        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++
++        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++    }
++
++    struct NoWake;
++
++    impl Wake for NoWake {
++        fn wake(self: Arc<Self>) {}
++    }
++
++    fn codec_for(steps: Vec<Step>) -> Codec<Script, Bytes> {
++        Codec::new(Script(steps.into()))
++    }
++
++    /// Polls until the codec is ready: a `Pending` step wakes at once.
++    fn next(codec: &mut Codec<Script, Bytes>) -> Option<Result<Frame, Error>> {
++        let waker = Waker::from(Arc::new(NoWake));
++        let mut cx = Context::from_waker(&waker);
++        for _ in 0..1_000_000 {
++            if let Poll::Ready(item) = Pin::new(&mut *codec).poll_next(&mut cx) {
++                return item;
++            }
++        }
++        panic!("the codec never became ready");
++    }
++
++    fn raw_frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
++        let len = payload.len() as u32;
++        let mut frame = vec![(len >> 16) as u8, (len >> 8) as u8, len as u8, kind, flags];
++        frame.extend_from_slice(&stream.to_be_bytes());
++        frame.extend_from_slice(payload);
++        frame
++    }
++
++    fn data(stream: u32, payload: &[u8]) -> Vec<u8> {
++        raw_frame(0x0, 0, stream, payload)
++    }
++
++    fn ping(payload: [u8; 8]) -> Vec<u8> {
++        raw_frame(0x6, 0, 0, &payload)
++    }
++
++    fn data_payload(item: Option<Result<Frame, Error>>) -> Bytes {
++        match item {
++            Some(Ok(Frame::Data(data))) => data.into_payload(),
++            other => panic!("expected a DATA frame, got {:?}", other),
++        }
++    }
++
++    fn pattern(len: usize, seed: u8) -> Vec<u8> {
++        (0..len).map(|i| (i as u8).wrapping_mul(31) ^ seed).collect()
++    }
++
++    /// Two DATA frames that arrive in one read: each frame's payload is an
++    /// allocation of its own from the moment it is decoded, not a share of a
++    /// read buffer that the next frame's bytes keep alive while the payload
++    /// waits in a stream's queue.
++    #[test]
++    fn a_data_frame_owns_its_bytes() {
++        let first = pattern(8 * 1024, 1);
++        let second = pattern(8 * 1024, 2);
++        let mut wire = data(1, &first);
++        wire.extend(data(1, &second));
++        let mut codec = codec_for(vec![Step::Bytes(wire)]);
++
++        let first_payload = data_payload(next(&mut codec));
++        assert_eq!(first_payload, first);
++        assert!(
++            first_payload.is_unique(),
++            "the first frame's payload shares its allocation with the read buffer"
++        );
++        let second_payload = data_payload(next(&mut codec));
++        assert_eq!(second_payload, second);
++        assert!(
++            second_payload.is_unique(),
++            "the second frame's payload shares its allocation with the read buffer"
++        );
++    }
++
++    /// The same frames, cut at every size and with the peer pausing between
++    /// pieces, decode to the same frames; a frame larger than the default
++    /// maximum is read whole once the maximum allows it.
++    #[test]
++    fn frames_arrive_whole_however_the_bytes_are_cut() {
++        let small = pattern(1, 3);
++        let empty = Vec::new();
++        let large = pattern(300 * 1024 + 7, 4);
++        let mut wire = ping(*b"xray-h2r");
++        wire.extend(data(1, &small));
++        wire.extend(data(3, &empty));
++        wire.extend(data(1, &large));
++        wire.extend(raw_frame(0x8, 0, 0, &1000_u32.to_be_bytes()));
++
++        for cut in [1, 7, 9, 10, 4096, 16_393, wire.len()] {
++            let mut steps = Vec::new();
++            for piece in wire.chunks(cut) {
++                steps.push(Step::Bytes(piece.to_vec()));
++                steps.push(Step::Pending);
++            }
++            let mut codec = codec_for(steps);
++            codec.set_max_recv_frame_size(1 << 20);
++
++            match next(&mut codec) {
++                Some(Ok(Frame::Ping(ping))) => assert_eq!(ping.payload(), b"xray-h2r"),
++                other => panic!("cut {}: expected PING, got {:?}", cut, other),
++            }
++            assert_eq!(data_payload(next(&mut codec)), small, "cut {}", cut);
++            assert_eq!(data_payload(next(&mut codec)), empty, "cut {}", cut);
++            assert_eq!(data_payload(next(&mut codec)), large, "cut {}", cut);
++            match next(&mut codec) {
++                Some(Ok(Frame::WindowUpdate(update))) => {
++                    assert_eq!(update.size_increment(), 1000)
++                }
++                other => panic!("cut {}: expected WINDOW_UPDATE, got {:?}", cut, other),
++            }
++            assert!(next(&mut codec).is_none(), "cut {}: EOF ends the stream", cut);
++        }
++    }
++
++    /// A frame larger than SETTINGS_MAX_FRAME_SIZE is a connection error of
++    /// type FRAME_SIZE_ERROR, read from its header alone; then the stream ends.
++    #[test]
++    fn a_frame_above_the_maximum_is_a_frame_size_error() {
++        let oversize = data(1, &vec![0; DEFAULT_MAX_FRAME_SIZE as usize + 1]);
++        let header = oversize[..frame::HEADER_LEN].to_vec();
++        let mut codec = codec_for(vec![Step::Bytes(header), Step::Pending]);
++        match next(&mut codec) {
++            Some(Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, Initiator::Library))) => {}
++            other => panic!("expected FRAME_SIZE_ERROR, got {:?}", other),
++        }
++        assert!(next(&mut codec).is_none(), "the stream ends after the error");
++
++        // The largest frame the maximum allows is read.
++        let largest = pattern(DEFAULT_MAX_FRAME_SIZE as usize, 5);
++        let mut codec = codec_for(vec![Step::Bytes(data(1, &largest))]);
++        assert_eq!(data_payload(next(&mut codec)), largest);
++    }
++
++    /// EOF between frames ends the stream; EOF inside a frame's header or
++    /// payload is the error tokio-util's reader gave, and then the stream ends.
++    #[test]
++    fn eof_inside_a_frame_is_an_error() {
++        let whole = data(1, &pattern(100, 6));
++        let mut codec = codec_for(vec![Step::Bytes(whole.clone()), Step::Eof]);
++        assert_eq!(data_payload(next(&mut codec)).len(), 100);
++        assert!(next(&mut codec).is_none(), "EOF between frames");
++
++        for cut in [1, frame::HEADER_LEN - 1, frame::HEADER_LEN, whole.len() - 1] {
++            let mut codec = codec_for(vec![Step::Bytes(whole[..cut].to_vec()), Step::Eof]);
++            match next(&mut codec) {
++                Some(Err(Error::Io(io::ErrorKind::Other, Some(message)))) => {
++                    assert_eq!(message, "bytes remaining on stream", "cut {}", cut)
++                }
++                other => panic!("cut {}: expected an I/O error, got {:?}", cut, other),
++            }
++            assert!(next(&mut codec).is_none(), "cut {}: the stream ends", cut);
++        }
++    }
++}
 --- a/src/codec/framed_write.rs
 +++ b/src/codec/framed_write.rs
 @@ -343,6 +343,26 @@
@@ -694,6 +924,41 @@
              }
          }
          let streams = Streams::new(streams_config(&config));
+--- a/src/proto/streams/buffer.rs
++++ b/src/proto/streams/buffer.rs
+@@ -97,3 +97,32 @@
+         }
+     }
+ }
++
++/// xray-rust: the slots a drained buffer keeps.
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// A buffer that queued many frames and was drained gives their slots
++    /// back, keeping at most 4 KiB of them; one that queued a few keeps them.
++    #[test]
++    fn a_drained_buffer_gives_its_slots_back() {
++        let slot = std::mem::size_of::<Slot<[u8; 200]>>();
++        let mut buf: Buffer<[u8; 200]> = Buffer::new();
++        let mut deque = Deque::new();
++        for _ in 0..512 {
++            deque.push_back(&mut buf, [0; 200]);
++        }
++        while deque.pop_front(&mut buf).is_some() {}
++        assert!(buf.is_empty());
++        let kept = buf.slab.capacity() * slot;
++        assert!(kept <= 4 * 1024, "a drained buffer keeps {} B of slots", kept);
++
++        for _ in 0..4 {
++            deque.push_back(&mut buf, [0; 200]);
++        }
++        let capacity = buf.slab.capacity();
++        while deque.pop_front(&mut buf).is_some() {}
++        assert_eq!(buf.slab.capacity(), capacity, "a few slots are kept");
++    }
++}
 --- a/src/proto/streams/counts.rs
 +++ b/src/proto/streams/counts.rs
 @@ -390,6 +390,7 @@
