@@ -69,8 +69,10 @@ const WORKERS: usize = 2;
 /// + the flow's queue, the relay socket's and the connection's
 ///   registry entries, the targets and the client's own
 ///   sockets in this test                                          6,144
-/// = 21,504 = 21 KiB. Before the change: two 64 KiB buffers, a 36 KB flow
-/// future and a 9.7 KB control task, about 240 KB.
+///
+/// That is 21,504 B = 21 KiB; measured after the change 18,606 B. Before it:
+/// two 64 KiB buffers, a 36 KB flow future and a 9.7 KB control task,
+/// measured 182,310 B.
 const PER_ASSOCIATION_MAX: usize = 21 * 1024;
 /// The per-thread receive scratch: `WORKERS` workers, plus the test's own
 /// thread, each 65,536 B once (not per association).
