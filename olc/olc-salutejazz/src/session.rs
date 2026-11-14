@@ -1379,7 +1379,9 @@ async fn dial(url: &str) -> Result<(ws::Reader<BoxStream>, ws::Writer<BoxStream>
 }
 
 /// `teardown`: wakes held senders, says goodbye on the socket, closes the
-/// peer connections (each drains for at most `pcCloseTimeout`).
+/// peer connections at once and waits for both for at most
+/// `pcCloseTimeout` ([`olc_rtc::peer::CLOSE_DRAIN`], `closePeerConnections`):
+/// their relays' close lines are written before a stopping client exits.
 async fn teardown(gen: &Gen) {
     if gen.done.is_cancelled() {
         return;
@@ -1390,12 +1392,19 @@ async fn teardown(gen: &Gen) {
     if let Some(ws) = ws {
         let _ = tokio::time::timeout(Duration::from_secs(1), ws.close()).await;
     }
-    if let Some(p) = lock(&gen.sub).take() {
+    let sub = lock(&gen.sub).take();
+    let publ = lock(&gen.publ).take();
+    let peers = [sub.as_ref(), publ.as_ref().map(|p| &p.peer)];
+    for p in peers.iter().flatten() {
         p.close();
     }
-    if let Some(p) = lock(&gen.publ).take() {
-        p.peer.close();
-    }
+    // Both close at once; one bound covers the two waits.
+    let _ = tokio::time::timeout(olc_rtc::peer::CLOSE_DRAIN, async {
+        for p in peers.iter().flatten() {
+            p.ended().await;
+        }
+    })
+    .await;
     gen.rel_open.store(false, Ordering::Release);
     gen.lossy_open.store(false, Ordering::Release);
 }

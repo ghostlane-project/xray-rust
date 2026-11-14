@@ -311,13 +311,54 @@ func (c *countingConn) WriteTo(b []byte, a net.Addr) (int, error) {
 	return n, err
 }
 
+// pion's line for a relay candidate whose peer connection closed, once per
+// candidate ("Failed to read from candidate udp4 relay <relayed> ...: read
+// udp <relayed>: use of closed network connection"); the apps read its tail
+// as a lost transport (critique G1).
+const (
+	closedRelayHead = "Failed to read from candidate udp4 relay "
+	closedRelayTail = ": use of closed network connection"
+)
+
+// checkClosedLines registers, before the client starts, a check that runs
+// once the client has stopped (cleanups run last first): the client wrote
+// pion's closed-relay line once per allocation the TURN server made.
+func (x *turnRelay) checkClosedLines(t *testing.T, tunnel **rustTunnel) {
+	t.Helper()
+	t.Cleanup(func() {
+		if *tunnel == nil || t.Failed() {
+			return
+		}
+		final := (*tunnel).client.finalLog.Load()
+		if final == nil {
+			t.Error("the client's log was not kept at its stop")
+			return
+		}
+		n := 0
+		for _, l := range strings.Split(*final, "\n") {
+			if strings.Contains(l, closedRelayHead) && strings.Contains(l, closedRelayTail) {
+				n++
+			}
+		}
+		if want := x.allocations.Load(); int64(n) != want {
+			lines := strings.Split(strings.TrimRight(*final, "\n"), "\n")
+			t.Errorf("the stopped client said pion's closed-relay line %d times, want once per allocation (%d); its last lines:\n%s",
+				n, want, strings.Join(lines[max(0, len(lines)-40):], "\n"))
+			return
+		}
+		t.Logf("closed-relay lines after the stop: %d", n)
+	})
+}
+
 // TestRustRelayOnlyJoinsThroughTurn is the join test relay-only: the client
 // trickles only relayed candidates, both peer connections come up through
 // the TURN server, and a download and an upload move through it at once.
 func TestRustRelayOnlyJoinsThroughTurn(t *testing.T) {
 	room := salutejazz.NewFakeRoom(t)
 	relay := startTurnRelay(t, room.URL())
-	tunnel := startRustTunnel(t, room, 0, 0, relay.useFor)
+	var tunnel *rustTunnel
+	relay.checkClosedLines(t, &tunnel)
+	tunnel = startRustTunnel(t, room, 0, 0, relay.useFor)
 	down := startDownload(t, tunnel.socksAddr, startSource(t))
 	up := startUpload(t, tunnel.socksAddr, startSink(t))
 	const want = 4 << 20
@@ -344,7 +385,9 @@ func TestRustRelayOnlyJoinsThroughTurn(t *testing.T) {
 func TestRustRelayOnlyJoinsThroughTurnOverTCP(t *testing.T) {
 	room := salutejazz.NewFakeRoom(t)
 	relay := startTurnRelayOver(t, room.URL(), "tcp")
-	tunnel := startRustTunnel(t, room, 0, 0, relay.useFor)
+	var tunnel *rustTunnel
+	relay.checkClosedLines(t, &tunnel)
+	tunnel = startRustTunnel(t, room, 0, 0, relay.useFor)
 	down := startDownload(t, tunnel.socksAddr, startSource(t))
 	up := startUpload(t, tunnel.socksAddr, startSink(t))
 	const want = 4 << 20

@@ -375,6 +375,21 @@ impl Peer {
         self.lock().is_connected()
     }
 
+    /// Waits for the driver to end, its goodbyes sent and its relays'
+    /// close lines written: what pion's `PeerConnection.Close` returns
+    /// after. The caller bounds it (Go's `pcCloseTimeout`).
+    pub async fn ended(&self) {
+        loop {
+            let next = self.sh.progressed.notified();
+            tokio::pin!(next);
+            next.as_mut().enable();
+            if self.is_ended() {
+                return;
+            }
+            next.await;
+        }
+    }
+
     /// Whether the driver has ended.
     #[must_use]
     pub fn is_ended(&self) -> bool {
@@ -1105,6 +1120,20 @@ mod tests {
                     rest += 1;
                 }
             }
+        })
+        .await;
+    }
+
+    /// `ended` returns once the driver has ended, and at once after.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ended_waits_for_the_driver() {
+        bounded(async {
+            let (a, _a_rx, _b, _b_rx, _id) = pair(1 << 20).await;
+            assert!(!a.is_ended());
+            a.close();
+            a.ended().await;
+            assert!(a.is_ended());
+            a.ended().await;
         })
         .await;
     }

@@ -146,6 +146,9 @@ type rustProc struct {
 	rssPeak atomic.Int64
 	// hwm is the VmHWM read just before the stop, KiB.
 	hwm atomic.Int64
+	// finalLog is the whole log once the client has exited (its directory
+	// goes with the test's other cleanups).
+	finalLog atomic.Pointer[string]
 }
 
 // startRust runs the client on cfg until the test ends; live, when given,
@@ -215,6 +218,10 @@ func startRust(t *testing.T, cfg rustConfig, live *liveness) *rustProc {
 		case <-time.After(rustStopGrace + 5*time.Second):
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			t.Errorf("the rust client was still running %s after its stop", rustStopGrace+5*time.Second)
+		}
+		if raw, err := os.ReadFile(p.logPath); err == nil {
+			s := string(raw)
+			p.finalLog.Store(&s)
 		}
 		t.Logf("rust client memory: VmHWM %d KiB, peak sampled VmRSS %d KiB, heap peak %d KiB",
 			p.hwm.Load(), p.rssPeak.Load(), p.heapPeak.Load())
