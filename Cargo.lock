@@ -387,6 +387,7 @@ dependencies = [
  "cipher 0.5.2",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -412,6 +413,7 @@ dependencies = [
  "chacha20 0.10.2",
  "cipher 0.5.2",
  "poly1305 0.9.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -1568,6 +1570,63 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12f40cff3dde1b6087cc5d5f5d4d65712f34016a03ed60e9c08dcc392736b5b7"
 dependencies = [
  "asn1-rs",
+]
+
+[[package]]
+name = "olc-client"
+version = "0.10.0"
+dependencies = [
+ "libc",
+ "olc-muxconn",
+ "olc-smux",
+ "olc-wire",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "zeroize",
+]
+
+[[package]]
+name = "olc-interop"
+version = "0.10.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "olc-muxconn"
+version = "0.10.0"
+dependencies = [
+ "olc-interop",
+ "olc-wire",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "olc-smux"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
+name = "olc-wire"
+version = "0.10.0"
+dependencies = [
+ "chacha20poly1305 0.11.0",
+ "hkdf",
+ "olc-interop",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "zeroize",
 ]
 
 [[package]]

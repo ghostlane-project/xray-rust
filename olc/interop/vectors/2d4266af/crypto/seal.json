@@ -1,0 +1,670 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/crypto/zz_vectors_test.go zzSealVectors",
+ "sources": [
+  "internal/crypto/chacha.go:205-281"
+ ],
+ "cases": {
+  "psk": "56a18918d8c3dc600cd6ae2d350ac9c63d38acf219e539cac388fcb1ba546734",
+  "cases": [
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "00112233445566778899aabbccddeeff",
+    "counter_before": 0,
+    "plaintext": "001f3e5d7c",
+    "verdict": "ok",
+    "record": "4f4c4332000000000000000100112233445566778899aabbccddeeffa140e2f032364c9cd951b05762b99159891729ab5f",
+    "record_len": 49
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "0112233445566778899aabbccddeef00",
+    "counter_before": 1,
+    "plaintext": "01203f5e7d9cbbdaf91d3c5b",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000020112233445566778899aabbccddeef007df615b2210d8d4c2b5de9c756e39d08dc582f54bf6e7816b2331c27",
+    "record_len": 56
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "02132435465768798a9bacbdcedff001",
+    "counter_before": 254,
+    "plaintext": "0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000ff02132435465768798a9bacbdcedff00169299e24105a1f10a4b9eb0be3a17735e45e6f8c8af7e40ba37c73cbc7aaad34caffc0",
+    "record_len": 63
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "031425364758697a8b9cadbecfe0f102",
+    "counter_before": 255,
+    "plaintext": "032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f519",
+    "verdict": "ok",
+    "record": "4f4c43320000000000000100031425364758697a8b9cadbecfe0f10215db8bba909f528d4b5cfafabd8b6336fa3d0a69ecc2c0893a8fa640ddd1cdcb21919ed7aecd5afb266d",
+    "record_len": 70
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "0415263748596a7b8c9daebfd0e1f203",
+    "counter_before": 4294967295,
+    "plaintext": "04234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3",
+    "verdict": "ok",
+    "record": "4f4c433200000001000000000415263748596a7b8c9daebfd0e1f20392f58a5a5011fea0f317b56412d54f2f34b99467810372c2d9878804031e1845d7cf1ccdf9b21c6af1e4ce522c55b1cb87",
+    "record_len": 77
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "05162738495a6b7c8d9eafc0d1e2f304",
+    "counter_before": 18446744073709551614,
+    "plaintext": "0524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2",
+    "verdict": "ok",
+    "record": "4f4c4332ffffffffffffffff05162738495a6b7c8d9eafc0d1e2f30404b6b48b3de83298c9a8ae53139c06c9251c2cfe1d73346b0786738ac0b6fa2398131b342a4ffcd2c1d3ad1ab6ec516c58dff771054e2113",
+    "record_len": 84
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "102132435465768798a9bacbdcedfe0f",
+    "counter_before": 0,
+    "plaintext": "102f4e6d8c",
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001102132435465768798a9bacbdcedfe0f5d8e91a0533ccca703e7d723fc9c1279f986a22a98",
+    "record_len": 49
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "112233445566778899aabbccddeeff10",
+    "counter_before": 1,
+    "plaintext": "11304f6e8daccbea0e2d4c6b",
+    "verdict": "ok",
+    "record": "4f4c43320000000000000002112233445566778899aabbccddeeff10a66f8ef742c6e34e6e887169a4cf627de6bcba78d18a609cc3a60d6b",
+    "record_len": 56
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "12233445566778899aabbccddeef0011",
+    "counter_before": 254,
+    "plaintext": "1231506f8eadcceb0f2e4d6c8baac9e80c2b4a",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000ff12233445566778899aabbccddeef00111af85d5801b7273ef9195654ae67cb0e9f4828e1c47d21a3b15deb615c36452917b9e6",
+    "record_len": 63
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "132435465768798a9bacbdcedff00112",
+    "counter_before": 255,
+    "plaintext": "133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29",
+    "verdict": "ok",
+    "record": "4f4c43320000000000000100132435465768798a9bacbdcedff0011250fbab420fbc590d2a30f65b7753bef7bafc4fa8b3ebb46970bd6a682797c4c12c504ea6c0648dae0309",
+    "record_len": 70
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "1425364758697a8b9cadbecfe0f10213",
+    "counter_before": 4294967295,
+    "plaintext": "1433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e408",
+    "verdict": "ok",
+    "record": "4f4c433200000001000000001425364758697a8b9cadbecfe0f102132d28ae931263fc97227500ca9498c947c97065109a06372fdd31f48bd5b3492be6efffbbffc6af2c0f4be67efb4ede6dd8",
+    "record_len": 77
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "15263748596a7b8c9daebfd0e1f20314",
+    "counter_before": 18446744073709551614,
+    "plaintext": "1534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e2",
+    "verdict": "ok",
+    "record": "4f4c4332ffffffffffffffff15263748596a7b8c9daebfd0e1f20314c65216f3a61958f91a2be0a913de2c7fc01523220b88b4d5174a702bf8b03d6c9d9e3aee8c13acb4edbe901c0d10d3278ea8a873696c9d18",
+    "record_len": 84
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "2031425364758697a8b9cadbecfd0e1f",
+    "counter_before": 0,
+    "plaintext": "203f5e7d9c",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000012031425364758697a8b9cadbecfd0e1f7b8d6ed7e29023de30b4bceabee99ace908a4af120",
+    "record_len": 49
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "2132435465768798a9bacbdcedfe0f20",
+    "counter_before": 1,
+    "plaintext": "21405f7e9dbcdbfa1e3d5c7b",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000022132435465768798a9bacbdcedfe0f2053c216e65083de5a237519650a6abe5f29c67ae2749e2481192a9c2d",
+    "record_len": 56
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "2233445566778899aabbccddeeff1021",
+    "counter_before": 254,
+    "plaintext": "2241607f9ebddc001f3e5d7c9bbad9f81c3b5a",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000ff2233445566778899aabbccddeeff10216a56f742c4a7e5a11c123e8a05c1ad668316c07e6c4fa96289369056c901f8e91c1b20",
+    "record_len": 63
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "233445566778899aabbccddeef001122",
+    "counter_before": 255,
+    "plaintext": "234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39",
+    "verdict": "ok",
+    "record": "4f4c43320000000000000100233445566778899aabbccddeef001122a71d2269b5004a10f448ddf8e88e2905f17699aea665240c47ba8f5837fb7412da37b4fa80c7f77f4aac",
+    "record_len": 70
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "2435465768798a9bacbdcedff0011223",
+    "counter_before": 4294967295,
+    "plaintext": "24436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f418",
+    "verdict": "ok",
+    "record": "4f4c433200000001000000002435465768798a9bacbdcedff0011223f78f928cb34fb6c160907bd29239986042c04c90ab16b04e18ad5b208cc4a6e993e5956c0e910eaf9c7b9f8a05f7f86381",
+    "record_len": 77
+   },
+   {
+    "name": "counter",
+    "role": "client",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "25364758697a8b9cadbecfe0f1021324",
+    "counter_before": 18446744073709551614,
+    "plaintext": "25446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f2",
+    "verdict": "ok",
+    "record": "4f4c4332ffffffffffffffff25364758697a8b9cadbecfe0f10213248c7326dd117be3caa0babc52c60490ee53092d0234468b32cec1f1f5fc7a75edd55ca3564196a1e72076c6f7f3b6d1fd4126425afc5632e1",
+    "record_len": 84
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "405162738495a6b7c8d9eafb0c1d2e3f",
+    "counter_before": 0,
+    "plaintext": "405f7e9dbc",
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001405162738495a6b7c8d9eafb0c1d2e3fe7615a7d969bdd99464c8c8923d0fcbcaa9b11151b",
+    "record_len": 49
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "415263748596a7b8c9daebfc0d1e2f40",
+    "counter_before": 1,
+    "plaintext": "41607f9ebddc001f3e5d7c9b",
+    "verdict": "ok",
+    "record": "4f4c43320000000000000002415263748596a7b8c9daebfc0d1e2f40253497f658e2d70a401fe70c09c175ef1417bc680d58f20462a6be46",
+    "record_len": 56
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "425364758697a8b9cadbecfd0e1f3041",
+    "counter_before": 254,
+    "plaintext": "4261809fbedd01203f5e7d9cbbdaf91d3c5b7a",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000ff425364758697a8b9cadbecfd0e1f3041ea7384dab9dc7fe0e6b4f05bf91da1496f9c3ccc37f18373179d674a780aa2778d2406",
+    "record_len": 63
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "435465768798a9bacbdcedfe0f203142",
+    "counter_before": 255,
+    "plaintext": "436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a59",
+    "verdict": "ok",
+    "record": "4f4c43320000000000000100435465768798a9bacbdcedfe0f203142e6f8b08506e0a0203e25f5e885197d5eb3210d5d9ad366501f7069295848e17a9701fa054c822564957f",
+    "record_len": 70
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "445566778899aabbccddeeff10213243",
+    "counter_before": 4294967295,
+    "plaintext": "446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938",
+    "verdict": "ok",
+    "record": "4f4c43320000000100000000445566778899aabbccddeeff102132436ab91cb8c632c92c176f97bad8fafcb6c549a5959dc6050ce8ecba48eddd49a2cea073b8c84d1fd2ea807cc9258feba096",
+    "record_len": 77
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "45566778899aabbccddeef0011223344",
+    "counter_before": 18446744073709551614,
+    "plaintext": "456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f317",
+    "verdict": "ok",
+    "record": "4f4c4332ffffffffffffffff45566778899aabbccddeef00112233446e2b4758944bd7dc1f737a2d4c688ab47948337119b6d1efa2d25f7b6f810b67293531eb7e89417b8111a7ba2c81ec052be86bfabc89a364",
+    "record_len": 84
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "5061728394a5b6c7d8e9fa0b1c2d3e4f",
+    "counter_before": 0,
+    "plaintext": "506f8eadcc",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000015061728394a5b6c7d8e9fa0b1c2d3e4fdc394cfa740e84b490acb5c6f289a1fed0fbe1ba8b",
+    "record_len": 49
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "5162738495a6b7c8d9eafb0c1d2e3f50",
+    "counter_before": 1,
+    "plaintext": "51708faecdec102f4e6d8cab",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000025162738495a6b7c8d9eafb0c1d2e3f50232566ed454eec0a1818227c0c75eba8b0a985183a200b32401ff9be",
+    "record_len": 56
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "5263748596a7b8c9daebfc0d1e2f4051",
+    "counter_before": 254,
+    "plaintext": "527190afceed11304f6e8daccbea0e2d4c6b8a",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000ff5263748596a7b8c9daebfc0d1e2f4051b3f07efd5b45d69c76a1a32603c9bfaf24678ef54150b3f92f229fbe16a50b7c90b9b5",
+    "record_len": 63
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "5364758697a8b9cadbecfd0e1f304152",
+    "counter_before": 255,
+    "plaintext": "537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a69",
+    "verdict": "ok",
+    "record": "4f4c433200000000000001005364758697a8b9cadbecfd0e1f304152727ae95d2a800099396daccd4a17a10d258f8d62cf0248afff985389b973c573b9aa26b8162036fd54db",
+    "record_len": 70
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "5465768798a9bacbdcedfe0f20314253",
+    "counter_before": 4294967295,
+    "plaintext": "547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a2948",
+    "verdict": "ok",
+    "record": "4f4c433200000001000000005465768798a9bacbdcedfe0f20314253ddcf521b95bd398c2059c80ac3c894d3c532bf399ba5ba23ad8acded4330af7b54d0c182d69446fbecc87804479e81f5a4",
+    "record_len": 77
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "control",
+    "aad": "olcrtc/muxconn/v2/control",
+    "prefix": "5566778899aabbccddeeff1021324354",
+    "counter_before": 18446744073709551614,
+    "plaintext": "557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827",
+    "verdict": "ok",
+    "record": "4f4c4332ffffffffffffffff5566778899aabbccddeeff1021324354d187224e8b54a132feb0ce29d1362ba7fe10efa6c42d22236e36f0cf43b241c5cd9576ea7a4ac7b9427a846768978c88dbb41d5fc82b09fb",
+    "record_len": 84
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "60718293a4b5c6d7e8f90a1b2c3d4e5f",
+    "counter_before": 0,
+    "plaintext": "607f9ebddc",
+    "verdict": "ok",
+    "record": "4f4c4332000000000000000160718293a4b5c6d7e8f90a1b2c3d4e5f85c1630a9e83548b35a3a463594a0f18d827da6c91",
+    "record_len": 49
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "61728394a5b6c7d8e9fa0b1c2d3e4f60",
+    "counter_before": 1,
+    "plaintext": "61809fbedd01203f5e7d9cbb",
+    "verdict": "ok",
+    "record": "4f4c4332000000000000000261728394a5b6c7d8e9fa0b1c2d3e4f60cfd32dbd4f7dd74787efd10bcfe6499dc2503b425462d2bea7c10887",
+    "record_len": 56
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "62738495a6b7c8d9eafb0c1d2e3f5061",
+    "counter_before": 254,
+    "plaintext": "6281a0bfde0221405f7e9dbcdbfa1e3d5c7b9a",
+    "verdict": "ok",
+    "record": "4f4c433200000000000000ff62738495a6b7c8d9eafb0c1d2e3f5061eb12c7e706e8e061775189ddb394b0aa43850f026158e92056fe663a5eeee4be97f5e4",
+    "record_len": 63
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "63748596a7b8c9daebfc0d1e2f405162",
+    "counter_before": 255,
+    "plaintext": "6382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a79",
+    "verdict": "ok",
+    "record": "4f4c4332000000000000010063748596a7b8c9daebfc0d1e2f405162113cb63e794afcda8002ea46517b53e7737002eedb07762e09af90c604a83c10fc485c658d9262b9c091",
+    "record_len": 70
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "64758697a8b9cadbecfd0e1f30415263",
+    "counter_before": 4294967295,
+    "plaintext": "6483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a3958",
+    "verdict": "ok",
+    "record": "4f4c4332000000010000000064758697a8b9cadbecfd0e1f304152630f10dbe4bfd8aadc32077dc26ab357e0edd54fe0077805096f9eee66231b7c74bfdca8344d300af9de0fe5229d997d5a35",
+    "record_len": 77
+   },
+   {
+    "name": "counter",
+    "role": "server",
+    "lane": "udp",
+    "aad": "olcrtc/udp/v1",
+    "prefix": "65768798a9bacbdcedfe0f2031425364",
+    "counter_before": 18446744073709551614,
+    "plaintext": "6584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837",
+    "verdict": "ok",
+    "record": "4f4c4332ffffffffffffffff65768798a9bacbdcedfe0f203142536432418c573b782066d60edfa9e30047562d8fd532e53b7e01c7364ba7b5a52df33a32107330500e30dbc27ff4ca1c73e7fd99b5b9b129d96b",
+    "record_len": 84
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 0,
+     "seed": 0
+    },
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001a5b6c7d8e9fa0b1c2d3e4f60718293a40c16eecd302305d48e3e6c6de5703a78",
+    "record_len": 44
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 1,
+     "seed": 1
+    },
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001a5b6c7d8e9fa0b1c2d3e4f60718293a4b1a8f51d8e9e886a4131f610a3e88f3826",
+    "record_len": 45
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 15,
+     "seed": 15
+    },
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001a5b6c7d8e9fa0b1c2d3e4f60718293a4bf4d6349ae3aef16821a1022965598f8737bddfa8ec6229dcbe950d23e0ab4",
+    "record_len": 59
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 16,
+     "seed": 16
+    },
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001a5b6c7d8e9fa0b1c2d3e4f60718293a4a04c6048a93bec17831d1121975a99c0cfb5b8a9291f562ae2b4405a2944f099",
+    "record_len": 60
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 17,
+     "seed": 17
+    },
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001a5b6c7d8e9fa0b1c2d3e4f60718293a4a153614ba83ced14801c1620945b96c1eda1c710df7b3c548721ce439578b2bacf",
+    "record_len": 61
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 63,
+     "seed": 63
+    },
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001a5b6c7d8e9fa0b1c2d3e4f60718293a48f3d53b99e4adfe3b26a20d2a625a83cdffb730e0a8b9118fbc7c6efba23f634fa62e0e81fa596a3cabf8d5c89e772e44a42c0e4027a1e64d4cef92b63bf7d1c24443129a886b85ccced65f8036a65",
+    "record_len": 107
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 64,
+     "seed": 64
+    },
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001a5b6c7d8e9fa0b1c2d3e4f60718293a4f03c50b8994bdce0b36d21d1a72aa93ddcfa7c0f098a9617fac4c7e8bb20f735fd63e3e900a495a0cba08c5f88e073e54943c7e5017b1163d5cdf82462bc7cfc1a813297806e09a98f700b4259af3b7f",
+    "record_len": 108
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 65,
+     "seed": 65
+    },
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001a5b6c7d8e9fa0b1c2d3e4f60718293a4f10351bb984c26e1b06c26d0a42ba63addf97d0008899716f5c5c4e9bc21f436fc64e2ea01bb94a1c8a1935e8be174fa4840c6e200781062d2ccfb256dbd7fff3c03f6d662f3dcc46eedac811b08485158",
+    "record_len": 109
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 1200,
+     "seed": 176
+    },
+    "verdict": "ok",
+    "record": "4f4c43320000000000000001a5b6c7d8e9fa0b1c2d3e4f60718293a400acc03714c0497023fdb14430bf32ad4c6aec9494150b876a54577520b560a56df3737e952f18305b303cd2076df895f9b3776eb48ca413653d4854d941c38c8d4606a8d192e689fc920f0539836acb1e9ac96f0903e5d37ecfc254e1f584c9169b8052b74c75ca96354e6b6b34e95632c5f74b38fb3d6af1f101849fd0c15bf53a423631bb5258bf0034633de69d3046aa811ee31ac183cda37e46b11c5aa1f6b862999d9e21903547faf0f97988d8734f1dc05671a94c6413b2931deff43232ca445bce6c85809099dcf6f7e6bb5a9b5c4ffdc203f71decd5aaf4a7f39a5cfdf87e242e2175fdb6ce49c2415837e73db7200ad297e6b725268fdcc65e5b34fcfd17e2574424797e1d04022a02bc1404e477e548e072154614556120a0db4b1fe41127a85f74e36488a5cfcffcf4aec069d08891f20ce010f0f39fa97cd7a3c725e88d45d948908dd892a7b46c8db468929a0b883c1065161bd1fd79c1aedff9a12d1d7e92b7692e39e74b702e7e4eb69b3bce030c14051874007421602dde154009bc520f1892d973ab51aec8d5aced59093d841099e5c15d33b63d92f8090521e353026adce5b25b2afb39dbb9eda69c6540846337616076e5814a94a02c71523934c1cf2d3f41805cb5de4f09455f1799ad783144fea1590c15e7ab8ef3dad74206e6cdbf146b0ef4106f673ff9c8ab91ea12508fee479b233be00f39be122cf3e45ec405a9f43619b6bfe16d4f92134fd2aecc3bcf1e3704e52212a1d178025e81377c0816a4cf470967d74270d474c90baa3aaa9bbcbdd4ba6cdac245321b3f78af3143feba6b2a213fd54706063627e374b8dd1a72fd7c39c1cd20425a49f897e04fd2ab33fbbe93d1e368b8e2b04f30b1d9a04ea8d626596caed8f3241d39aa8f4d7705db80055fc0a462a33c1da89bbb7950876552f1b91ff5eeb763a448d025f1589bdd3b9054ed9b9f90ac29b4e7c587c7744fa47ded1868808c84b3d904a683e3bc2da9e6d0a36d8fe9adfd0123142b643c0fdda35f568f51b83f482848fc2bdbeccf2fc92ae39dcd484da59dd5b014f812bb6e6b0706cf6e2b7f43a95f989551509b89ba6f7de27d04d80de8fc92bb344b48e2ba618d5f404c43425a90ab358c7f8b3d7030bf38cc735be8e7b96fd13dbc95dfa9b116ab86e35fc153ed4e21b6866cb58185a57ff0aec9de3040150767cbc041d1003b30f9befecffe92c93bd35c20d70c46f2ab09209ba4e5cd745dfb44605b58395d630d3cfff47a954716380da7561c3acb2e8a1e30576ed8c9cedf29fbc89b05bef55fed00e89029e07b05ab83b29e23c5042a289f2316923add0789b86c9e05ed68909c743f3329ba86139a7802ad9172d2028f31aa1fd735f9f3bd2102e73c7548487c85c90b3a8128c276a6a870d87ac28780a281a2480173b00ab140927e0d8c7719ef9d2c1d7e67692c73cdcfeeb1b78c04fdf606a2daad85f397a39e3bb63851970aea64aa54729f6ff10d2b7a6de85fddbcf0c0fd8e1a77cf0f703db53bba5b05f8dd748640414b38270c1336baa1f6068d9220cdce073e66e021da9e564f4cea26f4637566d804881bc535108a0a965e67b07da6841a5e7791a71aa1ce35168594b7def85b7d03f80e3e4361f3f7cbac9a6551a54cb6ed6adfb67bcd44bbe2ddbb277bf85fd3a696b07ec472ee69683be2e0cfb7eb1d70061555ba0839123fb8",
+    "record_len": 1244
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 12244,
+     "seed": 212
+    },
+    "verdict": "ok",
+    "record_sha256": "5c5b5c43f11ba8796a531a3561ec93ceba8d79fccbd27d8ff2e03ff33d0c773b",
+    "record_len": 12288
+   },
+   {
+    "name": "size",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "a5b6c7d8e9fa0b1c2d3e4f60718293a4",
+    "counter_before": 0,
+    "plaintext_pattern": {
+     "len": 32776,
+     "seed": 8
+    },
+    "verdict": "ok",
+    "record_sha256": "cc0aea3ae33b24867797c6de2998f47e4afec75ef94aefc891a97413047a037f",
+    "record_len": 32820
+   },
+   {
+    "name": "exhausted",
+    "role": "client",
+    "lane": "data",
+    "aad": "olcrtc/muxconn/v2/data",
+    "prefix": "0112233445566778899aabbccddeef00",
+    "counter_before": 18446744073709551615,
+    "plaintext": "78",
+    "verdict": "counter_exhausted",
+    "record_len": 0
+   }
+  ],
+  "sequences": [
+   {
+    "name": "seal_into",
+    "role": "client",
+    "lane": "data",
+    "prefix": "405162738495a6b7c8d9eafb0c1d2e3f",
+    "plaintexts": [
+     "001f3e",
+     "01203f5e",
+     "0221405f7e"
+    ],
+    "records": [
+     "4f4c43320000000000000001405162738495a6b7c8d9eafb0c1d2e3f110e543df02efa234904b6f95c296bab951be1",
+     "4f4c43320000000000000002405162738495a6b7c8d9eafb0c1d2e3f272b31d99439daa8f5bb11138762ef70dc25ce95",
+     "4f4c43320000000000000003405162738495a6b7c8d9eafb0c1d2e3f0b404f18f86d9481703b153082f593940c1b702997"
+    ]
+   },
+   {
+    "name": "seal_into",
+    "role": "client",
+    "lane": "control",
+    "prefix": "415263748596a7b8c9daebfc0d1e2f40",
+    "plaintexts": [
+     "001f3e",
+     "01203f5e",
+     "0221405f7e"
+    ],
+    "records": [
+     "4f4c43320000000000000001415263748596a7b8c9daebfc0d1e2f407731e551f9f3dd3ea7f3b6ee2f62704eac4b5a",
+     "4f4c43320000000000000002415263748596a7b8c9daebfc0d1e2f40be6b14c2831973786b8e87d01ec9e5281e7edd94",
+     "4f4c43320000000000000003415263748596a7b8c9daebfc0d1e2f4022a67d026915989a73ae570f41a9b669d0b506893f"
+    ]
+   },
+   {
+    "name": "seal_into",
+    "role": "client",
+    "lane": "udp",
+    "prefix": "425364758697a8b9cadbecfd0e1f3041",
+    "plaintexts": [
+     "001f3e",
+     "01203f5e",
+     "0221405f7e"
+    ],
+    "records": [
+     "4f4c43320000000000000001425364758697a8b9cadbecfd0e1f3041cddf879ac47106983d06e33d5f35c0ac183919",
+     "4f4c43320000000000000002425364758697a8b9cadbecfd0e1f3041c3f612e70f30299a89f83c03d35ab8ecbcd43cc4",
+     "4f4c43320000000000000003425364758697a8b9cadbecfd0e1f3041690bb602177186c2077ae8025af8de793b8da0a5f2"
+    ]
+   }
+  ]
+ }
+}

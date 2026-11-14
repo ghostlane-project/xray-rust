@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "olc/olc-smux",
     "crates/xray-config",
     "crates/xray-utls",
     "crates/xray-routing",
@@ -14,6 +15,10 @@ members = [
     "crates/xray-cli",
     "crates/xray-bench",
     "fuzz",
+    "olc/olc-wire",
+    "olc/olc-muxconn",
+    "olc/olc-client",
+    "olc/interop/oracle-client",
 ]
 resolver = "2"
 # `.claude` holds agent worktrees, each a checkout with its own workspace.
