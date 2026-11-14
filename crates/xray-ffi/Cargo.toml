@@ -22,3 +22,9 @@ xray-routing = { path = "../xray-routing" }
 xray-tun = { path = "../xray-tun" }
 xray-transport = { path = "../xray-transport" }
 zeroize.workspace = true
+ghostlane-runtime = { path = "../ghostlane-runtime", optional = true }
+
+[features]
+# The core runs on the process's one runtime (`ghostlane-runtime`), which
+# ghostlane-core shares with the olcRTC client, instead of building its own.
+shared-runtime = ["dep:ghostlane-runtime"]

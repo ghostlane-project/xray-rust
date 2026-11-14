@@ -35,6 +35,7 @@ pub mod copy;
 pub mod direct;
 pub mod dns;
 pub mod frames;
+pub mod gauges;
 pub mod hello;
 pub mod lane;
 pub mod log;

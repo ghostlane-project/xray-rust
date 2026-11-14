@@ -69,6 +69,11 @@ pub const FWD_QUEUE_BUDGET: usize = 512 * 1024;
 /// Reply bytes queued on every `FWD_UDP` connection now.
 static FWD_QUEUED: AtomicUsize = AtomicUsize::new(0);
 
+/// Reply bytes queued on every `FWD_UDP` connection now (a gauge).
+pub fn fwd_queued_bytes() -> usize {
+    FWD_QUEUED.load(Ordering::Relaxed)
+}
+
 /// One reply frame in a `FWD_UDP` queue, counted in [`FWD_QUEUED`] until it
 /// is written or dropped.
 #[derive(Debug)]
@@ -497,6 +502,12 @@ impl Flows {
 
     fn lock(&self) -> MutexGuard<'_, Table> {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Flows in the table now: through the tunnel, and direct.
+    pub(crate) fn counts(&self) -> (usize, usize) {
+        let t = self.lock();
+        (t.by_id.len(), t.direct.len())
     }
 
     fn owner(&self) -> u64 {

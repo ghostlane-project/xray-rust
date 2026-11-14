@@ -253,6 +253,7 @@ impl Client {
             cfg,
         });
         inner.install_datagram_sink();
+        crate::gauges::register(&inner);
         inspect(&inner);
         {
             // The run's state is held only while an event is handled: the
@@ -306,7 +307,8 @@ impl Client {
     }
 }
 
-fn random_device_id() -> String {
+/// A fresh device id, a version-4 UUID (`uuid.NewString`).
+pub fn random_device_id() -> String {
     let b: [u8; 16] = rand::random();
     format!(
         "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",

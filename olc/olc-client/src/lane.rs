@@ -155,6 +155,11 @@ impl Lane {
         self.stats.decrypt_stats()
     }
 
+    /// Inbound plaintext waiting to be read, bytes (the muxconn queue).
+    pub fn rx_buffered(&self) -> usize {
+        self.lock().rx.buffered()
+    }
+
     /// Whether sending has stalled past the write-ready timeout
     /// (`SendStalled`).
     pub fn send_stalled(&self) -> bool {

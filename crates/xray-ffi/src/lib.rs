@@ -16,7 +16,7 @@ use std::ptr;
 use std::slice;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Runtime;
 use xray_config::{
     parse_xray_json, parse_xray_json_with_exclusive_geodata_dirs, parse_xray_json_with_geodata_dirs,
 };
@@ -526,7 +526,7 @@ pub struct XrayUdpQuicBlockedEvent {
 
 pub struct XrayCoreHandle {
     core: Option<Core>,
-    runtime: Runtime,
+    runtime: FfiRuntime,
     pending_outbound_packets: Mutex<VecDeque<Bytes>>,
     socket_protector: Option<Arc<dyn SocketProtector>>,
     geodata_search: GeodataSearch,
@@ -538,6 +538,42 @@ pub struct XrayCoreHandle {
     tun_admission: Option<xray_core_rs::TunAdmissionPolicy>,
     config_warnings: String,
     log_callback: Option<Arc<FfiLogCallback>>,
+}
+
+/// The runtime a core runs on: its own, as before, or with the
+/// `shared-runtime` feature the process's one runtime that `ghostlane-core`
+/// shares with the olcRTC client (one set of threads in the iOS extension).
+enum FfiRuntime {
+    #[cfg_attr(feature = "shared-runtime", allow(dead_code))]
+    Own(Runtime),
+    #[cfg(feature = "shared-runtime")]
+    Shared(tokio::runtime::Handle),
+}
+
+impl FfiRuntime {
+    fn new() -> std::io::Result<Self> {
+        #[cfg(feature = "shared-runtime")]
+        {
+            ghostlane_runtime::handle().map(Self::Shared)
+        }
+        #[cfg(not(feature = "shared-runtime"))]
+        {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("xray-ffi")
+                .worker_threads(runtime_worker_threads())
+                .build()
+                .map(Self::Own)
+        }
+    }
+
+    fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        match self {
+            Self::Own(runtime) => runtime.block_on(future),
+            #[cfg(feature = "shared-runtime")]
+            Self::Shared(handle) => handle.block_on(future),
+        }
+    }
 }
 
 enum GeodataSearch {
@@ -633,12 +669,7 @@ unsafe fn xray_core_new_inner(error: *mut *mut XrayError) -> *mut XrayCoreHandle
         clear_error(error);
     }
 
-    let runtime = match Builder::new_multi_thread()
-        .enable_all()
-        .thread_name("xray-ffi")
-        .worker_threads(runtime_worker_threads())
-        .build()
-    {
+    let runtime = match FfiRuntime::new() {
         Ok(runtime) => runtime,
         Err(err) => {
             unsafe {
@@ -4464,6 +4495,7 @@ fn c_string_lossy_without_nuls(message: &str) -> CString {
     CString::new(filtered).unwrap_or_else(|_| CString::default())
 }
 
+#[cfg_attr(feature = "shared-runtime", allow(dead_code))]
 fn runtime_worker_threads() -> usize {
     let available = std::thread::available_parallelism()
         .map(usize::from)

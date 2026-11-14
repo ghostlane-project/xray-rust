@@ -1,0 +1,12 @@
+[package]
+name = "ghostlane-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The one Tokio runtime and the counting allocator that the cores in ghostlane-core share"
+
+[dependencies]
+tokio.workspace = true

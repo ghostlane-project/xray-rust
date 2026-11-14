@@ -106,6 +106,16 @@ impl Pool {
         self.peak.load(Ordering::Relaxed)
     }
 
+    /// Drops the buffers kept for reuse (the host's memory relief, D11);
+    /// returns how many bytes that gave back.
+    pub fn trim(&self) -> usize {
+        let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
+        let bytes = free.len() * COPY_BUFFER;
+        free.clear();
+        free.shrink_to_fit();
+        bytes
+    }
+
     /// Buffers kept for reuse.
     pub fn kept(&self) -> usize {
         self.free
