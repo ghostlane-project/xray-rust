@@ -11,6 +11,9 @@ description = "Stable C ABI for embedding xray-rust in Apple and Android clients
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
 
+[lints]
+workspace = true
+
 [dependencies]
 bytes.workspace = true
 libc.workspace = true

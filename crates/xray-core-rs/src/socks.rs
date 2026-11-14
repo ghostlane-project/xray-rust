@@ -1,4 +1,5 @@
 mod datagram;
+mod udp_scratch;
 pub(crate) mod tproxy;
 
 use std::collections::HashMap;
@@ -55,7 +56,6 @@ use crate::policy::copy_bidirectional_with_idle_timeout_and_traffic as relay_tcp
 #[cfg(target_os = "linux")]
 use crate::policy::copy_bidirectional_with_splice as relay_tcp;
 
-const SOCKS_UDP_BUFFER_SIZE: usize = 65_536;
 const SOCKS_DNS_UDP_PATH_PAYLOAD_CAP: usize = 65_245;
 const SOCKS_UDP_FLOW_QUEUE: usize = 32;
 const SOCKS_UDP_MAX_FLOWS_PER_ASSOCIATION: usize = 128;
@@ -431,6 +431,12 @@ impl SocksUdpClientLock {
     }
 }
 
+/// One SOCKS TCP connection's task. The SOCKS 4 and HTTP handlers (5.7 and
+/// 7.3 KB) and the phases of a CONNECT that end before its relay starts
+/// (sniff, routing, DNS serving, dial) are boxed (`Box::pin`), so the
+/// connection's future, which lives as long as the relay, holds the relay's
+/// state and not their largest (memory model 05, R10: 9,264 B before, ceiling
+/// in `size_tests`).
 #[expect(
     clippy::too_many_arguments,
     reason = "connection tasks receive shared runtime dependencies explicitly"
@@ -463,7 +469,7 @@ async fn handle_socks_connection(
     match first[0] {
         5 => {}
         SOCKS4_VERSION => {
-            handle_socks4_connection(
+            Box::pin(handle_socks4_connection(
                 inbound,
                 deadline,
                 auth,
@@ -476,12 +482,12 @@ async fn handle_socks_connection(
                 policy,
                 runtime_logger,
                 connection_registry,
-            )
+            ))
             .await;
             return;
         }
         _ => {
-            handle_socks_http_connection(
+            Box::pin(handle_socks_http_connection(
                 inbound,
                 deadline,
                 auth,
@@ -494,7 +500,7 @@ async fn handle_socks_connection(
                 policy,
                 runtime_logger,
                 connection_registry,
-            )
+            ))
             .await;
             return;
         }
@@ -730,12 +736,12 @@ pub(crate) async fn handle_socks_connect<const SOCKS_REPLY: bool>(
             return;
         }
         if let Some(config) = sniffing_config {
-            let (payload, sniffed) = read_tcp_sniff_payload(
+            let (payload, sniffed) = Box::pin(read_tcp_sniff_payload(
                 &mut inbound,
                 config,
                 &dial_target,
                 sniffed_routing.attributes,
-            )
+            ))
             .await;
             initial_payload = payload;
             attributes = sniffed.attributes;
@@ -768,15 +774,14 @@ pub(crate) async fn handle_socks_connect<const SOCKS_REPLY: bool>(
         protocol: protocol.map(crate::sniffing::SniffedProtocol::name),
         attributes: attributes.as_ref(),
     };
-    let selected = match outbound_router
-        .select_tcp_session_outbound_with_tag_and_resolver(
-            &route,
-            &route_target,
-            &dial_target,
-            true,
-            dns_resolvers.destination.as_ref(),
-        )
-        .await
+    let selected = match Box::pin(outbound_router.select_tcp_session_outbound_with_tag_and_resolver(
+        &route,
+        &route_target,
+        &dial_target,
+        true,
+        dns_resolvers.destination.as_ref(),
+    ))
+    .await
     {
         Ok(outbound) => outbound,
         Err(error) => {
@@ -835,14 +840,14 @@ pub(crate) async fn handle_socks_connect<const SOCKS_REPLY: bool>(
             }
             connection.mark_active();
             let served = tokio::select! {
-                result = serve_boxed_socks_dns_stream(
+                result = Box::pin(serve_boxed_socks_dns_stream(
                     dns_resolvers.outbound,
                     &mut inbound,
                     initial_payload,
                     outbound,
                     dial_target,
                     policy.conn_idle,
-                ) => Some(result),
+                )) => Some(result),
                 () = wait_for_connection_close(&mut connection_close) => None,
             };
             let _ = served;
@@ -880,7 +885,11 @@ pub(crate) async fn handle_socks_connect<const SOCKS_REPLY: bool>(
         .then(|| inbound.peer_addr().ok().map(InboundSource::tcp))
         .flatten();
     let opened = tokio::select! {
-        result = tokio::time::timeout(
+        // The dial phase ends before the relay starts: boxed, its future
+        // (4,352 B and up) is freed then, and the connection's task future,
+        // which lives as long as the relay, does not hold it (memory model
+        // 05, R10).
+        result = Box::pin(tokio::time::timeout(
             open_timeout,
             open_tcp_stream_with_resolvers_and_dialer(
                 &outbound,
@@ -890,7 +899,7 @@ pub(crate) async fn handle_socks_connect<const SOCKS_REPLY: bool>(
                 transport_dialer.as_ref(),
                 client.as_ref(),
             ),
-        ) => Some(result),
+        )) => Some(result),
         () = wait_for_connection_close(&mut connection_close) => None,
     };
     let mut outbound_stream = match opened {
@@ -1179,7 +1188,6 @@ async fn handle_socks_udp_associate(
     let mut flows = HashMap::<(SocketAddr, Target), SocksUdpFlowEntry>::new();
     let mut flow_tasks = JoinSet::new();
     let mut activity_sequence = 0u64;
-    let mut buffer = vec![0; SOCKS_UDP_BUFFER_SIZE];
     loop {
         tokio::select! {
             changed = shutdown.changed() => {
@@ -1210,14 +1218,14 @@ async fn handle_socks_udp_associate(
                     None => {}
                 }
             }
-            received = socket.recv_from(&mut buffer) => {
-                let Ok((len, client_addr)) = received else {
+            received = udp_scratch::recv_with(&socket, |datagram, client_addr| {
+                (client_addr, client_lock.as_mut().is_none_or(|lock| lock.admits(client_addr))
+                    .then(|| parse_socks5_udp_datagram(datagram)))
+            }) => {
+                let Ok((client_addr, parsed)) = received else {
                     break;
                 };
-                if client_lock.as_mut().is_some_and(|lock| !lock.admits(client_addr)) {
-                    continue;
-                }
-                let Ok(datagram) = parse_socks5_udp_datagram(&buffer[..len]) else {
+                let Some(Ok(datagram)) = parsed else {
                     continue;
                 };
                 // Xray-core drops a datagram without a payload.
@@ -1777,6 +1785,10 @@ fn remove_socks_udp_flow_by_task_id(
     }
 }
 
+/// One UDP flow's task. Every arm below is a future of 5 to 34 KiB that runs
+/// for the flow's life; only one is ever taken, so each is boxed (`Box::pin`)
+/// and the flow's own state holds one pointer for it, not the largest arm
+/// (memory model 05, R3: 36,128 B before, ceiling 4,096 B in `size_tests`).
 async fn bridge_socks_udp_flow(
     target: Target,
     context: SocksUdpFlowContext,
@@ -1796,14 +1808,14 @@ async fn bridge_socks_udp_flow(
     let effective_target = restored_target.target;
     let client_visible_target =
         (provenance == FakeIpTargetProvenance::Mapped).then(|| target.clone());
-    let (sniffed_target, from_client) = sniff_socks_udp_target(
+    let (sniffed_target, from_client) = Box::pin(sniff_socks_udp_target(
         &context,
         &effective_target,
         provenance,
         &first_payload,
         from_client,
         &mut shutdown,
-    )
+    ))
     .await;
     let sniffed_protocol = sniffed_target.sniffed_protocol;
     let route_target = sniffed_target.route_target;
@@ -1890,7 +1902,7 @@ async fn bridge_socks_udp_flow(
                 );
             }
             drop(pending_open_permit);
-            bridge_socks_udp_dns_flow(
+            Box::pin(bridge_socks_udp_dns_flow(
                 target,
                 dial_target,
                 outbound,
@@ -1900,7 +1912,7 @@ async fn bridge_socks_udp_flow(
                 first_payload,
                 connection,
                 connection_close,
-            )
+            ))
             .await;
             return;
         }
@@ -1916,14 +1928,14 @@ async fn bridge_socks_udp_flow(
             }
             drop(pending_open_permit);
             drop(first_payload);
-            absorb_socks_udp_blackhole_flow(
+            Box::pin(absorb_socks_udp_blackhole_flow(
                 &target,
                 blackhole,
                 &context,
                 from_client,
                 shutdown,
                 connection,
-            )
+            ))
             .await;
             return;
         }
@@ -1945,14 +1957,14 @@ async fn bridge_socks_udp_flow(
     {
         drop(pending_open_permit);
         drop(first_payload);
-        absorb_socks_udp_blackhole_flow(
+        Box::pin(absorb_socks_udp_blackhole_flow(
             &target,
             BlackholeOutbound::new(&xray_config::BlackholeResponse::None),
             &context,
             from_client,
             shutdown,
             connection,
-        )
+        ))
         .await;
         return;
     }
@@ -1983,7 +1995,7 @@ async fn bridge_socks_udp_flow(
                     "freedom",
                 );
             }
-            bridge_socks_udp_freedom_flow(
+            Box::pin(bridge_socks_udp_freedom_flow(
                 dial_target,
                 client_visible_target,
                 domain_strategy,
@@ -1995,7 +2007,7 @@ async fn bridge_socks_udp_flow(
                 pending_open_permit,
                 connection,
                 connection_close,
-            )
+            ))
             .await;
         }
         UdpOutbound::Vless(outbound) if !outbound.udp_uses_mux(&dial_target) => {
@@ -2008,7 +2020,7 @@ async fn bridge_socks_udp_flow(
                     "vless",
                 );
             }
-            bridge_socks_udp_vless_flow(
+            Box::pin(bridge_socks_udp_vless_flow(
                 dial_target,
                 client_visible_target,
                 outbound,
@@ -2019,13 +2031,13 @@ async fn bridge_socks_udp_flow(
                 pending_open_permit,
                 connection,
                 connection_close,
-            )
+            ))
             .await;
         }
         // Trojan, SOCKS, VMess, Shadowsocks, Hysteria, WireGuard, and VLESS
         // flows owned by its Mux pool share the datagram relay.
         outbound => {
-            datagram::bridge(
+            Box::pin(datagram::bridge(
                 dial_target,
                 client_visible_target,
                 outbound,
@@ -2036,7 +2048,7 @@ async fn bridge_socks_udp_flow(
                 pending_open_permit,
                 connection,
                 connection_close,
-            )
+            ))
             .await
         }
     }
@@ -2381,7 +2393,7 @@ async fn bridge_socks_udp_freedom_flow(
     }
     traffic.record_uplink(first_payload_len as u64);
     drop(pending_open_permit);
-    let mut buffer = vec![0; SOCKS_UDP_BUFFER_SIZE];
+    let mut masked_spare = Vec::new();
 
     loop {
         tokio::select! {
@@ -2405,10 +2417,11 @@ async fn bridge_socks_udp_freedom_flow(
                 }
                 traffic.record_uplink(payload_len as u64);
             }
-            received = remote_socket.recv_from(&mut buffer) => {
-                let Ok((len, source)) = received else {
+            received = udp_scratch::recv_freedom(&remote_socket, &mut masked_spare) => {
+                let Ok((buffer, source)) = received else {
                     break;
                 };
+                let len = buffer.len();
                 if final_rules::blocks(rules, xray_config::Network::Udp, source) {
                     continue;
                 }

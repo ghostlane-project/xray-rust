@@ -11,6 +11,9 @@ description = "Bounded client protocol primitives for xray-rust"
 [features]
 fuzzing = []
 
+[lints]
+workspace = true
+
 [dependencies]
 aes.workspace = true
 aws-lc-rs.workspace = true

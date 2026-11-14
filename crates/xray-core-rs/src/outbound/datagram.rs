@@ -23,6 +23,13 @@ pub(crate) struct Datagram {
     pub(crate) source: Target,
     pub(crate) payload: Vec<u8>,
 }
+/// Opens the UDP session of `outbound`.
+///
+/// Each arm's `open_udp` future is boxed (`Box::pin`): they are 4 to 16 KiB
+/// each, and an unboxed `match` keeps the largest one in this future's state,
+/// and so in the state of every caller that awaits it, for the caller's whole
+/// life. A UDP flow's task future was 36,128 B for that reason (memory model
+/// 05, R3). The box is freed when the open returns.
 pub(crate) async fn open(
     outbound: &UdpOutbound,
     target: &Target,
@@ -33,39 +40,29 @@ pub(crate) async fn open(
 ) -> Result<Session, CoreError> {
     match outbound {
         UdpOutbound::Vless(outbound) => Ok(Session::VlessMux(
-            outbound
-                .open_mux_udp(target, bootstrap, dialer, global_id)
-                .await?,
+            Box::pin(outbound.open_mux_udp(target, bootstrap, dialer, global_id)).await?,
         )),
         UdpOutbound::Trojan(outbound) => Ok(Session::Trojan(
-            outbound
-                .open_udp(target, bootstrap, dialer, global_id)
-                .await?,
+            Box::pin(outbound.open_udp(target, bootstrap, dialer, global_id)).await?,
         )),
         UdpOutbound::Socks(outbound) => Ok(Session::Socks(
-            outbound.open_udp(target, bootstrap, dialer).await?,
+            Box::pin(outbound.open_udp(target, bootstrap, dialer)).await?,
         )),
         UdpOutbound::Vmess(outbound) => Ok(Session::Vmess(
-            outbound
-                .open_udp(target, bootstrap, dialer, global_id)
-                .await?,
+            Box::pin(outbound.open_udp(target, bootstrap, dialer, global_id)).await?,
         )),
         UdpOutbound::Shadowsocks2022(outbound) => Ok(Session::Shadowsocks2022(Box::new(
-            outbound
-                .open_udp(target, bootstrap, dialer, global_id)
-                .await?,
+            Box::pin(outbound.open_udp(target, bootstrap, dialer, global_id)).await?,
         ))),
         UdpOutbound::Hysteria(outbound) => Ok(Session::Hysteria(
-            outbound.open_udp(bootstrap, dialer).await?,
+            Box::pin(outbound.open_udp(bootstrap, dialer)).await?,
         )),
         UdpOutbound::Wireguard(outbound) => Ok(Session::Wireguard {
-            session: outbound
-                .open_udp(target, destination, bootstrap, dialer)
-                .await?,
+            session: Box::pin(outbound.open_udp(target, destination, bootstrap, dialer)).await?,
             requested: target.clone(),
         }),
         UdpOutbound::Masque(outbound) => Ok(Session::Masque {
-            session: outbound.open_udp(target, bootstrap, dialer).await?,
+            session: Box::pin(outbound.open_udp(target, bootstrap, dialer)).await?,
             requested: target.clone(),
         }),
         _ => Err(CoreError::UnsupportedOutboundNetwork),
@@ -97,9 +94,19 @@ pub(crate) async fn open_within_handshake(
     if matches!(outbound, UdpOutbound::Masque(_)) {
         handshake = super::masque::open_timeout(handshake);
     }
+    // Boxed: `within_handshake` holds the future it awaits twice (the
+    // argument and its moved copy, rust-lang/rust#62958), and the open ends
+    // long before the flow does.
     within_handshake(
         handshake,
-        open(outbound, target, destination, bootstrap, dialer, global_id),
+        Box::pin(open(
+            outbound,
+            target,
+            destination,
+            bootstrap,
+            dialer,
+            global_id,
+        )),
     )
     .await
 }

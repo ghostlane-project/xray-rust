@@ -1,0 +1,15 @@
+# Size lints (memory model 05, 5.3; T9). Each threshold is a number from the
+# iOS packet tunnel's budget: the extension is killed at about 50 MB, and the
+# worst case is 256 flows.
+#
+# future-size-threshold: tokio's release box threshold (BOX_FUTURE_THRESHOLD).
+# Above it every spawn is a second heap block, a page-rounded large allocation
+# on iOS. 16,384 B x 256 flows = 4 MiB is the most a flow's future may cost.
+future-size-threshold = 16384
+# array-size-threshold: a stack array this size in an async fn is part of the
+# task's heap block, in a sync fn it is touched worker stack (32-64 KiB each).
+array-size-threshold = 16384
+# enum-variant-size-threshold, pass-by-value-size-limit: 512 B, 8 cache lines;
+# zero hits on the app's paths when set, so they cost nothing to guard.
+enum-variant-size-threshold = 512
+pass-by-value-size-limit = 512

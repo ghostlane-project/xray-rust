@@ -8,6 +8,9 @@ repository.workspace = true
 publish.workspace = true
 description = "Runtime support types and shutdown coordination for xray-rust"
 
+[lints]
+workspace = true
+
 [dependencies]
 thiserror.workspace = true
 tokio.workspace = true

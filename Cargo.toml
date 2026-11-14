@@ -29,6 +29,13 @@ license = "MPL-2.0"
 repository = "https://github.com/aimalygin/xray-rust"
 publish = false
 
+[workspace.lints.clippy]
+# Sizes in clippy.toml. Denied: a regrowth fails CI (memory model 05, T9).
+large_futures = "deny"
+large_stack_arrays = "deny"
+large_enum_variant = "deny"
+large_types_passed_by_value = "deny"
+
 [workspace.dependencies]
 aho-corasick = "1.1.4"
 aes = { version = "0.9", features = ["zeroize"] }

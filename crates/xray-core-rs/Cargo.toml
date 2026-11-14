@@ -11,6 +11,9 @@ description = "Runtime core coordinating inbounds, routing, transports, and TUN 
 [features]
 fuzzing = []
 
+[lints]
+workspace = true
+
 [dependencies]
 aes.workspace = true
 aes-gcm.workspace = true

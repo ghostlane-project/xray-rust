@@ -4503,11 +4503,34 @@ fn runtime_plan_for(
     workers_override: Option<&str>,
     blocking_override: Option<&str>,
 ) -> RuntimePlan {
-    let _ = (ios, workers_override, blocking_override);
-    RuntimePlan {
-        workers: available.clamp(2, 6),
-        max_blocking: None,
-        keep_alive: None,
+    // 1 to 64: a count outside it is a typo, not a request.
+    let count = |value: Option<&str>| {
+        value
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|count| (1..=64).contains(count))
+    };
+    if ios {
+        // iOS (the packet tunnel extension is killed at about 50 MB). Every
+        // worker costs about 32-64 KiB of touched stack + 128 KiB of relay
+        // pool spare + 6 KB of tokio state, so 6 workers against 2 is 0.7 MB.
+        // 2 workers still give Hysteria2 (12 s/GB, 0.9-1.35 cores at a
+        // phone's 300 Mbit/s) two cores; Reality needs 0.06-0.26. The
+        // blocking pool (getaddrinfo for a domain dialed without the core's
+        // DNS) is capped at 4 threads, each with its own touched stack, and
+        // a thread idles 2 s, not tokio's 10 s. A cap queues, never refuses.
+        RuntimePlan {
+            workers: count(workers_override).unwrap_or(2),
+            max_blocking: Some(count(blocking_override).unwrap_or(4)),
+            keep_alive: Some(Duration::from_secs(2)),
+        }
+    } else {
+        // Every other platform keeps what it had: a phone-sized core count,
+        // clamped, and tokio's blocking pool.
+        RuntimePlan {
+            workers: count(workers_override).unwrap_or_else(|| available.clamp(2, 6)),
+            max_blocking: count(blocking_override),
+            keep_alive: None,
+        }
     }
 }
 

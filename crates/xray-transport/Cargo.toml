@@ -11,6 +11,9 @@ description = "TCP, TLS, REALITY, DNS, and dialing transports for xray-rust"
 [features]
 fuzzing = []
 
+[lints]
+workspace = true
+
 [dependencies]
 # Direct RustCrypto deps enable zeroize feature unification for AES-GCM internal state.
 aes.workspace = true

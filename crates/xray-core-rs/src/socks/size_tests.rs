@@ -21,6 +21,7 @@ fn udp_flow_future_stays_under_one_page() {
     let size = size_of_returned(|| {
         bridge_socks_udp_flow(never(), never(), never(), never(), never())
     });
+    println!("bridge_socks_udp_flow: {size} B");
     assert!(
         size <= UDP_FLOW_FUTURE_MAX,
         "bridge_socks_udp_flow future is {size} B, ceiling {UDP_FLOW_FUTURE_MAX} B"
@@ -47,6 +48,7 @@ fn socks_connection_future_stays_small() {
             never(),
         )
     });
+    println!("handle_socks_connection: {size} B");
     assert!(
         size <= CONNECTION_FUTURE_MAX,
         "handle_socks_connection future is {size} B, ceiling {CONNECTION_FUTURE_MAX} B"
@@ -72,8 +74,19 @@ fn socks_connect_future_stays_within_model_ceiling() {
             never(),
         )
     });
+    println!("handle_socks_connect::<true>: {size} B");
     assert!(
         size <= CONNECT_FUTURE_MAX,
         "handle_socks_connect future is {size} B, ceiling {CONNECT_FUTURE_MAX} B"
     );
+}
+
+#[test]
+fn print_parts() {
+    let n = |name: &str, size: usize| println!("PART {name}: {size} B");
+    n("associate", size_of_returned(|| handle_socks_udp_associate(never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never())));
+    n("in_tcp", size_of_returned(|| handle_socks_udp_in_tcp(never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never())));
+    n("socks4", size_of_returned(|| handle_socks4_connection(never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never())));
+    n("http", size_of_returned(|| handle_socks_http_connection(never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never(), never())));
+    n("negotiate", size_of_returned(|| negotiate_socks5(never::<&mut TcpStream>(), never::<&SocksInboundAuth>())));
 }

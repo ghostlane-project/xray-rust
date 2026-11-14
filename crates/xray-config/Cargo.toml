@@ -8,6 +8,9 @@ repository.workspace = true
 publish.workspace = true
 description = "Bounded Xray JSON and geodata parser for xray-rust"
 
+[lints]
+workspace = true
+
 [dependencies]
 base64.workspace = true
 libc.workspace = true

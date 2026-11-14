@@ -324,6 +324,16 @@ jobs:
         # would otherwise launch their libFuzzer mains without a run bound.
         run: cargo test --workspace --exclude xray-rust-fuzz --all-targets --locked
 
+      - name: Memory size guards (release)
+        # Future and type sizes and the UDP association heap are release-mode
+        # numbers (tokio boxes a future above 16 KiB only there; debug builds
+        # `ignore` these tests). The Ghostlane packet tunnel is killed at
+        # about 50 MB: a size that regrows fails here (memory model 05, T1).
+        run: |
+          cargo test --release --locked -p xray-core-rs --lib size_tests
+          cargo test --release --locked -p xray-transport --test size_guards
+          cargo test --release --locked -p xray-core-rs --test udp_association_memory
+
       - name: Replay fuzz seed corpora
         run: bash scripts/replay-fuzz-corpus.sh
 

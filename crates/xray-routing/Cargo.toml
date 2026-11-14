@@ -8,6 +8,9 @@ repository.workspace = true
 publish.workspace = true
 description = "Routing matchers and policy evaluation for xray-rust"
 
+[lints]
+workspace = true
+
 [dependencies]
 aho-corasick.workspace = true
 bytes.workspace = true

@@ -11,6 +11,9 @@ description = "Bounded VLESS encryption client for the pinned Xray wire contract
 [features]
 fuzzing = ["tokio/test-util"]
 
+[lints]
+workspace = true
+
 [dependencies]
 aes.workspace = true
 aws-lc-rs.workspace = true
