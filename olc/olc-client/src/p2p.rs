@@ -51,11 +51,11 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::pipe::{
-    frame_into, parse_url, read_frame, KIND_DATA, KIND_END, KIND_JOIN, MAX_PAYLOAD, REJOIN_BACKOFF,
-    REJOIN_MAX,
+    frame_into, parse_url, read_frame, KIND_DATA, KIND_END, KIND_JOIN, MAX_PAYLOAD, PEER_SETTLE,
+    REJOIN_BACKOFF, REJOIN_MAX,
 };
 
 /// The id's length in hex characters.
@@ -181,6 +181,9 @@ pub struct P2pLink {
     joined: AtomicBool,
     connected: AtomicBool,
     gen: AtomicU64,
+    /// When the current peer connection came up (its DTLS and SRTP in
+    /// place, so samples go out); `None` while there is none.
+    up_since: watch::Sender<Option<tokio::time::Instant>>,
     rejoining: AtomicBool,
     /// RTP packets the remote sent.
     pub rtp_in: AtomicU64,
@@ -240,6 +243,7 @@ impl P2pLink {
             joined: AtomicBool::new(false),
             connected: AtomicBool::new(false),
             gen: AtomicU64::new(0),
+            up_since: watch::Sender::new(None),
             rejoining: AtomicBool::new(false),
             rtp_in: AtomicU64::new(0),
             rtp_out: AtomicU64::new(0),
@@ -391,7 +395,7 @@ impl P2pLink {
         }
         let gen = self.gen.fetch_add(1, Ordering::AcqRel) + 1;
         st.remote = Some((remote.to_owned(), gen));
-        self.connected.store(false, Ordering::Release);
+        self.line_down();
         let old = {
             let mut m = locked(&self.media);
             m.mid = None;
@@ -539,9 +543,19 @@ impl P2pLink {
         while let Some(ev) = rx.recv().await {
             match ev {
                 PeerEvent::Connected => {
-                    if self.gen.load(Ordering::Acquire) == gen {
-                        crate::info!("interop-p2p: peer connection up");
+                    let now = tokio::time::Instant::now();
+                    // Under the watch's lock, as `line_down`: a connection
+                    // replaced meanwhile does not mark its successor up.
+                    let current = self.up_since.send_if_modified(|v| {
+                        if self.gen.load(Ordering::Acquire) != gen {
+                            return false;
+                        }
+                        *v = Some(now);
                         self.connected.store(true, Ordering::Release);
+                        true
+                    });
+                    if current {
+                        crate::info!("interop-p2p: peer connection up");
                     }
                 }
                 PeerEvent::Closed(why) => {
@@ -556,11 +570,21 @@ impl P2pLink {
         }
     }
 
+    /// No line up (a new peer connection, or none): samples are dropped and
+    /// no peer is settled. Called after the generation moved, and under the
+    /// watch's lock, so the old connection's late `Connected` cannot undo it.
+    fn line_down(&self) {
+        self.up_since.send_modify(|v| {
+            *v = None;
+            self.connected.store(false, Ordering::Release);
+        });
+    }
+
     /// Closes the peer connection (a `bye`).
     async fn drop_peer(&self) {
         self.st.lock().await.remote = None;
         self.gen.fetch_add(1, Ordering::AcqRel);
-        self.connected.store(false, Ordering::Release);
+        self.line_down();
         let old = {
             let mut m = locked(&self.media);
             m.mid = None;
@@ -667,6 +691,36 @@ impl P2pLink {
     #[must_use]
     pub fn peer_seen(&self) -> bool {
         self.connected.load(Ordering::Acquire)
+    }
+
+    /// Waits until the peer's data path is open (the peer connection up, so
+    /// samples go out) and [`PEER_SETTLE`] old: a hello written sooner is
+    /// taken and dropped ([`Self::write_sample`], as pion's unbound track
+    /// does), or reaches a server whose own side of the line is not up yet.
+    /// It waits on across a new peer connection and a rejoin, and for as
+    /// long as there is none; the caller bounds it.
+    pub async fn wait_peer_settled(&self) {
+        let mut rx = self.up_since.subscribe();
+        loop {
+            let since = *rx.borrow_and_update();
+            match since {
+                Some(at) => {
+                    tokio::select! {
+                        () = tokio::time::sleep_until(at + PEER_SETTLE) => {
+                            if *rx.borrow() == Some(at) {
+                                return;
+                            }
+                        }
+                        r = rx.changed() => if r.is_err() { return },
+                    }
+                }
+                None => {
+                    if rx.changed().await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// `Reconnect`: leave and join again, at once in the background.
@@ -869,6 +923,51 @@ mod tests {
         a.close().await;
         b.close().await;
         hub.abort();
+    }
+
+    /// The wait before the first hello: not while the room holds nobody,
+    /// then once the peer connection has been up for the settle time, and
+    /// not again after the peer said bye.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_peer_settles_once_its_line_has_been_up_for_the_settle_time() {
+        crate::testing::bounded_for(Duration::from_secs(20), async {
+            let (url, hub, read_frames) = relay_hub(0).await;
+            let lo = IpAddr::from([127, 0, 0, 1]);
+            let tick = Duration::from_millis(16);
+            let (a_tx, _a_rx) = mpsc::channel(4);
+            let (b_tx, _b_rx) = mpsc::channel(4);
+            let a = P2pLink::connect(&url, lo, tick, a_tx).await.unwrap();
+            let waiting = a.clone();
+            let wait = tokio::spawn(async move { waiting.wait_peer_settled().await });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!wait.is_finished(), "settled alone in the room");
+            while read_frames.load(Ordering::Acquire) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let b = P2pLink::connect(&url, lo, tick, b_tx).await.unwrap();
+            wait.await.unwrap();
+            let settled = tokio::time::Instant::now();
+            let up = (*a.up_since.borrow()).expect("settled with no line up");
+            assert!(a.peer_seen());
+            assert!(
+                settled >= up + PEER_SETTLE,
+                "settled {:?} after the line came up",
+                settled - up
+            );
+            // The peer leaves: its line is gone, and so is the settled peer.
+            b.close().await;
+            while a.peer_seen() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let waiting = a.clone();
+            let wait = tokio::spawn(async move { waiting.wait_peer_settled().await });
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!wait.is_finished(), "settled on a peer that left");
+            wait.abort();
+            a.close().await;
+            hub.abort();
+        })
+        .await;
     }
 
     /// The second is the newcomer and offers, the first answers.

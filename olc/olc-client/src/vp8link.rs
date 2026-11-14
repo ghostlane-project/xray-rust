@@ -236,6 +236,12 @@ impl Vp8Link {
         self.transport.peer_seen()
     }
 
+    /// Waits until the peer's data path is open and settled
+    /// ([`P2pLink::wait_peer_settled`]); the caller bounds it.
+    pub async fn wait_peer_settled(&self) {
+        self.engine.wait_peer_settled().await;
+    }
+
     /// `CanSend`: the data plane takes a message.
     #[must_use]
     pub fn can_send(&self) -> bool {
