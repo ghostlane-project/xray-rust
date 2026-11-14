@@ -917,7 +917,10 @@ async fn download_at_120ms(flows: usize, each: usize) -> Option<f64> {
     for stream in &mut streams {
         stream.write_all(b"g").await.unwrap();
     }
-    let reads = streams.iter_mut().map(|stream| async move {
+    // A stream goes as soon as it has its bytes: the mock writes for as long
+    // as a stream is open, and an open stream nobody reads would hold
+    // connection credit the others need.
+    let reads = streams.into_iter().map(|mut stream| async move {
         let mut bytes = vec![0; each];
         stream.read_exact(&mut bytes).await.is_ok()
     });
@@ -927,7 +930,6 @@ async fn download_at_120ms(flows: usize, each: usize) -> Option<f64> {
         .await
         .is_ok_and(|reads| reads.into_iter().all(|read| read));
     let elapsed = started.elapsed();
-    drop(streams);
     client.close();
     let mbit = (flows * each) as f64 * 8.0 / elapsed.as_secs_f64() / 1e6;
     finished.then_some(mbit)
