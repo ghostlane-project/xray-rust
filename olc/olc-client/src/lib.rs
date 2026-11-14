@@ -36,15 +36,14 @@ pub mod dns;
 pub mod frames;
 pub mod hello;
 pub mod lane;
-pub mod log;
-pub mod net;
 pub mod pipe;
-pub mod resolver;
 pub mod sizes;
 pub mod socks;
 pub mod supervisor;
 pub mod tunnel;
 pub mod udp;
+
+pub use olc_net::{debug, info, log, net, resolver};
 
 pub use client::{Client, RunError};
 pub use config::Config;

@@ -1575,6 +1575,7 @@ name = "olc-client"
 version = "0.10.0"
 dependencies = [
  "olc-muxconn",
+ "olc-net",
  "olc-smux",
  "olc-wire",
  "rand 0.8.6",
@@ -1601,6 +1602,17 @@ dependencies = [
  "olc-wire",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "olc-net"
+version = "0.10.0"
+dependencies = [
+ "base64 0.23.1",
+ "rand 0.8.6",
+ "sha1",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

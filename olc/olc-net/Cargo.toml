@@ -1,0 +1,18 @@
+[package]
+name = "olc-net"
+description = "The olcRTC client's network layer: the engine log, protected sockets and the resolver ring (internal/protect, internal/logger), and the signalling's WebSocket and HTTP clients"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+base64.workspace = true
+rand.workspace = true
+sha1.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

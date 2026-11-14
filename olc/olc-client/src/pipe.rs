@@ -63,15 +63,7 @@ pub const REJOIN_MAX: Duration = Duration::from_secs(2);
 /// ever reports, and the client reads them at once.
 pub const EVENT_QUEUE: usize = 16;
 
-/// What the link tells the client.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LinkEvent {
-    /// The link rejoined the room after losing it: the session over it is
-    /// gone and must be built again (the engine's reconnect callback).
-    Reconnected,
-    /// The conference ended (the engine's ended callback).
-    Ended(String),
-}
+pub use olc_net::link::LinkEvent;
 
 /// Why the link did not come up.
 #[derive(Debug, thiserror::Error)]
@@ -100,7 +92,7 @@ pub fn parse_url(raw: &str) -> Result<(String, String), LinkError> {
 
 /// Takes one lossy message as it arrived; the buffer is the link's and is
 /// only valid during the call.
-pub type DatagramSink = Arc<dyn Fn(&mut [u8]) + Send + Sync>;
+pub use olc_net::link::DatagramSink;
 
 /// One participant in a hub room.
 pub struct PipeLink {
