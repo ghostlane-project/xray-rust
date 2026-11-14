@@ -34,6 +34,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, Interest, ReadBuf};
 use tokio::net::tcp::WriteHalf;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
+use xray_transport::memory_budget::ByteBudget;
 use xray_transport::{BoxedTransportStream, RawRead};
 
 use super::relay_buffer::{RelayBuffer, PROCESS_POOL};
@@ -239,7 +240,7 @@ async fn copy_download(
     // decoded before its socket took over leaves through these reads, ahead
     // of anything spliced. The inbound is a socket, so a write needs no flush.
     let buffer_cap = buffer_size.clamp(MIN_COPY_BUFFER_SIZE, MAX_COPY_BUFFER_SIZE);
-    let mut buffer = RelayBuffer::new(buffer_cap, &PROCESS_POOL);
+    let mut buffer = RelayBuffer::new(buffer_cap, &PROCESS_POOL, ByteBudget::process());
     loop {
         match outbound.source() {
             Source::Socket => break,
@@ -255,6 +256,8 @@ async fn copy_download(
             return Ok(delivered.total);
         }
         inbound.write_all(buffer.filled(len)).await?;
+        buffer.written(len);
+        buffer.flushed();
         delivered.add(len);
     }
     // The socket takes over: what the process lent goes back to it.

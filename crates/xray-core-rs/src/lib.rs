@@ -1672,6 +1672,14 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Frees the payload buffers the relays keep for their next reads: the
+/// pool's free buffers at once, and each thread's spare the next time the
+/// thread relays. For a host under memory pressure; relays go on, borrowing
+/// new buffers as they read. Returns the bytes freed at once.
+pub fn release_relay_buffers() -> usize {
+    policy::release_kept_buffers()
+}
+
 /// The system resolver behind a cache that forgets its answers when the
 /// network of `dialer` is reset.
 fn system_dns_resolver(dialer: &TransportDialer) -> Arc<dyn DnsResolver> {

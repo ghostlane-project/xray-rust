@@ -19,11 +19,29 @@ mod split_relay;
 pub(crate) use splice::copy_bidirectional_with_splice;
 pub(crate) use split_relay::copy_split_with_idle_timeout;
 
+pub(crate) fn release_kept_buffers() -> usize {
+    relay_buffer::relieve()
+}
+
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONN_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const DEFAULT_UPLINK_ONLY_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_DOWNLINK_ONLY_TIMEOUT: Duration = Duration::from_secs(1);
 const DEFAULT_COPY_BUFFER_SIZE: usize = 128 * 1024;
+/// How long a relay task runs before the scheduler is likely to run another:
+/// about a millisecond, a tokio worker's slice between polls of a busy flow.
+const SCHEDULER_SLICE_MICROS: u64 = 1_000;
+/// A constrained host's (a phone's) largest relay read, unless the config
+/// sets `bufferSize`: what the phone's link brings in one scheduler slice,
+/// 200 Mbit/s × 1 ms = 25,000 bytes, rounded up to the buffer size above,
+/// 32 KiB. A larger read only holds more bytes waiting for the writer. Lab
+/// runs found 32 KiB moves as fast as 128 KiB, at no CPU cost, and lowers
+/// the macOS peak by 26 % (Reality) and 17 % (WebTunnel).
+const CONSTRAINED_COPY_BUFFER_SIZE: usize =
+    ((xray_transport::memory_budget::CONSTRAINED_BUDGET_RATE_BITS_PER_SECOND / 8
+        * SCHEDULER_SLICE_MICROS
+        / 1_000_000) as usize)
+        .next_power_of_two();
 const INITIAL_COPY_BUFFER_SIZE: usize = 4 * 1024;
 const MIN_COPY_BUFFER_SIZE: usize = 1024;
 const MAX_COPY_BUFFER_SIZE: usize = 1024 * 1024;
@@ -65,8 +83,21 @@ impl EffectivePolicy {
     pub(crate) fn relay_buffer_size(self) -> usize {
         self.buffer_size
             .map(|size_kib| size_kib.saturating_mul(1024))
-            .unwrap_or(DEFAULT_COPY_BUFFER_SIZE)
+            .unwrap_or_else(default_copy_buffer_size)
             .clamp(MIN_COPY_BUFFER_SIZE, MAX_COPY_BUFFER_SIZE)
+    }
+}
+
+/// The largest relay read when the config sets no `bufferSize`, by the
+/// host's memory class.
+fn default_copy_buffer_size() -> usize {
+    copy_buffer_size_for(xray_transport::memory_class())
+}
+
+fn copy_buffer_size_for(class: xray_transport::MemoryClass) -> usize {
+    match class {
+        xray_transport::MemoryClass::Standard => DEFAULT_COPY_BUFFER_SIZE,
+        xray_transport::MemoryClass::Constrained => CONSTRAINED_COPY_BUFFER_SIZE,
     }
 }
 
@@ -300,22 +331,35 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut total = 0u64;
-    let mut unflushed = 0usize;
-    // Start small so idle/chatty connections stay cheap; reads double toward
-    // the cap only while they keep filling (bulk transfers), in a buffer the
-    // process lends for as long as data keeps coming (`relay_buffer`).
+    // A read borrows a buffer sized for it from the process's pool and gives
+    // it back once its bytes are written (`relay_buffer`): reads start small
+    // so idle and chatty connections stay cheap, and double toward the cap
+    // only while they keep filling. Bytes beyond the flow's floor, in the
+    // buffer and in the writer until it is flushed, are taken from the
+    // process's byte budget.
     let buffer_cap = buffer_size.clamp(MIN_COPY_BUFFER_SIZE, MAX_COPY_BUFFER_SIZE);
-    let mut buffer = relay_buffer::RelayBuffer::new(buffer_cap, &relay_buffer::PROCESS_POOL);
+    let mut buffer = relay_buffer::RelayBuffer::new(
+        buffer_cap,
+        &relay_buffer::PROCESS_POOL,
+        xray_transport::memory_budget::ByteBudget::process(),
+    );
     let flush_deadline = tokio::time::sleep(COPY_FLUSH_INTERVAL);
     tokio::pin!(flush_deadline);
 
     loop {
+        // What the writer may still hold leaves no room within the budget
+        // for even the smallest read: it gives those bytes up first.
+        if buffer.must_flush() {
+            writer.flush().await?;
+            buffer.flushed();
+        }
         tokio::select! {
             read = std::future::poll_fn(|cx| buffer.poll_read(cx, std::pin::Pin::new(&mut *reader))) => {
                 let len = read?;
                 if len == 0 {
-                    if unflushed > 0 {
+                    if buffer.unflushed() > 0 {
                         writer.flush().await?;
+                        buffer.flushed();
                     }
                     writer.shutdown().await?;
                     return Ok(total);
@@ -326,22 +370,22 @@ where
                 if let Some(counter) = counter {
                     counter.fetch_add(len as u64, std::sync::atomic::Ordering::Relaxed);
                 }
-                let was_clean = unflushed == 0;
-                unflushed = unflushed.saturating_add(len);
+                let was_clean = buffer.unflushed() == 0;
+                buffer.written(len);
                 activity.record(len);
 
-                if unflushed >= COPY_FLUSH_THRESHOLD {
+                if buffer.unflushed() >= COPY_FLUSH_THRESHOLD {
                     writer.flush().await?;
-                    unflushed = 0;
+                    buffer.flushed();
                 } else if was_clean {
                     flush_deadline
                         .as_mut()
                         .reset(tokio::time::Instant::now() + COPY_FLUSH_INTERVAL);
                 }
             }
-            () = &mut flush_deadline, if unflushed > 0 => {
+            () = &mut flush_deadline, if buffer.unflushed() > 0 => {
                 writer.flush().await?;
-                unflushed = 0;
+                buffer.flushed();
             }
         }
     }
@@ -916,6 +960,19 @@ mod tests {
         backoff.reset();
         assert!(!backoff.is_backing_off());
         assert_eq!(backoff.next_delay(), Duration::from_millis(10));
+    }
+
+    #[test]
+    fn a_phone_reads_at_most_what_its_link_brings_in_a_slice() {
+        assert_eq!(super::CONSTRAINED_COPY_BUFFER_SIZE, 32 * 1024);
+        assert_eq!(
+            super::copy_buffer_size_for(xray_transport::MemoryClass::Constrained),
+            32 * 1024
+        );
+        assert_eq!(
+            super::copy_buffer_size_for(xray_transport::MemoryClass::Standard),
+            128 * 1024
+        );
     }
 
     #[test]
