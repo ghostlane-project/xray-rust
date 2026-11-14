@@ -106,6 +106,10 @@ panic = "unwind"
 # `Candidate::relayed_via`): the olcRTC engine's connectivity checks must read as a browser's
 # (port plan section 8).
 is = { path = "olc/vendor/is-0.12.0" }
+# turn-client-proto's STUN with libwebrtc's reading of a 401: classic whatever the nonce says, no
+# PASSWORD-ALGORITHMS echoed (olc/vendor/stun-proto-2.0.5/src/auth.rs,
+# `CLIENT_READS_NONCE_SECURITY`): a TURN server sees Chrome's retry (port plan section 8).
+stun-proto = { path = "olc/vendor/stun-proto-2.0.5" }
 quinn = { path = "vendor/quinn" }
 smoltcp = { path = "vendor/smoltcp" }
 blake3 = { path = "vendor/blake3" }

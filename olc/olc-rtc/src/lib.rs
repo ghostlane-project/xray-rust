@@ -99,9 +99,10 @@ pub(crate) mod testing {
 
     /// A TURN server on loopback (webrtc-rs's, tests only) relaying from
     /// 127.0.0.1, and the entry a peer's config names it by. It speaks RFC
-    /// 8489's nonce cookie and SHA-256; the classic path (no cookie, as
-    /// coturn and pion answer) is the interop harness's, against pion's
-    /// server (zz_rust_relay_test.go).
+    /// 8489's nonce cookie and offers SHA-256; the client answers it as
+    /// Chrome does, with MD5 (section 9.2.4 has the server take that). The
+    /// path without a cookie (coturn's and pion's) is the interop harness's,
+    /// against pion's server (zz_rust_relay_test.go).
     pub(crate) async fn turn_server() -> (turn::server::Server, crate::turn::TurnServer) {
         use turn::relay::relay_static::RelayAddressGeneratorStatic;
         use turn::server::config::{ConnConfig, ServerConfig};

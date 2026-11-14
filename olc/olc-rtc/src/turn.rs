@@ -50,7 +50,6 @@ use turn_client_proto::prelude::DelayedTransmitBuild;
 use turn_client_proto::stun::agent::Transmit;
 use turn_client_proto::stun::Instant as TurnInstant;
 use turn_client_proto::tcp::TurnClientTcp;
-use turn_client_proto::types::stun::message::IntegrityAlgorithm;
 use turn_client_proto::types::{AddressFamily, TransportType, TurnCredentials};
 use turn_client_proto::udp::TurnClientUdp;
 
@@ -319,8 +318,8 @@ struct Relay {
     server: SocketAddr,
     /// How what the client sends reaches the server.
     path: Path,
-    /// The server's nonce was looked at for RFC 8489's cookie (logged once:
-    /// Chrome ignores the cookie, turn-client-proto follows it, M8's X6).
+    /// The server's nonce was looked at for RFC 8489's cookie (logged once;
+    /// the client ignores the cookie, as Chrome does).
     cookie_seen: bool,
     relayed: Option<SocketAddr>,
     /// The remote addresses a permission was asked for.
@@ -369,8 +368,8 @@ impl Path {
 
 impl Relay {
     /// Logs, once, whether the server's first challenge carries RFC 8489's
-    /// nonce cookie (Chrome ignores the cookie, turn-client-proto follows
-    /// it, M8's X6).
+    /// nonce cookie (the client answers it as Chrome does, classic: the
+    /// vendored stun-proto's `CLIENT_READS_NONCE_SECURITY`).
     fn note_cookie(&mut self, data: &[u8]) {
         if self.cookie_seen || data.len() <= 20 || data[0] != 0x01 || data[1] != 0x13 {
             return;
@@ -405,15 +404,10 @@ impl Relays {
             .enumerate()
             .map(|(slot, s)| {
                 let mut cfg = TurnConfig::new(TurnCredentials::new(&s.username, &s.password));
-                // SHA-1 stays first: a classic server's challenge (no RFC
-                // 8489 nonce cookie: pion's, coturn's by default) gets
-                // MESSAGE-INTEGRITY with the MD5 key, as Chrome sends. A
-                // server with the cookie lists its password algorithms;
-                // turn-client-proto takes its first one we know and echoes
-                // the list, which Chrome never does (M8's X6). webrtc-rs's
-                // server answers every such request with
-                // MESSAGE-INTEGRITY-SHA256, which only SHA-256 here accepts.
-                cfg.add_supported_integrity(IntegrityAlgorithm::Sha256);
+                // Every challenge is read as Chrome reads it, classic
+                // whatever its nonce says (the vendored stun-proto,
+                // `CLIENT_READS_NONCE_SECURITY`): MESSAGE-INTEGRITY with the
+                // MD5 key, nothing echoed, so SHA-256 is never chosen.
                 if local.is_ipv6() {
                     cfg.set_address_family(AddressFamily::IPV6);
                 }
@@ -915,6 +909,106 @@ mod tests {
     /// However many remotes ICE sends to, one allocation asks for at most
     /// [`MAX_PEERS`] permissions; a datagram to a remote without one is
     /// dropped, not queued.
+    /// The attribute types of a STUN message, in order.
+    fn attribute_types(msg: &[u8]) -> Vec<u16> {
+        let end = (20 + usize::from(u16::from_be_bytes([msg[2], msg[3]]))).min(msg.len());
+        let mut at = 20;
+        let mut out = Vec::new();
+        while at + 4 <= end {
+            out.push(u16::from_be_bytes([msg[at], msg[at + 1]]));
+            let len = usize::from(u16::from_be_bytes([msg[at + 2], msg[at + 3]]));
+            at += 4 + len.next_multiple_of(4);
+        }
+        out
+    }
+
+    /// Polls `relays` until `server` reads a request (at most 5 s): its
+    /// length.
+    async fn next_request(
+        relays: &mut Relays,
+        sock: &UdpSocket,
+        server: &UdpSocket,
+        buf: &mut [u8],
+        what: &str,
+    ) -> usize {
+        let mut up = Vec::new();
+        for _ in 0..50 {
+            relays.poll(sock, "t", Instant::now(), &mut up);
+            let got = tokio::time::timeout(Duration::from_millis(100), server.recv_from(buf)).await;
+            if let Ok(Ok((n, _))) = got {
+                return n;
+            }
+        }
+        panic!("no {what} in 5 s");
+    }
+
+    /// A challenge with RFC 8489's nonce cookie (the password algorithms
+    /// bit set, PASSWORD-ALGORITHMS listing SHA-256 then MD5) gets Chrome's
+    /// retry, as Chrome 157 sent it to the lab's capture server
+    /// (lab-olc-rtc.yml's turn-capture): USERNAME, REALM, NONCE, then
+    /// MESSAGE-INTEGRITY with the MD5 key; neither PASSWORD-ALGORITHMS nor
+    /// PASSWORD-ALGORITHM, no MESSAGE-INTEGRITY-SHA256. The same as its
+    /// answer to a classic challenge.
+    #[tokio::test]
+    async fn an_rfc8489_challenge_is_answered_as_chrome_answers_it() {
+        crate::testing::bounded(async {
+            let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let local = sock.local_addr().unwrap();
+            let resolved = [Resolved {
+                addr: server.local_addr().unwrap(),
+                transport: TurnTransport::Udp,
+                username: "u".into(),
+                password: "p".into(),
+            }];
+            let (inbound, _chunks) = mpsc::channel(STREAM_INBOUND);
+            let mut relays = Relays::new(&resolved, local, Instant::now(), &inbound);
+            let mut buf = [0u8; 1500];
+            let n = next_request(&mut relays, &sock, &server, &mut buf, "Allocate").await;
+            assert_eq!(&buf[..2], &[0x00, 0x03], "not an Allocate");
+            let first = attribute_types(&buf[..n]);
+            let mut challenge = vec![0x01, 0x13, 0, 0, 0x21, 0x12, 0xa4, 0x42];
+            challenge.extend_from_slice(&buf[8..20]);
+            for (t, v) in [
+                (0x0009_u16, b"\0\0\x04\x01Unauthorized".to_vec()),
+                (0x0014, b"olc.test".to_vec()),
+                (0x0015, b"obMatJos2gAAA0123456789abcdef".to_vec()),
+                (0x8002, vec![0, 2, 0, 0, 0, 1, 0, 0]),
+            ] {
+                challenge.extend_from_slice(&t.to_be_bytes());
+                challenge.extend_from_slice(&u16::try_from(v.len()).unwrap().to_be_bytes());
+                challenge.extend_from_slice(&v);
+                challenge.resize(challenge.len().next_multiple_of(4), 0);
+            }
+            let len = u16::try_from(challenge.len() - 20).unwrap();
+            challenge[2..4].copy_from_slice(&len.to_be_bytes());
+            let handled = relays.recv(resolved[0].addr, &challenge, Instant::now());
+            assert!(
+                matches!(handled, Arrival::Handled),
+                "the challenge was not taken"
+            );
+            let n = next_request(&mut relays, &sock, &server, &mut buf, "retry").await;
+            assert_eq!(&buf[..2], &[0x00, 0x03], "the retry is not an Allocate");
+            let retry = attribute_types(&buf[..n]);
+            assert!(first.contains(&0x0019), "{first:04x?}");
+            // USERNAME, REALM, NONCE, MESSAGE-INTEGRITY, in that order, after
+            // REQUESTED-TRANSPORT.
+            let at: Vec<Option<usize>> = [0x0019_u16, 0x0006, 0x0014, 0x0015, 0x0008]
+                .iter()
+                .map(|t| retry.iter().position(|x| x == t))
+                .collect();
+            assert!(
+                at.iter().all(Option::is_some) && at.windows(2).all(|w| w[0] < w[1]),
+                "Chrome's order is 0019 0006 0014 0015 0008: {retry:04x?}"
+            );
+            // MESSAGE-INTEGRITY-SHA256, PASSWORD-ALGORITHM, PASSWORD-ALGORITHMS.
+            for t in [0x001c_u16, 0x001d, 0x8002] {
+                assert!(!retry.contains(&t), "{t:#06x} in {retry:04x?}");
+            }
+        })
+        .await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn one_allocation_asks_at_most_max_peers_permissions() {
         crate::testing::bounded(async {

@@ -2827,8 +2827,6 @@ dependencies = [
 [[package]]
 name = "stun-proto"
 version = "2.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25cbfd0e9a3033f7cb5d9c4eb1155f18b2531f34bd75dae9032f0b77823c4190"
 dependencies = [
  "base64 0.22.1",
  "byteorder",
