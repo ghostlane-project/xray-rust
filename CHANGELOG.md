@@ -78,6 +78,16 @@ long-term supported release series.
   client pins 8 MiB and 20 MiB. Stream limits stay 64/32 on every host, and
   standard hosts are unchanged. See
   [Hysteria windows on a constrained host](docs/config-compatibility.md#hysteria-windows-on-a-constrained-host).
+- `chrome`, `hellochrome_auto` and an empty `fingerprint` are Chrome 156 as
+  Chrome sends it, held to fourteen lab captures of Chrome 156.0.8078.79
+  (`tests/fixtures/chrome156`). The hello lists all fifteen of Chrome's
+  cipher suites, the six TLS-1.2-only ones rustls does not implement included
+  (a server choosing one ends the handshake with
+  `PeerIncompatible::ServerChoseAdvertisedOnlyCipherSuite`), and orders its
+  extensions by BoringSSL's uniform permutation instead of uTLS's shuffle,
+  a HelloRetryRequest's cookie included. `hellochrome_155` keeps uTLS's
+  Chrome 155. shaped-rustls is taken from the ghostlane-project fork for the
+  new error.
 
 ## 0.10.0 - 2026-11-13
 

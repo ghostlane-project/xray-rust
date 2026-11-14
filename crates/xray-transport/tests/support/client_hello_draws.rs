@@ -58,9 +58,20 @@ pub const CHROME_ECH_FINGERPRINTS: [&str; 7] = [
 /// `(3/4)^256`, below `10^-31`.
 pub const ECH_DRAWS: usize = 256;
 
-/// Whether uTLS shuffles this fingerprint's extensions for every hello.
+/// Whether this fingerprint's extension order is drawn for every hello:
+/// uTLS's shuffle, or for Chrome 156 BoringSSL's permutation.
 pub fn shuffles(fingerprint: &str) -> bool {
     SHUFFLED_FINGERPRINTS.contains(&fingerprint)
+}
+
+/// Chrome 156's names. Their hello lists every cipher suite Chrome's does,
+/// the six TLS-1.2-only ones rustls does not implement included, where every
+/// other profile leaves out the suites this build cannot negotiate.
+pub const CHROME_156_FINGERPRINTS: [&str; 2] = ["chrome", "hellochrome_auto"];
+
+/// Whether this fingerprint's hello advertises suites the provider lacks.
+pub fn advertises_every_suite(fingerprint: &str) -> bool {
+    CHROME_156_FINGERPRINTS.contains(&fingerprint)
 }
 
 /// RFC 8701's reserved values, `0x?a?a`.

@@ -293,18 +293,37 @@ mod utls_tls_shaping_tests {
         );
     }
 
+    /// uTLS's Chrome profiles leave out the suites rustls cannot negotiate.
     #[test]
     fn legacy_cipher_advertisement_keeps_chrome_order_and_grease() {
-        let hello = plain_tls_client_hello_bytes(&config("chrome", &[]))
-            .expect("chrome ClientHello must be produced");
+        for fingerprint in ["hellochrome_155", "hellochrome_133"] {
+            let hello = plain_tls_client_hello_bytes(&config(fingerprint, &[]))
+                .unwrap_or_else(|error| panic!("{fingerprint}: ClientHello: {error}"));
 
-        assert_eq!(
-            canonical_cipher_suites(&hello),
-            CHROME_PROVIDER_SUPPORTED_CIPHERS,
-            "filtering must preserve the profile order and its leading GREASE slot"
-        );
+            assert_eq!(
+                canonical_cipher_suites(&hello),
+                CHROME_PROVIDER_SUPPORTED_CIPHERS,
+                "{fingerprint}: filtering must preserve the profile order and its leading GREASE slot"
+            );
+        }
     }
 
+    /// Chrome 156 sends its whole list, the six TLS-1.2-only suites rustls
+    /// does not implement included, in Chrome's order behind its GREASE.
+    #[test]
+    fn chrome_advertises_every_suite_chrome_sends() {
+        let mut chrome = CHROME_PROVIDER_SUPPORTED_CIPHERS.to_vec();
+        chrome.extend_from_slice(CHROME_LEGACY_TLS12_CIPHERS);
+        for fingerprint in client_hello_draws::CHROME_156_FINGERPRINTS {
+            let hello = plain_tls_client_hello_bytes(&config(fingerprint, &[]))
+                .unwrap_or_else(|error| panic!("{fingerprint}: ClientHello: {error}"));
+
+            assert_eq!(canonical_cipher_suites(&hello), chrome, "{fingerprint}");
+        }
+    }
+
+    /// Every selectable profile offers a suite it can negotiate, and only
+    /// Chrome 156 offers any it cannot: Chrome's six TLS-1.2-only ones.
     #[test]
     fn legacy_cipher_advertisement_is_supported_for_every_selectable_profile() {
         for fingerprint in selectable_fingerprints() {
@@ -321,12 +340,22 @@ mod utls_tls_shaping_tests {
                 .filter(|suite| !is_grease(*suite))
                 .collect::<Vec<_>>();
 
+            let (negotiable, unimplemented): (Vec<u16>, Vec<u16>) = advertised
+                .iter()
+                .copied()
+                .partition(|suite| supported.contains(suite));
+
             assert!(
-                !advertised.is_empty(),
+                !negotiable.is_empty(),
                 "{fingerprint}: a selectable profile needs a negotiable suite"
             );
-            assert!(
-                advertised.iter().all(|suite| supported.contains(suite)),
+            let expected: &[u16] = if client_hello_draws::advertises_every_suite(fingerprint) {
+                CHROME_LEGACY_TLS12_CIPHERS
+            } else {
+                &[]
+            };
+            assert_eq!(
+                unimplemented, expected,
                 "{fingerprint}: advertised {advertised:04x?}, provider supports {supported:04x?}"
             );
         }
@@ -1743,11 +1772,243 @@ mod utls_tls_shaping_tests {
         assert_eq!(negotiated, Ok(ProtocolVersion::TLSv1_3));
     }
 
+    /// A TLS 1.2 peer that reads the ClientHello and answers with a
+    /// ServerHello choosing `suite`, then reports the suites it was offered
+    /// and the record the client answered with.
+    ///
+    /// The ServerHello is written by hand, since no server rustls can build
+    /// picks a suite rustls does not implement: TLS 1.2, a random without
+    /// RFC 8446's downgrade sentinel, no session id, and the
+    /// renegotiation_info and extended_master_secret the hello asked for.
+    async fn spawn_tls12_server_choosing(
+        suite: u16,
+    ) -> (
+        SocketAddr,
+        tokio::task::JoinHandle<Result<(Vec<u16>, Vec<u8>), String>>,
+    ) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("loopback listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener must report its address");
+
+        async fn read_record(stream: &mut tokio::net::TcpStream) -> Result<Vec<u8>, String> {
+            let mut record = vec![0u8; 5];
+            stream
+                .read_exact(&mut record)
+                .await
+                .map_err(|e| e.to_string())?;
+            let payload_len = usize::from(u16::from_be_bytes([record[3], record[4]]));
+            record.resize(5 + payload_len, 0);
+            stream
+                .read_exact(&mut record[5..])
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(record)
+        }
+
+        let served = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+            let offered = cipher_suites(&read_record(&mut stream).await?);
+
+            let extensions = [
+                0xff, 0x01, 0x00, 0x01, 0x00, // renegotiation_info, empty
+                0x00, 0x17, 0x00, 0x00, // extended_master_secret
+            ];
+            let mut body = vec![0x03, 0x03];
+            body.extend_from_slice(&[0x42; 32]);
+            body.push(0); // no session id
+            body.extend_from_slice(&suite.to_be_bytes());
+            body.push(0); // null compression
+            body.extend_from_slice(&(extensions.len() as u16).to_be_bytes());
+            body.extend_from_slice(&extensions);
+            let mut handshake = vec![0x02, 0x00];
+            handshake.extend_from_slice(&(body.len() as u16).to_be_bytes());
+            handshake.extend_from_slice(&body);
+            let mut record = vec![0x16, 0x03, 0x03];
+            record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+            record.extend_from_slice(&handshake);
+            stream.write_all(&record).await.map_err(|e| e.to_string())?;
+
+            Ok((offered, read_record(&mut stream).await?))
+        });
+
+        (addr, served)
+    }
+
+    /// Chrome 156 offers six TLS-1.2-only suites rustls does not implement,
+    /// as Chrome does. A server that picks one ends the handshake: the client
+    /// sends a handshake_failure alert and its error names the suite, an
+    /// incompatibility rather than the misbehaviour an unoffered suite would
+    /// be.
+    #[tokio::test]
+    async fn a_server_choosing_a_suite_chrome_only_advertises_ends_the_handshake() {
+        for suite in CHROME_LEGACY_TLS12_CIPHERS {
+            let (addr, served) = spawn_tls12_server_choosing(*suite).await;
+
+            let error = dial_shaped("chrome", addr)
+                .await
+                .expect_err("rustls cannot go on with a suite it does not implement");
+            let (offered, answer) = served
+                .await
+                .expect("the server task must finish")
+                .expect("the server must read the ClientHello and the answer");
+
+            assert!(
+                offered.contains(suite),
+                "{suite:#06x}: offered {offered:04x?}"
+            );
+            assert_eq!(
+                (answer[0], &answer[5..]),
+                (0x15, &[0x02, 0x28][..]),
+                "{suite:#06x}: a fatal handshake_failure alert, not {answer:02x?}"
+            );
+            let TransportError::Tls(error) = error else {
+                panic!("{suite:#06x}: a TLS error, not {error:?}");
+            };
+            assert_eq!(
+                error
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+                Some(&rustls::Error::PeerIncompatible(
+                    rustls::PeerIncompatible::ServerChoseAdvertisedOnlyCipherSuite(
+                        rustls::CipherSuite::from(*suite)
+                    )
+                )),
+                "{suite:#06x}: {error}"
+            );
+        }
+    }
+
+    /// A signing key that signs with ML-DSA-65 whenever the client offers it,
+    /// as a server holding an ML-DSA key would, and otherwise as the key it
+    /// wraps. Nothing here implements ML-DSA, so its signature can be any
+    /// bytes of the right length: a client must refuse it without reading it.
+    #[derive(Debug)]
+    struct MlDsaWhenOffered(Arc<dyn rustls::sign::SigningKey>);
+
+    impl rustls::sign::SigningKey for MlDsaWhenOffered {
+        fn choose_scheme(
+            &self,
+            offered: &[rustls::SignatureScheme],
+        ) -> Option<Box<dyn rustls::sign::Signer>> {
+            if offered.contains(&rustls::SignatureScheme::ML_DSA_65) {
+                Some(Box::new(MlDsaSigner))
+            } else {
+                self.0.choose_scheme(offered)
+            }
+        }
+
+        fn algorithm(&self) -> rustls::SignatureAlgorithm {
+            self.0.algorithm()
+        }
+    }
+
+    #[derive(Debug)]
+    struct MlDsaSigner;
+
+    impl rustls::sign::Signer for MlDsaSigner {
+        fn sign(&self, _message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
+            // ML-DSA-65 signatures are 3309 bytes (FIPS 204).
+            Ok(vec![0x5a; 3309])
+        }
+
+        fn scheme(&self) -> rustls::SignatureScheme {
+            rustls::SignatureScheme::ML_DSA_65
+        }
+    }
+
+    /// A TLS listener whose key signs with ML-DSA-65 when the hello offers
+    /// it (`MlDsaWhenOffered`), reporting how its handshake ended.
+    async fn spawn_ml_dsa_signing_tls_server(
+    ) -> (SocketAddr, tokio::task::JoinHandle<Result<(), String>>) {
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["server.test".to_owned()])
+                .expect("a self-signed certificate must generate");
+        let key = rustls::crypto::aws_lc_rs::sign::any_supported_type(&PrivateKeyDer::Pkcs8(
+            PrivatePkcs8KeyDer::from(signing_key.serialize_der()),
+        ))
+        .expect("an ECDSA key");
+        let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("the provider must support the default TLS versions")
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(rustls::sign::SingleCertAndKey::from(
+            rustls::sign::CertifiedKey::new(
+                vec![cert.der().clone()],
+                Arc::new(MlDsaWhenOffered(key)),
+            ),
+        )));
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("loopback listener must bind");
+        let addr = listener
+            .local_addr()
+            .expect("listener must report its address");
+        let acceptor = TlsAcceptor::from(Arc::new(server_config));
+
+        let served = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+            acceptor
+                .accept(stream)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        });
+
+        (addr, served)
+    }
+
+    /// Chrome 156 offers ML-DSA 44, 65 and 87, which no provider here
+    /// implements. A server that signs its CertificateVerify with one is
+    /// refused with an illegal_parameter alert, even by a dial that skips the
+    /// certificate checks (`allow_insecure`): the signature is still checked,
+    /// and one nothing can check is no signature. The same server completes a
+    /// handshake with a hello that offers no ML-DSA.
+    #[tokio::test]
+    async fn a_server_signing_with_ml_dsa_is_refused() {
+        let (addr, served) = spawn_ml_dsa_signing_tls_server().await;
+
+        let error = dial_shaped("chrome", addr)
+            .await
+            .expect_err("an ML-DSA signature cannot be verified here");
+        let TransportError::Tls(error) = error else {
+            panic!("a TLS error, not {error:?}");
+        };
+        assert_eq!(
+            error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<rustls::Error>()),
+            Some(&rustls::Error::PeerMisbehaved(
+                rustls::PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme
+            )),
+            "{error}"
+        );
+        let refused = served
+            .await
+            .expect("the server task must finish")
+            .expect_err("the client ends the handshake");
+        assert!(refused.contains("IllegalParameter"), "{refused}");
+
+        let (addr, served) = spawn_ml_dsa_signing_tls_server().await;
+        dial_shaped("hellochrome_133", addr)
+            .await
+            .expect("without ML-DSA on offer the server signs with ECDSA");
+        served
+            .await
+            .expect("the server task must finish")
+            .expect("the server's handshake completes");
+    }
+
     #[tokio::test]
     async fn legacy_cipher_advertisement_has_no_chrome_tls12_legacy_server_overlap() {
         let (addr, served) = spawn_tls12_legacy_only_server().await;
 
-        dial_shaped("chrome", addr)
+        dial_shaped("hellochrome_155", addr)
             .await
             .expect_err("a legacy-only server has no common cipher with this provider");
         let offered = served

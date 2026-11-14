@@ -80,8 +80,12 @@ struct KeySharePayload {
 /// Applies the one deliberate divergence from the uTLS shape oracle: suites
 /// this build cannot negotiate are removed from the wire. BoringSSL padding
 /// absorbs the shorter cipher vector when the profile carries it; otherwise
-/// the handshake itself becomes shorter.
+/// the handshake itself becomes shorter. Chrome 156's names keep the whole
+/// list, as Chrome does, so their shape is the oracle's as it is.
 fn apply_provider_cipher_filter(shape: &mut ClientHelloShape) {
+    if client_hello_draws::advertises_every_suite(&shape.fingerprint) {
+        return;
+    }
     let offers_tls13 = shape
         .supported_versions
         .iter()
@@ -799,13 +803,18 @@ fn assert_masked_client_hello_eq(fingerprint: &str, actual: &[u8], expected: &[u
         .checked_sub(actual_ciphers.len())
         .and_then(|removed| removed.checked_mul(2))
         .expect("provider filtering cannot add cipher suites");
+    // Chrome 156's names send the whole list; every other profile leaves out
+    // what this build cannot negotiate.
+    let every_suite = client_hello_draws::advertises_every_suite(fingerprint);
     let expected_ciphers = expected_ciphers
         .into_iter()
-        .filter(|suite| is_grease(*suite) || supported.contains(suite))
+        .filter(|suite| every_suite || is_grease(*suite) || supported.contains(suite))
         .collect::<Vec<_>>();
     assert_eq!(
-        actual_ciphers, expected_ciphers,
-        "{fingerprint}: provider-filtered cipher suite vector differs from the uTLS profile"
+        actual_ciphers,
+        expected_ciphers,
+        "{fingerprint}: the cipher suite vector differs from the uTLS profile's{}",
+        if every_suite { "" } else { " once filtered" }
     );
 
     let actual_padding = raw_client_hello_padding(actual)
@@ -1484,7 +1493,7 @@ fn build_fingerprint_parity_report(results: &[FingerprintParityResult]) -> Strin
     .unwrap();
     writeln!(
         report,
-        "- Use this report as the current wire-parity oracle after applying xray-rust's deliberate provider-capability cipher filter to the uTLS expectation. Every other tracked field remains the shaped-rustls byte-shape oracle: advertised versions/groups, real key shares, exact extension payloads, duplicate signature algorithms, ALPS, ECH, and GREASE."
+        "- Use this report as the current wire-parity oracle after applying xray-rust's deliberate provider-capability cipher filter to the uTLS expectation, except for `chrome` and `hellochrome_auto` (Chrome 156), which advertise Chrome's whole cipher list and are compared with it unfiltered. Every other tracked field remains the shaped-rustls byte-shape oracle: advertised versions/groups, real key shares, exact extension payloads, duplicate signature algorithms, ALPS, ECH, and GREASE."
     )
     .unwrap();
     writeln!(

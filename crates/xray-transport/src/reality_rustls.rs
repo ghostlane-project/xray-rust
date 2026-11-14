@@ -1201,6 +1201,97 @@ mod tests {
         server.abort();
     }
 
+    /// A signing key that signs with ML-DSA-65 whenever the client offers it,
+    /// as a server holding an ML-DSA key would, and otherwise as the key it
+    /// wraps. Nothing here implements ML-DSA, so its signature can be any
+    /// bytes of the right length: a client must refuse it without reading it.
+    #[derive(Debug)]
+    struct MlDsaWhenOffered(Arc<dyn rustls::sign::SigningKey>);
+
+    impl rustls::sign::SigningKey for MlDsaWhenOffered {
+        fn choose_scheme(
+            &self,
+            offered: &[SignatureScheme],
+        ) -> Option<Box<dyn rustls::sign::Signer>> {
+            if offered.contains(&SignatureScheme::ML_DSA_65) {
+                Some(Box::new(MlDsaSigner))
+            } else {
+                self.0.choose_scheme(offered)
+            }
+        }
+
+        fn algorithm(&self) -> rustls::SignatureAlgorithm {
+            self.0.algorithm()
+        }
+    }
+
+    #[derive(Debug)]
+    struct MlDsaSigner;
+
+    impl rustls::sign::Signer for MlDsaSigner {
+        fn sign(&self, _message: &[u8]) -> Result<Vec<u8>, RustlsError> {
+            // ML-DSA-65 signatures are 3309 bytes (FIPS 204).
+            Ok(vec![0x5a; 3309])
+        }
+
+        fn scheme(&self) -> SignatureScheme {
+            SignatureScheme::ML_DSA_65
+        }
+    }
+
+    /// Chrome 156 offers ML-DSA 44, 65 and 87, which no provider here can
+    /// verify. A real site that signs its CertificateVerify with one ends the
+    /// handshake, its certificate trusted or not, and nothing is crawled.
+    #[tokio::test]
+    async fn a_real_certificate_signed_with_ml_dsa_aborts_the_handshake() {
+        let certified = rcgen::generate_simple_self_signed(vec![SPIDER_SERVER_NAME.to_owned()])
+            .expect("generate an ordinary certificate");
+        let cert = certified.cert.der().clone();
+        let key = crypto::aws_lc_rs::sign::any_supported_type(
+            &rustls::pki_types::PrivateKeyDer::Pkcs8(certified.signing_key.serialize_der().into()),
+        )
+        .expect("an ECDSA key");
+        let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("server protocol versions")
+        .with_no_client_auth()
+        .with_cert_resolver(Arc::new(rustls::sign::SingleCertAndKey::from(
+            rustls::sign::CertifiedKey::new(vec![cert.clone()], Arc::new(MlDsaWhenOffered(key))),
+        )));
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        let mut roots = RootCertStore::empty();
+        roots.add(cert).expect("trust the test certificate");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let (requests_tx, mut requests) = tokio::sync::mpsc::unbounded_channel();
+        let server = tokio::spawn(serve_real_site(listener, Arc::new(config), requests_tx));
+        let (session, prepared) = real_certificate_session(Some(Arc::new(roots)));
+        let tcp = TcpStream::connect(addr).await.expect("connect");
+
+        let result = session.complete_over(tcp, prepared, None).await;
+
+        let error = match result {
+            Err(TransportError::Tls(error)) => error,
+            Err(other) => panic!("a TLS error, not {other:?}"),
+            Ok(_) => panic!("an ML-DSA CertificateVerify must end the handshake"),
+        };
+        assert_eq!(
+            error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<RustlsError>()),
+            Some(&RustlsError::PeerMisbehaved(
+                rustls::PeerMisbehaved::SignedHandshakeWithUnadvertisedSigScheme
+            )),
+            "{error}"
+        );
+        server.await.expect("server task");
+        assert!(requests.recv().await.is_none(), "nothing is crawled");
+    }
+
     #[tokio::test]
     async fn untrusted_real_certificate_still_aborts_the_handshake() {
         let (config, _) = real_certificate_server();
