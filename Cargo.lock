@@ -1579,6 +1579,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "olc-muxconn"
+version = "0.10.0"
+dependencies = [
+ "olc-interop",
+ "olc-wire",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "olc-wire"
 version = "0.10.0"
 dependencies = [

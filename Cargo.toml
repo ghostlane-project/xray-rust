@@ -15,6 +15,7 @@ members = [
     "crates/xray-bench",
     "fuzz",
     "olc/olc-wire",
+    "olc/olc-muxconn",
     "olc/interop/oracle-client",
 ]
 resolver = "2"
