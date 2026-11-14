@@ -237,6 +237,12 @@ impl Config {
         if self.max_stream_send_buffer == 0 || self.max_send_buffer == 0 {
             return Err(Error::Config("send buffers must be positive"));
         }
+        // A whole frame must fit, or a full one never leaves.
+        if self.max_stream_send_buffer < self.max_frame_size
+            || self.max_send_buffer < self.max_frame_size
+        {
+            return Err(Error::Config("send buffers must hold a whole frame"));
+        }
         if self.read_buffer_size < HEADER_SIZE {
             return Err(Error::Config("read buffer must hold a frame header"));
         }

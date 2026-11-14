@@ -42,6 +42,10 @@ pub(crate) mod flag {
     pub const ROOM_WAIT: u16 = 1 << 10;
     /// Slot 0 only: a NOP is queued.
     pub const NOP_QUEUED: u16 = 1 << 11;
+    /// A read waits on the stream (Go's `waitRead`): its stream's death
+    /// is `io.ErrClosedPipe` to it, not EOF (`smux/stream.go`, `case
+    /// <-s.die`).
+    pub const READ_PARKED: u16 = 1 << 12;
 
     pub const PENDING: u16 = SYN_QUEUED | UPD_QUEUED | NOP_QUEUED;
     pub const KEEP: u16 =
@@ -150,10 +154,21 @@ pub(crate) fn set_waker(slot: &mut Option<Waker>, cx: &Context<'_>) {
     }
 }
 
+/// The most wakers a session list keeps: a waiting future that was dropped
+/// leaves its waker behind, so at this many all are woken, and those still
+/// waiting register again.
+const MAX_WAKERS: usize = 64;
+
 fn add_waker(list: &mut Vec<Waker>, cx: &Context<'_>) {
-    if !list.iter().any(|w| w.will_wake(cx.waker())) {
-        list.push(cx.waker().clone());
+    if list.iter().any(|w| w.will_wake(cx.waker())) {
+        return;
     }
+    if list.len() >= MAX_WAKERS {
+        for w in list.drain(..) {
+            w.wake();
+        }
+    }
+    list.push(cx.waker().clone());
 }
 
 /// What the driver is writing.
@@ -204,6 +219,11 @@ pub(crate) struct State {
     pub next_sid: u32,
     /// The token bucket (`smux/session.go:101,143`), in payload bytes.
     pub bucket: i64,
+    /// The pool bytes unread frames hold beyond their payload (the 2-byte
+    /// length each keeps until it is read): reading also stops once the
+    /// bucket does not cover them ([`State::rx_room`]), so tiny frames hold
+    /// no more than `max_receive_buffer` in the pool.
+    pub rx_headers: usize,
     pub slots: Vec<Option<Slot>>,
     free_slots: Vec<u32>,
     pub sids: HashMap<u32, u32>,
@@ -245,6 +265,7 @@ impl State {
                 Role::Server => 0,
             },
             bucket: cfg.max_receive_buffer as i64,
+            rx_headers: 0,
             slots,
             free_slots: Vec::new(),
             sids: HashMap::new(),
@@ -357,11 +378,19 @@ impl State {
         let State { slots, arena, .. } = self;
         let s = slots[idx as usize].as_mut().expect("live slot");
         let n = s.rx_payload as usize;
+        let headers = s.rx.stored() - n;
         s.rx.clear(arena);
         s.rx_payload = 0;
-        if n > 0 {
+        if n > 0 || headers > 0 {
+            self.rx_headers -= headers;
             self.return_tokens(n);
         }
+    }
+
+    /// The bucket less what unread frames hold beyond their payload: the
+    /// driver reads while it is positive.
+    pub(crate) fn rx_room(&self) -> i64 {
+        self.bucket - self.rx_headers as i64
     }
 
     /// `returnTokens` (`smux/session.go:377-381`): when the bucket is
@@ -369,7 +398,7 @@ impl State {
     pub(crate) fn return_tokens(&mut self, n: usize) {
         self.bucket += n as i64;
         self.rx_total -= n;
-        if self.bucket > 0 && self.read_paused {
+        if self.rx_room() > 0 && self.read_paused {
             self.read_paused = false;
             self.wake_driver();
         }
@@ -578,7 +607,7 @@ impl State {
     /// more than the accept backlog waits (`smux/session.go:142,440-445`: the
     /// stream is registered, then the push to the full channel blocks).
     pub(crate) fn may_read(&mut self, cfg: &Config) -> bool {
-        if self.bucket <= 0 || self.accept_q.len() > cfg.accept_backlog {
+        if self.rx_room() <= 0 || self.accept_q.len() > cfg.accept_backlog {
             self.read_paused = true;
             false
         } else {
@@ -620,10 +649,12 @@ impl State {
                         counters,
                         bucket,
                         rx_total,
+                        rx_headers,
                         ..
                     } = self;
                     let s = slots[idx as usize].as_mut().expect("live slot");
                     s.rx.push(arena, payload);
+                    *rx_headers += crate::arena::FRAME_LEN_BYTES;
                     s.rx_payload += n as u32;
                     s.peak_rx = s.peak_rx.max(s.rx_payload);
                     s.wake_read();
