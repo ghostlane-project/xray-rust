@@ -15,7 +15,27 @@
 // kind 4 PEERS (hub to participant): u16 big-endian, the others in the room.
 // kind 5 END (hub to participant): the conference ended, for this reason.
 //
-// The Rust side (olc-client's pipe module) speaks the same frames.
+// A participant may join with ids instead (PeersName, "peer mode"), as on a
+// carrier whose SFU names its participants:
+//
+// kind 6 JOIN as a participant with an id.
+// kind 7 SELF (hub to it): its id.
+// kind 8 DATA to one participant: u8 id length | id | message.
+// kind 9 DGRAM to one participant, the same way.
+// kind 10 DATA (hub to it): u8 id length | the sender's id | message.
+// kind 11 DGRAM (hub to it), the same way.
+//
+// A participant that joined with kind 1 is sent kinds 2 and 3 whoever sent
+// them, so the Rust side (olc-client's pipe module), which speaks kinds 1-5,
+// can be in a room with a server in peer mode.
+//
+// A test build (olcrtc_testhooks) started with OLCRTC_TEST_BRIDGE_DELAY opens
+// its bridge late, as the jitsi engine does for the gate's S6: on each join,
+// once another participant is in the room (Jicofo's session-initiate), it
+// waits testhooks.BeforeBridgeOpen out (jitsi/negotiate.go:60) and drops
+// every message it is sent until then, as the bridge drops what is sent to an
+// endpoint whose own bridge is not open. The others see it in the room all
+// along (PEERS), as they see a participant in the MUC.
 
 package interoppipe
 
@@ -28,16 +48,24 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/engine"
 	"github.com/openlibrecommunity/olcrtc/internal/logger"
+	"github.com/openlibrecommunity/olcrtc/internal/testhooks"
 )
 
 // Name is the engine's name in a config (engine: { name: interop-pipe }).
 const Name = "interop-pipe"
+
+// PeersName is the engine in peer mode (engine: { name: interop-pipe-peers }):
+// a session that is an engine.PeerSession, so the datachannel transport above
+// it routes per peer (SupportsPeerRouting, datachannel/transport.go:137-140)
+// and a server on it runs its peer-routing path (server/link.go:30-32).
+const PeersName = "interop-pipe-peers"
 
 // The frame kinds.
 const (
@@ -46,7 +74,31 @@ const (
 	KindDgram byte = 3
 	KindPeers byte = 4
 	KindEnd   byte = 5
+	// Peer mode.
+	KindJoinPeers byte = 6
+	KindSelf      byte = 7
+	KindDataTo    byte = 8
+	KindDgramTo   byte = 9
+	KindDataFrom  byte = 10
+	KindDgramFrom byte = 11
 )
+
+// Addressed is a peer-mode payload: u8 id length | id | message.
+func Addressed(id string, msg []byte) []byte {
+	out := make([]byte, 0, 1+len(id)+len(msg))
+	out = append(out, byte(len(id))) //nolint:gosec // the hub's ids are a few bytes
+	out = append(out, id...)
+	return append(out, msg...)
+}
+
+// SplitAddressed reads a peer-mode payload: the id and the message.
+func SplitAddressed(p []byte) (string, []byte, bool) {
+	if len(p) < 1 || len(p) < 1+int(p[0]) {
+		return "", nil, false
+	}
+	n := int(p[0])
+	return string(p[1 : 1+n]), p[1+n:], true
+}
 
 // MaxPayload bounds one frame's payload: four times the datachannel's 12 KiB
 // message, so no message a transport sends is refused.
@@ -118,15 +170,21 @@ func ReadFrame(r io.Reader) (byte, []byte, error) {
 	return hdr[4], payload, nil
 }
 
-// Register adds the engine to the engine registry.
-func Register() { engine.Register(Name, New) }
+// Register adds the engine, in both modes, to the engine registry.
+func Register() {
+	engine.Register(Name, New)
+	engine.Register(PeersName, NewPeers)
+}
 
 // Session is one participant: engine.Session, DatagramSession and the
 // transport's PeerObserver.
 type Session struct {
-	addr, room string
-	onData     func([]byte)
-	onDatagram func([]byte)
+	addr, room     string
+	onData         func([]byte)
+	onDatagram     func([]byte)
+	peerMode       bool
+	onPeerData     func(string, []byte)
+	onPeerDatagram func(string, []byte)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -139,6 +197,8 @@ type Session struct {
 	reconnect func()
 	should    func() bool
 	ended     func(string)
+	self      string // peer mode: the hub's id for this connection
+	target    string // peer mode: the participant every Send goes to
 
 	wmu sync.Mutex // one frame at a time on conn
 }
@@ -150,6 +210,23 @@ var (
 
 // New is the engine's factory: cfg.URL is tcp://host:port/room.
 func New(_ context.Context, cfg engine.Config) (engine.Session, error) {
+	s, err := newSession(cfg, false)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// NewPeers is the factory of the engine in peer mode (PeersName).
+func NewPeers(_ context.Context, cfg engine.Config) (engine.Session, error) {
+	s, err := newSession(cfg, true)
+	if err != nil {
+		return nil, err
+	}
+	return &Peers{Session: s}, nil
+}
+
+func newSession(cfg engine.Config, peerMode bool) (*Session, error) {
 	addr, room, err := ParseURL(cfg.URL)
 	if err != nil {
 		return nil, err
@@ -157,6 +234,7 @@ func New(_ context.Context, cfg engine.Config) (engine.Session, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Session{
 		addr: addr, room: room, onData: cfg.OnData, onDatagram: cfg.OnDatagram,
+		peerMode: peerMode, onPeerData: cfg.OnPeerData, onPeerDatagram: cfg.OnPeerDatagram,
 		ctx: ctx, cancel: cancel,
 	}, nil
 }
@@ -191,7 +269,11 @@ func (s *Session) join(ctx context.Context) (net.Conn, error) {
 			return nil, fmt.Errorf("interop-pipe: send buffer: %w", err)
 		}
 	}
-	if err := WriteFrame(conn, KindJoin, []byte(s.room)); err != nil {
+	join := KindJoin
+	if s.peerMode {
+		join = KindJoinPeers
+	}
+	if err := WriteFrame(conn, join, []byte(s.room)); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("interop-pipe: join: %w", err)
 	}
@@ -200,10 +282,14 @@ func (s *Session) join(ctx context.Context) (net.Conn, error) {
 
 func (s *Session) read(conn net.Conn) {
 	br := bufio.NewReaderSize(conn, MaxPayload+5)
+	bridge := newBridge()
 	for {
 		kind, payload, err := ReadFrame(br)
 		if err != nil {
 			break
+		}
+		if isMessage(kind) && !bridge.open() {
+			continue
 		}
 		switch kind {
 		case KindData:
@@ -214,11 +300,36 @@ func (s *Session) read(conn net.Conn) {
 			if s.onDatagram != nil {
 				s.onDatagram(payload)
 			}
+		case KindSelf:
+			s.mu.Lock()
+			s.self = string(payload)
+			s.mu.Unlock()
+		case KindDataFrom:
+			// A server routes by the sender (OnPeerData); a client reads
+			// what any peer sent (OnData), as on a carrier.
+			if from, msg, ok := SplitAddressed(payload); ok {
+				switch {
+				case s.onPeerData != nil:
+					s.onPeerData(from, msg)
+				case s.onData != nil:
+					s.onData(msg)
+				}
+			}
+		case KindDgramFrom:
+			if from, msg, ok := SplitAddressed(payload); ok {
+				switch {
+				case s.onPeerDatagram != nil:
+					s.onPeerDatagram(from, msg)
+				case s.onDatagram != nil:
+					s.onDatagram(msg)
+				}
+			}
 		case KindPeers:
 			if len(payload) == 2 && binary.BigEndian.Uint16(payload) > 0 {
 				s.mu.Lock()
 				s.seen = true
 				s.mu.Unlock()
+				bridge.start()
 			}
 		case KindEnd:
 			s.mu.Lock()
@@ -235,6 +346,59 @@ func (s *Session) read(conn net.Conn) {
 		}
 	}
 	s.lost(conn)
+}
+
+// isMessage is a kind that carries a participant's message.
+func isMessage(kind byte) bool {
+	switch kind {
+	case KindData, KindDgram, KindDataFrom, KindDgramFrom:
+		return true
+	}
+	return false
+}
+
+// bridgeDelayEnv is what testhooks.BeforeBridgeOpen reads.
+const bridgeDelayEnv = "OLCRTC_TEST_BRIDGE_DELAY"
+
+// bridge is one join's bridge: open at once, or, in a test build started
+// with a positive OLCRTC_TEST_BRIDGE_DELAY, once BeforeBridgeOpen returns
+// after another participant came.
+type bridge struct {
+	late   bool
+	once   sync.Once
+	opened chan struct{}
+}
+
+func newBridge() *bridge {
+	b := &bridge{opened: make(chan struct{})}
+	d, err := time.ParseDuration(os.Getenv(bridgeDelayEnv))
+	b.late = testhooks.Enabled && err == nil && d > 0
+	if !b.late {
+		close(b.opened)
+	}
+	return b
+}
+
+// start is the session-initiate: the bridge opens BeforeBridgeOpen later.
+func (b *bridge) start() {
+	if !b.late {
+		return
+	}
+	b.once.Do(func() {
+		go func() {
+			testhooks.BeforeBridgeOpen()
+			close(b.opened)
+		}()
+	})
+}
+
+func (b *bridge) open() bool {
+	select {
+	case <-b.opened:
+		return true
+	default:
+		return false
+	}
 }
 
 // lost rejoins after the hub connection went away, then tells the upper
@@ -280,7 +444,29 @@ func (s *Session) lost(conn net.Conn) {
 	}
 }
 
+// send sends a reliable (KindData) or lossy (KindDgram) message to the room,
+// or to the peer confirmed in peer mode, as a carrier's client sends to the
+// peer its welcome named.
 func (s *Session) send(kind byte, data []byte) error {
+	s.mu.Lock()
+	target := s.target
+	s.mu.Unlock()
+	if target != "" {
+		return s.sendTo(kind, target, data)
+	}
+	return s.write(kind, data)
+}
+
+// sendTo sends a reliable or lossy message to one participant (peer mode).
+func (s *Session) sendTo(kind byte, peerID string, data []byte) error {
+	to := KindDataTo
+	if kind == KindDgram {
+		to = KindDgramTo
+	}
+	return s.write(to, Addressed(peerID, data))
+}
+
+func (s *Session) write(kind byte, payload []byte) error {
 	s.mu.Lock()
 	conn, ok := s.conn, s.connected && !s.closed
 	s.mu.Unlock()
@@ -289,7 +475,7 @@ func (s *Session) send(kind byte, data []byte) error {
 	}
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
-	return WriteFrame(conn, kind, data)
+	return WriteFrame(conn, kind, payload)
 }
 
 // Send sends one reliable message to the room.
@@ -368,4 +554,49 @@ func (s *Session) PeerSeen() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.seen
+}
+
+// Peers is a participant in peer mode (PeersName): a Session with the peer
+// interfaces a carrier's engine has. The base Session has none of them, so a
+// server on Name stays on its single-session path.
+type Peers struct{ *Session }
+
+var (
+	_ engine.PeerSession         = (*Peers)(nil)
+	_ engine.PeerDatagramSession = (*Peers)(nil)
+	_ engine.PeerIdentity        = (*Peers)(nil)
+	_ engine.PeerResetter        = (*Peers)(nil)
+)
+
+// SendTo sends one reliable message to one participant.
+func (p *Peers) SendTo(peerID string, data []byte) error {
+	return p.sendTo(KindData, peerID, data)
+}
+
+// SendDatagramTo sends one lossy message to one participant.
+func (p *Peers) SendDatagramTo(peerID string, data []byte) error {
+	return p.sendTo(KindDgram, peerID, data)
+}
+
+// LocalPeerID is the hub's id for the connection there is; a rejoin gets a
+// new one. Empty until the hub has said it.
+func (p *Peers) LocalPeerID() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.self
+}
+
+// ConfirmPeer makes peerID the participant every later Send goes to.
+func (p *Peers) ConfirmPeer(peerID string) error {
+	p.mu.Lock()
+	p.target = peerID
+	p.mu.Unlock()
+	return nil
+}
+
+// ResetPeer forgets the confirmed participant: Send goes to the room again.
+func (p *Peers) ResetPeer() {
+	p.mu.Lock()
+	p.target = ""
+	p.mu.Unlock()
 }

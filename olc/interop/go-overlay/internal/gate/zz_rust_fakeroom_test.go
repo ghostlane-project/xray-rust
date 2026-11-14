@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -271,6 +272,21 @@ func (g goFakeRoomClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, erro
 	return cli.Start(ctx, ep)
 }
 
+// rtcScenarios is the registry the fakeroom and live targets run: S0-S5,
+// the cells T2(b) and T3 are read on, for every flavour. S6 and S7 are the
+// interop pipe's (interopScenarios, zz_rust_s6s7_test.go).
+func rtcScenarios(all []Scenario) []Scenario {
+	var out []Scenario
+	for _, s := range all {
+		if !slices.Contains([]string{"S0", "S1", "S2", "S3", "S4", "S5"}, s.ID) {
+			continue
+		}
+		s.Applies = always
+		out = append(out, s)
+	}
+	return out
+}
+
 // TestGateRustFakeRoom is the gate on the fakeroom target.
 func TestGateRustFakeRoom(t *testing.T) {
 	if *gateTargetName != targetFakeRoom {
@@ -298,7 +314,7 @@ func TestGateRustFakeRoom(t *testing.T) {
 
 	registryMu.Lock()
 	saved := registry
-	registry = interopScenarios(saved)
+	registry = rtcScenarios(saved)
 	registryMu.Unlock()
 	t.Cleanup(func() {
 		registryMu.Lock()

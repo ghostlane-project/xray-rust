@@ -56,7 +56,7 @@ func TestGateRustLive(t *testing.T) {
 
 	registryMu.Lock()
 	saved := registry
-	registry = interopScenarios(saved)
+	registry = rtcScenarios(saved)
 	registryMu.Unlock()
 	t.Cleanup(func() {
 		registryMu.Lock()

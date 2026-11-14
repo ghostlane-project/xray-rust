@@ -155,6 +155,10 @@ func interopServerConfig(ep Endpoint, ring []string) string {
 
 // rustConfig is what the Rust client reads (olc-client's config.rs).
 type rustConfig struct {
+	// Rooms are the room supervisor's rooms after URL (the supervisor
+	// failover e2e, zz_rust_e2e_test.go); none runs the one room.
+	Rooms []string `json:"rooms,omitempty"`
+
 	URL       string `json:"url"`
 	Key       string `json:"key"`
 	Transport string `json:"transport"`
@@ -205,7 +209,11 @@ func (c rustClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, error) {
 	defer timer.Stop()
 	select {
 	case addr := <-child.ready:
-		return &Tunnel{SocksAddr: addr, Stop: sync.OnceFunc(func() { child.halt(c.stop, c.logf) })}, nil
+		liveRust.Store(addr, child)
+		return &Tunnel{SocksAddr: addr, Stop: sync.OnceFunc(func() {
+			liveRust.Delete(addr)
+			child.halt(c.stop, c.logf)
+		})}, nil
 	case <-child.exited:
 		child.halt(c.stop, nil)
 		return nil, fmt.Errorf("rust client: %w: %v", ErrClientEnded, child.err)
@@ -225,7 +233,11 @@ type rustChild struct {
 	err    error
 	peak   int64 // the highest VmRSS sampled, KiB
 	peakMu sync.Mutex
-	once   sync.Once
+	// samples is every sample, in time order, for S7 on the rust flavour
+	// (zz_rust_s6s7_test.go): VmRSS, RssAnon as the heap, the threads as
+	// the goroutines; under peakMu.
+	samples []Sample
+	once    sync.Once
 }
 
 func startRust(ctx context.Context, bin string, ep Endpoint, extra func(*rustConfig)) (*rustChild, error) {
@@ -291,14 +303,27 @@ func startRust(ctx context.Context, bin string, ep Endpoint, extra func(*rustCon
 	return c, nil
 }
 
-// sample keeps the child's peak resident memory, once a second.
+// childSampleEvery is how often the child is sampled: under the runner's
+// second, so what S7 reads at a mark is at most this much after it.
+const childSampleEvery = 250 * time.Millisecond
+
+// sample keeps the child's samples and its peak resident memory.
 func (c *rustChild) sample() {
-	tick := time.NewTicker(time.Second)
+	tick := time.NewTicker(childSampleEvery)
 	defer tick.Stop()
+	pid := c.cmd.Process.Pid
 	for {
-		if kb := procStatusKB(c.cmd.Process.Pid, "VmRSS:"); kb > 0 {
+		if kb := procStatusKB(pid, "VmRSS:"); kb > 0 {
+			anon := max(procStatusKB(pid, "RssAnon:"), 0)
+			sm := Sample{
+				At:         time.Now(),
+				RSS:        uint64(kb) << 10,   //nolint:gosec // positive: checked above
+				HeapInuse:  uint64(anon) << 10, //nolint:gosec // not negative: max above
+				Goroutines: int(procStatusKB(pid, "Threads:")),
+			}
 			c.peakMu.Lock()
 			c.peak = max(c.peak, kb)
+			c.samples = append(c.samples, sm)
 			c.peakMu.Unlock()
 		}
 		select {
@@ -307,6 +332,13 @@ func (c *rustChild) sample() {
 		case <-tick.C:
 		}
 	}
+}
+
+// series is a copy of the child's samples.
+func (c *rustChild) series() []Sample {
+	c.peakMu.Lock()
+	defer c.peakMu.Unlock()
+	return slices.Clone(c.samples)
 }
 
 // procStatusKB reads one kB field of /proc/<pid>/status; 0 when it cannot.
@@ -362,14 +394,20 @@ func (g goInteropClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, error
 	return c.Start(ctx, ep)
 }
 
-// interopScenarios is the registry the interop target runs: S0-S5 for every
-// flavour. S6 needs a server whose bridge opens late, which a hub room does
-// not model, and S7 weighs the test process, which the rust flavour is not
-// part of (its memory is logged at its stop instead).
-func interopScenarios(all []Scenario) []Scenario {
+// interopScenarios is the registry the interop target runs: S0-S7 for every
+// flavour, S6 on servers whose pipe opens its bridge late and S7 over the
+// rust client's own process (zz_rust_s6s7_test.go); withhold keeps S6's late
+// servers out of the report.
+func interopScenarios(all []Scenario, withhold func(...string)) []Scenario {
 	var out []Scenario
 	for _, s := range all {
-		if !slices.Contains([]string{"S0", "S1", "S2", "S3", "S4", "S5"}, s.ID) {
+		switch s.ID {
+		case "S0", "S1", "S2", "S3", "S4", "S5":
+		case "S6":
+			s = interopS6(s, withhold)
+		case "S7":
+			s = interopS7(s)
+		default:
 			continue
 		}
 		s.Applies = always
@@ -395,10 +433,11 @@ func TestGateRust(t *testing.T) {
 	}
 	t.Cleanup(hub.Close)
 	target := &InteropTarget{root: root, work: t.TempDir(), hub: hub, origin: startOrigin(t)}
+	rec := NewRecorder(Report{Target: targetInterop, Runner: runnerName()})
 
 	registryMu.Lock()
 	saved := registry
-	registry = interopScenarios(saved)
+	registry = interopScenarios(saved, rec.Withhold)
 	registryMu.Unlock()
 	t.Cleanup(func() {
 		registryMu.Lock()
@@ -425,7 +464,6 @@ func TestGateRust(t *testing.T) {
 	if err := os.MkdirAll(dir, artifactsPerm); err != nil {
 		t.Fatal(err)
 	}
-	rec := NewRecorder(Report{Target: targetInterop, Runner: runnerName()})
 	capture := StartCapture()
 	defer capture.Stop()
 	secrets := []string{}
