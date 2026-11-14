@@ -1306,7 +1306,11 @@ mod tests {
     async fn a_give_down_to_a_lowered_capacity_has_the_settler_run_a_round() {
         let budget: &'static ByteBudget = Box::leak(Box::new(budget(64 * KIB, 4 * KIB)));
         let mut gate = ReceiveGate::new(budget);
-        assert_eq!(gate.grant(4 * KIB + 16 * KIB), 0, "nothing read, nothing owed");
+        assert_eq!(
+            gate.grant(4 * KIB + 16 * KIB),
+            0,
+            "nothing read, nothing owed"
+        );
         assert_eq!(gate.held(), 16 * KIB, "the gate holds its queue");
         gate.consumed(8 * KIB);
         let mut relay = BudgetPermits::new(budget);

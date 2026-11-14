@@ -829,9 +829,12 @@ async fn a_paused_streams_credit_waits_on_another_paused_streams_reader_while_b_
     let (_victim_body, mut victim) = response_pair(&client, &mut server).await;
     // The connection less the two queues and the credit the second holds
     // back, which is the rest of its window.
-    timeout(DEADLINE, send_bytes(&mut victim, CONNECTION - QUEUE - WINDOW))
-        .await
-        .expect("the connection's credit beside the second stream's");
+    timeout(
+        DEADLINE,
+        send_bytes(&mut victim, CONNECTION - QUEUE - WINDOW),
+    )
+    .await
+    .expect("the connection's credit beside the second stream's");
     assert_blocked(&mut victim).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
     assert_blocked(&mut victim).await;
@@ -840,9 +843,12 @@ async fn a_paused_streams_credit_waits_on_another_paused_streams_reader_while_b_
     // The first reader reads: its queue falls, and the second's fits.
     let mut bytes = vec![0; 300 * KIB];
     first.read_exact(&mut bytes).await.unwrap();
-    timeout(DEADLINE, send_bytes(&mut victim, WINDOW - (CONNECTION - QUEUE - WINDOW)))
-        .await
-        .expect("the second stream's credit goes back once its queue fits");
+    timeout(
+        DEADLINE,
+        send_bytes(&mut victim, WINDOW - (CONNECTION - QUEUE - WINDOW)),
+    )
+    .await
+    .expect("the second stream's credit goes back once its queue fits");
     assert_blocked(&mut victim).await;
     assert_eq!(
         budget.in_use(),
