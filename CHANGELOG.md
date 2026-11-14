@@ -10,6 +10,18 @@ long-term supported release series.
 
 ## Unreleased
 
+- `xray_core_reset_network(handle, closed, error)` (ABI 1.18, under
+  `CONNECTION_MANAGEMENT`; no new capability bit) resets the network under a
+  running core, as sing-box's `resetNetwork` does for a host whose device
+  moved to another network: the connections kept for later flows are let go
+  (gRPC and XHTTP HTTP/2 and HTTP/1.1 pools, an HTTP proxy's shared HTTP/2
+  connection, Mux.Cool parents, VLESS `testpre`) and no later flow is handed
+  one dialed before the call; the core's DNS caches forget their answers,
+  FakeDNS mappings kept; QUIC and WireGuard carriers rebind as the rebind
+  calls do; and every relayed flow is asked to close. Listeners keep
+  listening. The Swift and Kotlin adapters do not wrap it yet. See
+  [network reset](docs/ffi.md#network-reset).
+
 ## 0.10.0 - 2026-11-13
 
 Release candidate preparation; publication and exact-candidate release

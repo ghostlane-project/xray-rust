@@ -43,6 +43,9 @@ struct SharedHttp2 {
     client: Option<Http2ConnectClient>,
     /// Set when the core stops: no connection is kept from then on.
     closed: bool,
+    /// Counts [`HttpOutbound::reset`]s, so a connection dialed before one
+    /// is not kept.
+    resets: u64,
 }
 
 impl HttpOutbound {
@@ -93,6 +96,23 @@ impl HttpOutbound {
         let mut shared = self.0.http2.lock().unwrap_or_else(PoisonError::into_inner);
         shared.closed = true;
         shared.client = None;
+    }
+
+    /// Lets the shared HTTP/2 connection close once its tunnels end, as a
+    /// network reset asks; unlike [`Self::close`], the next new connection
+    /// is kept again. One dialed before the reset is not.
+    pub(crate) fn reset(&self) {
+        let mut shared = self.0.http2.lock().unwrap_or_else(PoisonError::into_inner);
+        shared.resets = shared.resets.wrapping_add(1);
+        shared.client = None;
+    }
+
+    fn http2_resets(&self) -> u64 {
+        self.0
+            .http2
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .resets
     }
 
     /// Whether a custom header names the connection's source, which then has
@@ -250,9 +270,10 @@ impl HttpOutbound {
         download: &[SocketAddr],
         dialer: &TransportDialer,
     ) -> Result<BoxedTransportStream, CoreError> {
+        let resets = self.http2_resets();
         let mut stream = self.0.carrier.open(candidates, download, dialer).await?;
         if self.negotiated_http2(stream.negotiated_alpn())? {
-            return self.connect_http2(stream, target, source).await;
+            return self.connect_http2(stream, target, source, resets).await;
         }
         stream.release_record_alignment();
         let early = http_connect(&mut stream, request).await?;
@@ -287,11 +308,14 @@ impl HttpOutbound {
     /// Opens HTTP/2 on a new connection and the tunnel on it, then keeps the
     /// connection for the tunnels that follow, as Xray-core caches it once its
     /// first tunnel opened.
+    ///
+    /// `resets` is the count of resets when the connection's dial started.
     async fn connect_http2(
         &self,
         stream: BoxedTransportStream,
         target: &Target,
         source: Option<SocketAddr>,
+        resets: u64,
     ) -> Result<BoxedTransportStream, CoreError> {
         let request = self.http2_request(target, source)?;
         let client = Http2ConnectClient::handshake(stream)
@@ -302,7 +326,7 @@ impl HttpOutbound {
             .await
             .map_err(http2_error)?;
         let mut shared = self.0.http2.lock().unwrap_or_else(PoisonError::into_inner);
-        if !shared.closed {
+        if !shared.closed && shared.resets == resets {
             shared.client = Some(client);
         }
         Ok(tunnel)
@@ -440,7 +464,7 @@ mod close_tests {
         );
         let open = outbound();
         let _kept = open
-            .connect_http2(accepting_proxy(), &target, None)
+            .connect_http2(accepting_proxy(), &target, None, 0)
             .await
             .unwrap();
         assert!(open.0.http2.lock().unwrap().client.is_some());
@@ -449,9 +473,41 @@ mod close_tests {
         let closed = outbound();
         closed.close();
         let _tunnel = closed
-            .connect_http2(accepting_proxy(), &target, None)
+            .connect_http2(accepting_proxy(), &target, None, 0)
             .await
             .unwrap();
         assert!(closed.0.http2.lock().unwrap().client.is_none());
+    }
+
+    /// A network reset lets the shared connection go and keeps the next one;
+    /// a connection dialed before the reset is not kept.
+    #[tokio::test]
+    async fn a_reset_outbound_drops_its_connection_and_keeps_the_next() {
+        let target = Target::new(
+            RoutingTargetAddr::Domain("example.com".to_owned()),
+            443,
+            RoutingNetwork::Tcp,
+        );
+        let outbound = outbound();
+        let _first = outbound
+            .connect_http2(accepting_proxy(), &target, None, outbound.http2_resets())
+            .await
+            .unwrap();
+        assert!(outbound.0.http2.lock().unwrap().client.is_some());
+
+        let dialed_before = outbound.http2_resets();
+        outbound.reset();
+        assert!(outbound.0.http2.lock().unwrap().client.is_none());
+        let _late = outbound
+            .connect_http2(accepting_proxy(), &target, None, dialed_before)
+            .await
+            .unwrap();
+        assert!(outbound.0.http2.lock().unwrap().client.is_none());
+
+        let _next = outbound
+            .connect_http2(accepting_proxy(), &target, None, outbound.http2_resets())
+            .await
+            .unwrap();
+        assert!(outbound.0.http2.lock().unwrap().client.is_some());
     }
 }

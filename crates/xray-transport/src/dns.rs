@@ -259,6 +259,7 @@ pub struct CachingDnsResolver {
     stale_ttl: Option<Duration>,
     state: Arc<Mutex<DnsCacheState>>,
     refresh_shutdown: watch::Sender<()>,
+    network_resets: Option<crate::NetworkResets>,
 }
 
 #[derive(Default)]
@@ -266,6 +267,8 @@ struct DnsCacheState {
     resolved: HashMap<(String, u16, DnsQueryStrategy), CachedDnsOutcome>,
     in_flight: HashMap<(String, u16, DnsQueryStrategy), Arc<InFlightDnsLookup>>,
     access_sequence: u64,
+    /// The network generation the entries were looked up in.
+    network_generation: u64,
 }
 
 struct CachedDnsOutcome {
@@ -499,6 +502,7 @@ impl CachingDnsResolver {
             stale_ttl: None,
             state: Arc::new(Mutex::new(DnsCacheState::default())),
             refresh_shutdown: watch::channel(()).0,
+            network_resets: None,
         }
     }
 
@@ -511,6 +515,7 @@ impl CachingDnsResolver {
             stale_ttl: None,
             state: Arc::new(Mutex::new(DnsCacheState::default())),
             refresh_shutdown: watch::channel(()).0,
+            network_resets: None,
         }
     }
 
@@ -527,7 +532,21 @@ impl CachingDnsResolver {
             stale_ttl: (!stale_ttl.is_zero()).then_some(stale_ttl),
             state: Arc::new(Mutex::new(DnsCacheState::default())),
             refresh_shutdown: watch::channel(()).0,
+            network_resets: None,
         }
+    }
+
+    /// Forgets every answer, and every lookup in flight, when `resets`
+    /// starts a new generation: the next lookup asks again, on the network
+    /// the host has now. A lookup that was in flight still answers its own
+    /// callers but is not kept.
+    pub fn with_network_resets(mut self, resets: &crate::NetworkResets) -> Self {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .network_generation = resets.generation();
+        self.network_resets = Some(resets.clone());
+        self
     }
 
     fn spawn_refresh(
@@ -629,6 +648,17 @@ impl DnsResolver for CachingDnsResolver {
                     .state
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(generation) = self
+                    .network_resets
+                    .as_ref()
+                    .map(crate::NetworkResets::generation)
+                    .filter(|generation| *generation != state.network_generation)
+                {
+                    // A leader no longer in `in_flight` does not store.
+                    state.network_generation = generation;
+                    state.resolved.clear();
+                    state.in_flight.clear();
+                }
                 let access_sequence = state.next_access_sequence();
                 let cached = state.resolved.get_mut(&key).and_then(|entry| {
                     if entry.expires_at > now {
@@ -5861,6 +5891,46 @@ mod tests {
         resolver.resolve("CACHE.EXAMPLE.", 443).await.unwrap();
 
         assert_eq!(inner.calls.load(Ordering::Relaxed), 1);
+    }
+
+    /// An answer from before a network reset is not served after it, and a
+    /// lookup in flight across the reset answers its caller without being
+    /// kept; a cache that follows no resets keeps its answers.
+    #[tokio::test]
+    async fn caching_dns_forgets_answers_from_before_a_network_reset() {
+        let inner = Arc::new(DelayedCountingResolver {
+            calls: AtomicUsize::new(0),
+            result: Some(SocketAddr::from(([192, 0, 2, 63], 0))),
+        });
+        let resets = crate::NetworkResets::default();
+        let resolver =
+            Arc::new(CachingDnsResolver::new(inner.clone()).with_network_resets(&resets));
+        let unfollowing = CachingDnsResolver::new(inner.clone());
+
+        resolver.resolve("reset.example", 443).await.unwrap();
+        unfollowing.resolve("kept.example", 443).await.unwrap();
+        resolver.resolve("reset.example", 443).await.unwrap();
+        assert_eq!(inner.calls.load(Ordering::Relaxed), 2);
+
+        resets.reset();
+        resolver.resolve("reset.example", 443).await.unwrap();
+        unfollowing.resolve("kept.example", 443).await.unwrap();
+        assert_eq!(inner.calls.load(Ordering::Relaxed), 3);
+
+        let in_flight = tokio::spawn({
+            let resolver = Arc::clone(&resolver);
+            async move { resolver.resolve("flight.example", 443).await }
+        });
+        while inner.calls.load(Ordering::Relaxed) < 4 {
+            tokio::task::yield_now().await;
+        }
+        resets.reset();
+        assert_eq!(
+            in_flight.await.unwrap().unwrap(),
+            SocketAddr::from(([192, 0, 2, 63], 443))
+        );
+        resolver.resolve("flight.example", 443).await.unwrap();
+        assert_eq!(inner.calls.load(Ordering::Relaxed), 5);
     }
 
     #[tokio::test]

@@ -26,6 +26,11 @@
 //! transport's steady state rather than an edge case, so grpc-go's dormancy is
 //! reproduced in [`super::keepalive`] instead of being written off as an
 //! idle-connection detail.
+//!
+//! A host's network reset ([`crate::NetworkResets`]) ends a connection's turn
+//! too: the slot lets it go at once, idle or not, and no flow after the reset
+//! is handed it or joins a dial that started before it. Its open calls keep
+//! it until they end, as they do on retirement.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -39,6 +44,7 @@ use super::config::GrpcConfig;
 use super::h2client::{
     build_grpc_call, h2_handshake, open_grpc_call, H2Connection, H2ConnectionIdleWatch,
 };
+use crate::network_change::reset_after;
 use crate::{
     utls_tls::TlsAlpnPolicy, BoxedTransportStream, ConnectorConfig, HappyEyeballsConfig,
     TransportDialer, TransportError,
@@ -132,7 +138,7 @@ impl GrpcTransport {
     #[doc(hidden)]
     pub async fn holds_a_live_connection(&self) -> bool {
         match &*self.pool.state.lock().await {
-            PoolState::Ready(connection) => connection.is_live(),
+            PoolState::Ready(connection, _) => connection.is_live(),
             PoolState::Empty | PoolState::Dialing(_) => false,
         }
     }
@@ -183,9 +189,16 @@ impl GrpcTransport {
 
         loop {
             let mut state = self.pool.state.lock().await;
+            // Read on every turn: a reset while this flow waited for a dial
+            // must not leave it on a connection of the old network. Read
+            // under the lock the retirement task takes after a reset, so a
+            // flow that finds the slot emptied by a reset starts its dial in
+            // the new generation, not in the one the reset ended.
+            let generation = dialer.network_resets().generation();
             match &mut *state {
-                PoolState::Ready(connection) => {
-                    if !connection.is_live()
+                PoolState::Ready(connection, dialled_in) => {
+                    if *dialled_in != generation
+                        || !connection.is_live()
                         || connection.has_been_idle_for(self.pool.connection_idle_timeout)
                     {
                         *state = PoolState::Empty;
@@ -207,6 +220,10 @@ impl GrpcTransport {
                         }
                     }
                 }
+                PoolState::Dialing(attempt) if attempt.generation != generation => {
+                    // Superseded: the attempt still settles its own waiters.
+                    *state = PoolState::Empty;
+                }
                 PoolState::Dialing(attempt) => {
                     let attempt = Arc::clone(attempt);
                     drop(state);
@@ -216,7 +233,7 @@ impl GrpcTransport {
                     may_replace_refusing_connection = false;
                 }
                 PoolState::Empty => {
-                    let attempt = Arc::new(DialAttempt::new());
+                    let attempt = Arc::new(DialAttempt::new(generation));
                     *state = PoolState::Dialing(Arc::clone(&attempt));
                     self.pool.spawn_dial(
                         dialer.clone(),
@@ -253,7 +270,8 @@ struct GrpcConnectionPool {
 enum PoolState {
     Empty,
     Dialing(Arc<DialAttempt>),
-    Ready(H2Connection),
+    /// The connection and the network generation its dial started in.
+    Ready(H2Connection, u64),
 }
 
 #[derive(Clone)]
@@ -265,12 +283,17 @@ enum DialOutcome {
 
 struct DialAttempt {
     outcome: watch::Sender<DialOutcome>,
+    /// The network generation the dial started in.
+    generation: u64,
 }
 
 impl DialAttempt {
-    fn new() -> Self {
+    fn new(generation: u64) -> Self {
         let (outcome, _) = watch::channel(DialOutcome::Pending);
-        Self { outcome }
+        Self {
+            outcome,
+            generation,
+        }
     }
 
     fn complete(&self, outcome: DialOutcome) {
@@ -319,6 +342,7 @@ impl GrpcConnectionPool {
         attempt: Arc<DialAttempt>,
     ) {
         let pool = Arc::clone(self);
+        let resets = dialer.network_resets().follow();
         tokio::spawn(async move {
             let timeout = pool.cold_dial_timeout;
             let dialled = tokio::time::timeout(timeout, async {
@@ -345,14 +369,14 @@ impl GrpcConnectionPool {
                             PoolState::Dialing(current) if Arc::ptr_eq(current, &attempt)
                         );
                         if current {
-                            *state = PoolState::Ready(connection);
+                            *state = PoolState::Ready(connection, attempt.generation);
                         }
                         current
                     };
 
                     if installed {
                         attempt.complete(DialOutcome::Ready);
-                        pool.spawn_idle_retirement(idle_watch);
+                        pool.spawn_retirement(idle_watch, resets, attempt.generation);
                     } else {
                         attempt.complete(DialOutcome::Failed(Arc::from(
                             "shared gRPC connection attempt was superseded",
@@ -387,19 +411,30 @@ impl GrpcConnectionPool {
         attempt.complete(DialOutcome::Failed(reason));
     }
 
-    fn spawn_idle_retirement(self: &Arc<Self>, idle: H2ConnectionIdleWatch) {
+    /// Retires the slot's connection once it has been idle for the idle
+    /// timeout, or at once when the network is reset after `generation`, the
+    /// one its dial started in.
+    fn spawn_retirement(
+        self: &Arc<Self>,
+        idle: H2ConnectionIdleWatch,
+        mut resets: watch::Receiver<u64>,
+        generation: u64,
+    ) {
         let pool = Arc::downgrade(self);
         let timeout = self.connection_idle_timeout;
         tokio::spawn(async move {
             loop {
-                idle.wait_until_idle_for(timeout).await;
+                let reset = tokio::select! {
+                    () = idle.wait_until_idle_for(timeout) => false,
+                    () = reset_after(&mut resets, generation) => true,
+                };
                 let Some(pool) = pool.upgrade() else {
                     return;
                 };
                 let mut state = pool.state.lock().await;
                 let current = matches!(
                     &*state,
-                    PoolState::Ready(connection) if idle.watches(connection)
+                    PoolState::Ready(connection, _) if idle.watches(connection)
                 );
                 if !current {
                     return;
@@ -407,7 +442,7 @@ impl GrpcConnectionPool {
                 // A call may have opened between the timer firing and this
                 // task acquiring the pool lock. Recheck under the same lock
                 // every call opening uses before retiring the slot.
-                if idle.has_been_idle_for(timeout) {
+                if reset || idle.has_been_idle_for(timeout) {
                     *state = PoolState::Empty;
                     return;
                 }
@@ -425,7 +460,7 @@ impl fmt::Debug for GrpcConnectionPool {
             Ok(state) => match &*state {
                 PoolState::Empty => ("empty", None),
                 PoolState::Dialing(_) => ("dialing", None),
-                PoolState::Ready(connection) => ("ready", Some(connection.is_live())),
+                PoolState::Ready(connection, _) => ("ready", Some(connection.is_live())),
             },
             Err(_) => ("locked", None),
         };

@@ -30,7 +30,7 @@ use xray_tun::TunTcpSlowFlowKind;
 use zeroize::Zeroize;
 
 pub const XRAY_FFI_ABI_MAJOR: u32 = 1;
-pub const XRAY_FFI_ABI_MINOR: u32 = 17;
+pub const XRAY_FFI_ABI_MINOR: u32 = 18;
 
 pub const XRAY_FFI_CAPABILITY_CONFIG_WARNINGS: u64 = 1 << 0;
 pub const XRAY_FFI_CAPABILITY_GEODATA_SEARCH: u64 = 1 << 1;
@@ -1630,6 +1630,48 @@ pub unsafe extern "C" fn xray_core_rebind_hysteria(
             // carrier takes it; the name is from when Hysteria's was the
             // only one that could.
             *accepted = core.rebind_hysteria() + core.rebind_quic();
+            XrayStatus::Ok
+        })
+    }
+}
+
+/// Resets the network under a running core (ABI 1.18,
+/// `CONNECTION_MANAGEMENT`), as a host does when the device moved to another
+/// network: the connections kept for later flows are let go, the core's DNS
+/// caches forget their answers, QUIC and WireGuard carriers rebind as
+/// [`xray_core_rebind_hysteria`] and [`xray_core_rebind_wireguard`] do, and
+/// every relayed flow is asked to close, so its application dials again at
+/// once. Listeners, FakeDNS mappings and the core's state are kept. `closed`
+/// is the number of flows asked to close; a flow an earlier reset or close
+/// already asked is not counted again. Nonblocking; harmless when repeated,
+/// before start or after stop.
+///
+/// # Safety
+/// `handle` must be null or live; `closed` must be null or writable. May run
+/// with data-path/snapshot calls, but not lifecycle calls or `xray_core_free`.
+#[no_mangle]
+pub unsafe extern "C" fn xray_core_reset_network(
+    handle: *mut XrayCoreHandle,
+    closed: *mut u64,
+    error: *mut *mut XrayError,
+) -> XrayStatus {
+    unsafe {
+        ffi_status(error, || {
+            clear_error(error);
+            if closed.is_null() {
+                set_error(error, XrayStatus::NullArgument, "closed count is null");
+                return XrayStatus::NullArgument;
+            }
+            *closed = 0;
+            let handle = match shared_handle(handle, error) {
+                Ok(handle) => handle,
+                Err(status) => return status,
+            };
+            let core = match loaded_core(handle, error) {
+                Ok(core) => core,
+                Err(status) => return status,
+            };
+            *closed = core.reset_network().closed_connections;
             XrayStatus::Ok
         })
     }

@@ -198,6 +198,38 @@ impl ConnectionRegistry {
         Ok(close.1)
     }
 
+    /// Asks every connection in the inventory to close, as
+    /// [`Self::close`] asks one, and returns how many were asked. A
+    /// connection already asked, by an earlier call or by [`Self::close`],
+    /// is neither asked nor counted again, and a call that asks none leaves
+    /// the revision as it is. A connection registered after the call is
+    /// left alone.
+    pub fn close_all(&self) -> u64 {
+        let closes = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let closes = state
+                .active
+                .values_mut()
+                .filter(|entry| !entry.host_close_requested)
+                .map(|entry| {
+                    entry.host_close_requested = true;
+                    entry.close.clone()
+                })
+                .collect::<Vec<_>>();
+            if !closes.is_empty() {
+                state.revision = state.revision.saturating_add(1);
+            }
+            closes
+        };
+        for close in &closes {
+            let _ = close.send(true);
+        }
+        closes.len() as u64
+    }
+
     pub(crate) fn register(
         self: &Arc<Self>,
         inbound_tag: Option<String>,
@@ -410,6 +442,41 @@ mod tests {
             registry.close(id),
             Err(ConnectionCloseError::NotFound(id.get()))
         );
+    }
+
+    #[test]
+    fn close_all_asks_every_registered_connection_once_and_no_later_one() {
+        let registry = Arc::new(ConnectionRegistry::new());
+        assert_eq!(registry.close_all(), 0);
+        let revision = registry.snapshot().revision;
+        assert_eq!(registry.close_all(), 0);
+        assert_eq!(registry.snapshot().revision, revision);
+
+        let opening = registry.register(None, Some("proxy".to_owned()), target());
+        let active = registry.register(None, Some("proxy".to_owned()), target());
+        active.mark_active();
+        let revision = registry.snapshot().revision;
+        assert_eq!(registry.close_all(), 2);
+        assert!(registry.snapshot().revision > revision);
+        assert!(*opening.close_receiver().borrow());
+        assert!(*active.close_receiver().borrow());
+
+        // Asked already and not yet gone: neither counted nor a new revision.
+        let revision = registry.snapshot().revision;
+        assert_eq!(registry.close_all(), 0);
+        assert_eq!(registry.snapshot().revision, revision);
+
+        let later = registry.register(None, Some("proxy".to_owned()), target());
+        assert!(!*later.close_receiver().borrow());
+        // One closed by id is not asked again either; the later one is.
+        let closed_by_id = registry.register(None, Some("proxy".to_owned()), target());
+        registry.close(closed_by_id.id).unwrap();
+        assert_eq!(registry.close_all(), 1);
+        assert!(*later.close_receiver().borrow());
+        drop((opening, active, later, closed_by_id));
+        let accounting = registry.accounting_snapshot();
+        assert_eq!(accounting.outbounds[0].completed_connections, 4);
+        assert_eq!(accounting.outbounds[0].host_closed_connections, 4);
     }
 
     #[test]

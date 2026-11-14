@@ -49,6 +49,7 @@ fn ffi_header_declares_lifecycle_error_and_tun_abi() {
         "xray_core_close_connection",
         "xray_core_rebind_wireguard",
         "xray_core_rebind_hysteria",
+        "xray_core_reset_network",
         "xray_core_probe_outbound_url",
         "xray_core_cancel_outbound_probes",
         "xray_core_cancel_inflight_outbound_probes",
@@ -1302,6 +1303,7 @@ const EXPORTED_SYMBOLS: &[&str] = &[
     "xray_core_close_connection",
     "xray_core_rebind_wireguard",
     "xray_core_rebind_hysteria",
+    "xray_core_reset_network",
     "xray_core_probe_outbound_url",
     "xray_core_cancel_outbound_probes",
     "xray_core_cancel_inflight_outbound_probes",
@@ -1451,6 +1453,7 @@ static void use_xray_ffi_api(void) {
   (void)xray_core_close_connection(handle, 1, &error);
   (void)xray_core_rebind_wireguard(handle, &stats_probe, &error);
   (void)xray_core_rebind_hysteria(handle, &stats_probe, &error);
+  (void)xray_core_reset_network(handle, &stats_probe, &error);
   {
     uint64_t probe_delay_ms = 0;
     int32_t probe_failure_kind = XRAY_OUTBOUND_PROBE_FAILURE_NONE;

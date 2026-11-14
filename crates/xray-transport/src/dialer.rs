@@ -32,7 +32,18 @@ pub struct TransportDialer {
     /// What most dialers leave unset, behind one pointer: every open future
     /// holds dialers.
     replaced: Option<Arc<Replaced>>,
-    network_changes: crate::NetworkChanges,
+    /// The OS network-change and host network-reset signals, behind one
+    /// pointer for the same reason. Every dialer made from this one shares
+    /// them.
+    network: Arc<NetworkSignals>,
+}
+
+/// What [`TransportDialer::network_changes`] and
+/// [`TransportDialer::network_resets`] return.
+#[derive(Default)]
+struct NetworkSignals {
+    changes: crate::NetworkChanges,
+    resets: crate::NetworkResets,
 }
 
 /// What [`TransportDialer::with_route_probe`],
@@ -116,7 +127,7 @@ impl TransportDialer {
             resolved_tcp_connector: None,
             tcp_fragment: None,
             replaced: None,
-            network_changes: crate::NetworkChanges::default(),
+            network: Arc::default(),
         })
     }
 
@@ -132,7 +143,7 @@ impl TransportDialer {
             resolved_tcp_connector: None,
             tcp_fragment: None,
             replaced: None,
-            network_changes: crate::NetworkChanges::default(),
+            network: Arc::default(),
         }
     }
 
@@ -189,7 +200,14 @@ impl TransportDialer {
     /// when the OS network changes. Every dialer made from this one shares
     /// it, so one [`crate::NetworkChanges::notify`] reaches them all.
     pub fn network_changes(&self) -> &crate::NetworkChanges {
-        &self.network_changes
+        &self.network.changes
+    }
+
+    /// The signal this dialer's pooled connections and DNS caches follow
+    /// when the host resets its network. Every dialer made from this one
+    /// shares it, so one [`crate::NetworkResets::reset`] reaches them all.
+    pub fn network_resets(&self) -> &crate::NetworkResets {
+        &self.network.resets
     }
 
     pub fn with_reality_engine(mut self, reality: Arc<dyn RealityTlsEngine>) -> Self {
@@ -387,7 +405,7 @@ impl TransportDialer {
                 server_name: tls.server_name.clone(),
                 tls_config: self.tls.h3_client_config_for(tls, b"h3", chrome_parrot)?,
                 socket_protector: self.socket_protector.clone(),
-                network_changes: self.network_changes.clone(),
+                network_changes: self.network.changes.clone(),
             }),
             ConnectorConfig::Tcp => Err(TransportError::UnsupportedHttp3Security("TCP")),
             ConnectorConfig::Reality(_) => Err(TransportError::UnsupportedHttp3Security("REALITY")),
@@ -526,7 +544,7 @@ impl TransportDialer {
                 self.socket_protector.clone(),
                 kcp,
                 realm.as_ref(),
-                Some(&self.network_changes),
+                Some(&self.network.changes),
             )
             .await?,
         );

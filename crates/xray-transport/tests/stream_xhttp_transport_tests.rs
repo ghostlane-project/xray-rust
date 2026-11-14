@@ -26,7 +26,7 @@ use xray_transport::stream::xhttp_transport_test_only::{
     XhttpClock, XhttpDial, XhttpHttpVersion, XhttpTransport, XhttpXmuxPolicy,
 };
 use xray_transport::stream::HeaderMap;
-use xray_transport::{BoxedTransportStream, TransportError, TransportStream};
+use xray_transport::{BoxedTransportStream, NetworkResets, TransportError, TransportStream};
 
 const DEADLINE: Duration = Duration::from_secs(3);
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -1933,6 +1933,87 @@ async fn default_xmux_fans_out_three_clients_then_reuses_a_released_slot() {
     assert_eq!(transport.xmux_open_usages().await, vec![1, 1, 1]);
     drop((second, third, fourth));
     assert_eq!(transport.xmux_open_usages().await, vec![0, 0, 0]);
+}
+
+/// A network reset lets every client slot go, with the HTTP/2 connection it
+/// keeps, without a flow arriving to notice; a flow right after a reset is
+/// handed no slot of the old network and dials again.
+#[tokio::test]
+async fn a_network_reset_lets_every_slot_go_and_the_next_flow_dials_again() {
+    let dials = Arc::new(AtomicUsize::new(0));
+    let dial = success_h2_dial(Arc::clone(&dials));
+    let transport = transport(
+        XhttpModeSelection::StreamOne,
+        XhttpHttpVersion::Http2,
+        unlimited_xmux(),
+        4,
+    );
+    let resets = NetworkResets::default();
+    transport.follow_network_resets(&resets);
+
+    drop(
+        transport
+            .open_stream_with_dial(Arc::clone(&dial))
+            .await
+            .unwrap(),
+    );
+    drop(
+        transport
+            .open_stream_with_dial(Arc::clone(&dial))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(dials.load(Ordering::Acquire), 1, "an idle slot is reused");
+
+    resets.reset();
+    let second = transport
+        .open_stream_with_dial(Arc::clone(&dial))
+        .await
+        .unwrap();
+    assert_eq!(
+        dials.load(Ordering::Acquire),
+        2,
+        "the flow after the reset dialed again"
+    );
+    drop(second);
+
+    resets.reset();
+    timeout(DEADLINE, async {
+        while transport.xmux_client_count().await != 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the reset let the idle slot go");
+    drop(transport.open_stream_with_dial(dial).await.unwrap());
+    assert_eq!(dials.load(Ordering::Acquire), 3);
+}
+
+/// HTTP/3 slots are not let go by a reset: a change of network moves their
+/// QUIC connections to a fresh socket instead. A transport follows the first
+/// resets it is given, once.
+#[tokio::test]
+async fn only_tcp_xhttp_follows_network_resets_and_only_once() {
+    let resets = NetworkResets::default();
+    let http3 = transport(
+        XhttpModeSelection::StreamOne,
+        XhttpHttpVersion::Http3,
+        unlimited_xmux(),
+        4,
+    );
+    http3.follow_network_resets(&resets);
+    assert_eq!(resets.reset(), 0, "HTTP/3 does not follow resets");
+
+    let http2 = transport(
+        XhttpModeSelection::StreamOne,
+        XhttpHttpVersion::Http2,
+        unlimited_xmux(),
+        4,
+    );
+    http2.follow_network_resets(&resets);
+    http2.follow_network_resets(&resets);
+    http2.follow_network_resets(&NetworkResets::default());
+    assert_eq!(resets.reset(), 1, "one follower per transport");
 }
 
 #[tokio::test]

@@ -2175,6 +2175,256 @@ async fn http_tcp_connection_is_visible_and_host_close_cancels_the_relay() {
     .unwrap();
 }
 
+/// A host's network reset closes every flow open at the call, as a host close
+/// does, and leaves the listener and later flows alone. Without traffic,
+/// repeated, before start and after stop, it closes nothing.
+#[tokio::test]
+async fn a_network_reset_closes_every_open_flow_and_keeps_the_listener() {
+    timeout(Duration::from_secs(3), async {
+        let (echo_addr, echo_handle) = spawn_multi_echo_server(3).await;
+        let mut core = Core::new(runtime_config_with_freedom_outbound()).unwrap();
+        assert_eq!(core.reset_network().closed_connections, 0);
+        core.start().await.unwrap();
+        let socks_addr = core.inbound_addr(Some("socks-in")).unwrap();
+        assert_eq!(core.reset_network().closed_connections, 0);
+
+        let mut before = Vec::new();
+        for _ in 0..2 {
+            let mut flow = TcpStream::connect(socks_addr).await.unwrap();
+            socks5_connect(&mut flow, echo_addr).await;
+            assert_echoes(&mut flow, b"before the reset").await;
+            before.push(flow);
+        }
+        assert_eq!(core.connection_snapshot().connections.len(), 2);
+
+        assert_eq!(core.reset_network().closed_connections, 2);
+        for flow in &mut before {
+            let mut byte = [0u8; 1];
+            assert_eq!(flow.read(&mut byte).await.unwrap(), 0);
+        }
+        let deadline = TokioInstant::now() + Duration::from_secs(1);
+        while !core.connection_snapshot().connections.is_empty() {
+            assert!(
+                TokioInstant::now() < deadline,
+                "reset flows stayed registered"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(core.reset_network().closed_connections, 0);
+
+        assert_eq!(core.inbound_addr(Some("socks-in")).unwrap(), socks_addr);
+        let mut after = TcpStream::connect(socks_addr).await.unwrap();
+        socks5_connect(&mut after, echo_addr).await;
+        assert_echoes(&mut after, b"after the reset").await;
+        let accounting = core.outbound_accounting_snapshot();
+        let direct = accounting
+            .outbounds
+            .iter()
+            .find(|outbound| outbound.outbound_tag.as_deref() == Some("direct"))
+            .unwrap();
+        assert_eq!(direct.opened_connections, 3);
+        assert_eq!(direct.host_closed_connections, 2);
+
+        core.stop().await.unwrap();
+        assert_eq!(core.reset_network().closed_connections, 0);
+        echo_handle.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// What a [`ResetCountingServer`] saw: connections accepted, and those of
+/// them its client has closed.
+#[derive(Default)]
+struct ResetCounts {
+    accepted: AtomicUsize,
+    closed: AtomicUsize,
+}
+
+/// Accepts every connection, counts it, and counts it again once its client
+/// closes it. Never answers.
+async fn spawn_reset_counting_server() -> (SocketAddr, Arc<ResetCounts>) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let counts = Arc::new(ResetCounts::default());
+    let server_counts = Arc::clone(&counts);
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            server_counts.accepted.fetch_add(1, Ordering::SeqCst);
+            let counts = Arc::clone(&server_counts);
+            tokio::spawn(async move {
+                let mut buffer = [0_u8; 4096];
+                while let Ok(1..) = stream.read(&mut buffer).await {}
+                counts.closed.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+    });
+    (addr, counts)
+}
+
+async fn wait_for_reset_condition(what: &str, mut condition: impl FnMut() -> bool) {
+    let deadline = TokioInstant::now() + Duration::from_secs(5);
+    while !condition() {
+        assert!(TokioInstant::now() < deadline, "timed out waiting: {what}");
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// A SOCKS5 CONNECT to an address the outbound never reaches: the reply is
+/// read but not judged, as the counting server never answers the VLESS
+/// request.
+async fn socks5_flow_to_a_silent_server(socks: SocketAddr) -> TcpStream {
+    let mut client = TcpStream::connect(socks).await.unwrap();
+    client.write_all(&[5, 1, 0]).await.unwrap();
+    let mut method = [0_u8; 2];
+    client.read_exact(&mut method).await.unwrap();
+    assert_eq!(method, [5, 0]);
+    client
+        .write_all(&[5, 1, 0, 1, 198, 51, 100, 7, 0, 80])
+        .await
+        .unwrap();
+    client.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
+    let mut reply = [0_u8; 10];
+    let _ = timeout(Duration::from_millis(500), client.read_exact(&mut reply)).await;
+    client
+}
+
+/// A network reset reaches the connections the outbounds keep for later
+/// flows through the core's outbound factory, here a VLESS `testpre`
+/// connection, and not only the flows: the held connection closes with the
+/// reset, and the next flow opens fresh ones.
+#[tokio::test]
+async fn a_network_reset_lets_the_outbounds_kept_connections_go() {
+    timeout(Duration::from_secs(10), async {
+        let (server, counts) = spawn_reset_counting_server().await;
+        let raw = format!(
+            r#"{{
+              "inbounds": [{{
+                "tag": "socks-in", "protocol": "socks",
+                "listen": "127.0.0.1", "port": 0,
+                "settings": {{ "udp": false }}
+              }}],
+              "outbounds": [{{
+                "tag": "proxy", "protocol": "vless",
+                "settings": {{
+                  "address": "127.0.0.1", "port": {port},
+                  "id": "00010203-0405-0607-0809-0a0b0c0d0e0f",
+                  "encryption": "none", "testpre": 1
+                }}
+              }}]
+            }}"#,
+            port = server.port()
+        );
+        let config = parse_xray_json(&raw).expect("config parses").config;
+        let mut core = Core::new(config).unwrap();
+        core.start().await.unwrap();
+        let socks = core.inbound_addr(Some("socks-in")).unwrap();
+
+        // The first flow takes the connection opened ahead; the dialer then
+        // opens and holds the next one.
+        let _first = socks5_flow_to_a_silent_server(socks).await;
+        wait_for_reset_condition("a connection taken and one held", || {
+            counts.accepted.load(Ordering::SeqCst) == 2
+        })
+        .await;
+        assert_eq!(counts.closed.load(Ordering::SeqCst), 0);
+
+        let reset = core.reset_network();
+        assert_eq!(
+            reset.closed_connections, 1,
+            "the first flow is asked to close"
+        );
+        assert_eq!(
+            reset.rebound_carriers, 0,
+            "a TCP-only core moves no carrier"
+        );
+        // The flow's connection closes with the flow, the held one with the
+        // testpre pool's reset; without the factory walk the held one stays.
+        wait_for_reset_condition("both connections of the old network closed", || {
+            counts.closed.load(Ordering::SeqCst) == 2
+        })
+        .await;
+
+        // The next flow starts new dialers instead of taking the old connection.
+        let _second = socks5_flow_to_a_silent_server(socks).await;
+        wait_for_reset_condition("a fresh connection taken and another held", || {
+            counts.accepted.load(Ordering::SeqCst) == 4
+        })
+        .await;
+        assert_eq!(counts.closed.load(Ordering::SeqCst), 2);
+
+        core.stop().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+/// A platform resolver that answers every name with loopback and counts the
+/// lookups it was asked.
+#[derive(Default)]
+struct CountingLoopbackResolver(AtomicUsize);
+
+impl CountingLoopbackResolver {
+    fn lookups(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait]
+impl DnsResolver for CountingLoopbackResolver {
+    async fn resolve(&self, _domain: &str, port: u16) -> Result<SocketAddr, TransportError> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+    }
+}
+
+/// A network reset makes the core's destination DNS cache ask again: a name
+/// answered from the cache before the reset is looked up anew after it.
+#[tokio::test]
+async fn a_network_reset_makes_the_destination_dns_cache_ask_again() {
+    timeout(Duration::from_secs(3), async {
+        let (echo_addr, echo_handle) = spawn_multi_echo_server(3).await;
+        let resolver = Arc::new(CountingLoopbackResolver::default());
+        let mut core = Core::with_platform_dns_resolver(
+            runtime_config_with_freedom_outbound(),
+            Arc::clone(&resolver) as Arc<dyn DnsResolver>,
+        )
+        .unwrap();
+        core.start().await.unwrap();
+        let socks_addr = core.inbound_addr(Some("socks-in")).unwrap();
+        let flow = |payload: &'static [u8]| async move {
+            let mut client = TcpStream::connect(socks_addr).await.unwrap();
+            socks5_connect_domain(&mut client, "reset.example.test", echo_addr.port()).await;
+            assert_echoes(&mut client, payload).await;
+        };
+
+        flow(b"first lookup").await;
+        let first = resolver.lookups();
+        assert!(first > 0, "the first flow looks its name up");
+        flow(b"cached answer").await;
+        assert_eq!(
+            resolver.lookups(),
+            first,
+            "the second is answered from the cache"
+        );
+
+        core.reset_network();
+        flow(b"after the reset").await;
+        assert!(
+            resolver.lookups() > first,
+            "the flow after the reset looks its name up again"
+        );
+
+        core.stop().await.unwrap();
+        echo_handle.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn managed_dns_runtime_is_shared_per_core_and_isolated_between_cores() {
     timeout(Duration::from_secs(3), async {

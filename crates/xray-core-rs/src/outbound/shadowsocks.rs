@@ -45,6 +45,12 @@ impl Shadowsocks2022Outbound {
             m.close();
         }
     }
+    /// Lets the Mux.Cool parents go; later flows dial new ones.
+    pub(super) fn reset(&self) {
+        if let Some(m) = &self.0.mux {
+            m.reset();
+        }
+    }
     pub(super) async fn join(&self) {
         if let Some(m) = &self.0.mux {
             m.join().await;

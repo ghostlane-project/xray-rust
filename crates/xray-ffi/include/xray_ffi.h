@@ -407,6 +407,22 @@ XrayStatus xray_core_rebind_hysteria(
     XrayCoreHandle *handle,
     uint64_t *accepted,
     XrayError **error);
+/* ABI 1.18, CONNECTION_MANAGEMENT. Reset the network after the device moved to
+ * another one: let go of the connections kept for later flows (HTTP/2 of gRPC
+ * and XHTTP, an HTTP proxy's shared HTTP/2, Mux.Cool parents, VLESS testpre),
+ * so no later flow rides one dialed before the call; forget the core's DNS
+ * cache answers (FakeDNS mappings are kept); rebind QUIC and WireGuard
+ * carriers as xray_core_rebind_hysteria and xray_core_rebind_wireguard do
+ * (XHTTP over HTTP/3 is moved, not dropped); then ask every relayed flow to
+ * close, so its application dials again at once. Listeners and the core's
+ * state are kept. closed is required and counts the flows asked to close; a
+ * flow already asked by an earlier reset or close is not counted again.
+ * Nonblocking; harmless when repeated, before start or after stop. Concurrent
+ * with data-path calls, but not lifecycle/free. */
+XrayStatus xray_core_reset_network(
+    XrayCoreHandle *handle,
+    uint64_t *closed,
+    XrayError **error);
 /* ABI 1.9, OUTBOUND_PROBE. Nonblocking, shared teardown preparation. Cancels
  * current AND future probes on a running core. ABI 1.12 also cancels preflight
  * startup probes before start; no-op when unloaded. Legacy start is unaffected.
