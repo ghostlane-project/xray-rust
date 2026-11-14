@@ -2,6 +2,7 @@
 //! provider is given), SCTP, and an echo over a data channel. Runs anywhere, the iOS
 //! simulator included, because nothing leaves the process.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,6 +32,10 @@ struct Side {
     addr: SocketAddr,
     timeout: Instant,
     taps: Taps,
+    /// What this side transmitted and the other has not read yet: one datagram is handed
+    /// over at a time and the reader polled after it, as a socket would (a DTLS stack's
+    /// receive queue is bounded: dimpl refuses a flight pushed in unpolled).
+    outq: VecDeque<(SocketAddr, SocketAddr, Vec<u8>)>,
 }
 
 /// Runs offerer and answerer to an echo of `bytes` bytes in messages of `chunk`, or fails
@@ -42,12 +47,14 @@ pub fn run(provider: &Arc<CryptoProvider>, version: DtlsVersion, bytes: usize, c
         addr: "192.0.2.10:5000".parse().map_err(|_| "addr")?,
         timeout: start,
         taps: Taps::default(),
+        outq: VecDeque::new(),
     };
     let mut b = Side {
         rtc: rtc_config(provider, version, &chrome_ice_creds()).build(start),
         addr: "192.0.2.20:6000".parse().map_err(|_| "addr")?,
         timeout: start,
         taps: Taps::default(),
+        outq: VecDeque::new(),
     };
     a.rtc.add_local_candidate(Candidate::host(a.addr, "udp").map_err(|e| e.to_string())?);
     b.rtc.add_local_candidate(Candidate::host(b.addr, "udp").map_err(|e| e.to_string())?);
@@ -72,8 +79,19 @@ pub fn run(provider: &Arc<CryptoProvider>, version: DtlsVersion, bytes: usize, c
                 st.connected, st.a_open, st.sent, st.echoed
             ));
         }
-        let mut progressed = drain(&mut a, &mut b, true, &mut st)?;
-        progressed |= drain(&mut b, &mut a, false, &mut st)?;
+        let mut progressed = poll_side(&mut a, true, &mut st)?;
+        progressed |= poll_side(&mut b, false, &mut st)?;
+        while !a.outq.is_empty() || !b.outq.is_empty() {
+            progressed = true;
+            if let Some(d) = a.outq.pop_front() {
+                deliver(&mut b, d)?;
+                poll_side(&mut b, false, &mut st)?;
+            }
+            if let Some(d) = b.outq.pop_front() {
+                deliver(&mut a, d)?;
+                poll_side(&mut a, true, &mut st)?;
+            }
+        }
         // The offerer writes while its channel takes more and less than a megabyte waits.
         if st.a_open && st.b_open {
             while st.sent < bytes && st.sent - st.echoed < 1 << 20 {
@@ -125,8 +143,15 @@ struct State {
     seq: u32,
 }
 
-/// Polls `from` until it waits, handing what it transmits to `to`; true if anything moved.
-fn drain(from: &mut Side, to: &mut Side, is_a: bool, st: &mut State) -> Result<bool, String> {
+/// Hands one datagram to `to`.
+fn deliver(to: &mut Side, (src, dst, data): (SocketAddr, SocketAddr, Vec<u8>)) -> Result<(), String> {
+    to.taps.received(&data);
+    let r = Receive::new(Protocol::Udp, src, dst, &data).map_err(|e| e.to_string())?;
+    to.rtc.handle_input(Input::Receive(Instant::now(), r)).map_err(|e| format!("input: {e}"))
+}
+
+/// Polls `from` until it waits, queueing what it transmits; true if anything moved.
+fn poll_side(from: &mut Side, is_a: bool, st: &mut State) -> Result<bool, String> {
     let start = st.start.unwrap_or_else(Instant::now);
     let mut progressed = false;
     loop {
@@ -138,8 +163,7 @@ fn drain(from: &mut Side, to: &mut Side, is_a: bool, st: &mut State) -> Result<b
             Output::Transmit(t) => {
                 progressed = true;
                 from.taps.sent(&t.contents);
-                let r = Receive::new(Protocol::Udp, t.source, t.destination, &t.contents).map_err(|e| e.to_string())?;
-                to.rtc.handle_input(Input::Receive(Instant::now(), r)).map_err(|e| format!("input: {e}"))?;
+                from.outq.push_back((t.source, t.destination, t.contents.to_vec()));
             }
             Output::Event(e) => {
                 progressed = true;
