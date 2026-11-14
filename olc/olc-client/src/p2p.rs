@@ -833,7 +833,8 @@ impl P2pLink {
                 ext = Some(seq);
                 tx.write_rtp(
                     RtpWrite::new(pt, SeqNo::from(seq), p.timestamp, wallclock, p.payload)
-                        .marker(p.marker),
+                        .marker(p.marker)
+                        .nackable(true),
                 );
                 self.rtp_out.fetch_add(1, Ordering::Relaxed);
             }
@@ -1241,6 +1242,145 @@ mod tests {
                 !candidates.is_empty() && candidates.iter().all(|c| c.contains(" typ relay")),
                 "{candidates:?}"
             );
+            server.close().await.unwrap();
+        })
+        .await;
+    }
+
+    /// A UDP hop in front of the TURN server at `server`: each client's
+    /// datagrams go up through a socket of the hop's own (one 5-tuple per
+    /// client, as the server wants), and every `nth` ChannelData carrying
+    /// VP8 RTP (payload type 96 in SRTP's clear header) is dropped on its
+    /// way up. Returns the hop's address and how many it dropped.
+    async fn lossy_hop(
+        server: std::net::SocketAddr,
+        nth: u64,
+    ) -> (std::net::SocketAddr, Arc<AtomicU64>) {
+        use std::collections::HashMap;
+        use tokio::net::UdpSocket;
+        let front = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = front.local_addr().unwrap();
+        let dropped = Arc::new(AtomicU64::new(0));
+        let counted = dropped.clone();
+        tokio::spawn(async move {
+            let mut ups: HashMap<std::net::SocketAddr, Arc<UdpSocket>> = HashMap::new();
+            let mut seen = 0u64;
+            let mut buf = vec![0u8; 1 << 16];
+            loop {
+                let Ok((n, from)) = front.recv_from(&mut buf).await else {
+                    return;
+                };
+                let up = if let Some(u) = ups.get(&from) {
+                    u.clone()
+                } else {
+                    let u = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+                    u.connect(server).await.unwrap();
+                    let (down, back) = (u.clone(), front.clone());
+                    tokio::spawn(async move {
+                        let mut b = vec![0u8; 1 << 16];
+                        while let Ok(n) = down.recv(&mut b).await {
+                            let _ = back.send_to(&b[..n], from).await;
+                        }
+                    });
+                    ups.insert(from, u.clone());
+                    u
+                };
+                let d = &buf[..n];
+                let vp8 = n > 6
+                    && (0x40..=0x7f).contains(&d[0])
+                    && (0x80..=0xbf).contains(&d[4])
+                    && d[5] & 0x7f == 96;
+                if vp8 {
+                    seen += 1;
+                    if seen.is_multiple_of(nth) {
+                        counted.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
+                }
+                let _ = up.send(d).await;
+            }
+        });
+        (addr, dropped)
+    }
+
+    /// A lost packet is resent: both ends relay-only through a hop that
+    /// drops every tenth VP8 packet on its way to the TURN server, and every
+    /// sample `a` writes still arrives whole at `b`. The writes are
+    /// nackable and str0m negotiates RTX between the two, so a NACK brings
+    /// the packet back; without resends a sample that lost one is gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_packet_lost_on_the_way_is_resent() {
+        crate::testing::bounded_for(Duration::from_secs(20), async {
+            let (server, turn) = turn_server().await;
+            let at: std::net::SocketAddr = turn.trim_start_matches("turn:").parse().unwrap();
+            let (hop, dropped) = lossy_hop(at, 10).await;
+            let query = format!(
+                "turn=turn%3A{}&turn_user={}&turn_pass={TURN_PASS}&policy=relay",
+                hop.to_string().replace(':', "%3A"),
+                TURN_USER.replace(':', "%3A"),
+            );
+            let (url, hub, (read_frames, _)) = relay_hub(0).await;
+            let url = format!("{url}?{query}");
+            let lo = IpAddr::from([127, 0, 0, 1]);
+            let tick = Duration::from_millis(16);
+            let (a_tx, _a_rx) = mpsc::channel(4);
+            let (b_tx, _b_rx) = mpsc::channel(4);
+            let (got_b, mut at_b) = mpsc::unbounded_channel::<Vec<u8>>();
+            let a = P2pLink::connect(&url, lo, tick, a_tx).await.unwrap();
+            while read_frames.load(Ordering::Acquire) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let b = P2pLink::connect(&url, lo, tick, b_tx).await.unwrap();
+            b.set_frame_handler(Some(Arc::new(move |f: &[u8]| {
+                let _ = got_b.send(f.to_vec());
+            })));
+            // Three packets a sample; its first byte numbers it.
+            let sample = |i: u8| -> Vec<u8> {
+                let mut s: Vec<u8> = (0..3000u32)
+                    .map(|j| u8::try_from(j % 251).unwrap())
+                    .collect();
+                s[0] = i;
+                s
+            };
+            while !a.peer_seen() || !b.peer_seen() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            // A sample through first, so the line is up both ways.
+            loop {
+                assert!(a.write_sample(&sample(0)));
+                tokio::select! {
+                    Some(_) = at_b.recv() => break,
+                    () = tokio::time::sleep(tick) => {}
+                }
+            }
+            while at_b.try_recv().is_ok() {}
+            const SAMPLES: u8 = 60;
+            for i in 1..=SAMPLES {
+                assert!(a.write_sample(&sample(i)));
+                tokio::time::sleep(tick).await;
+            }
+            let mut have = std::collections::BTreeSet::new();
+            let until = tokio::time::Instant::now() + Duration::from_secs(3);
+            while have.len() < usize::from(SAMPLES) {
+                tokio::select! {
+                    Some(f) = at_b.recv() => {
+                        assert_eq!(f, sample(f[0]), "sample {} arrived changed", f[0]);
+                        if f[0] > 0 {
+                            have.insert(f[0]);
+                        }
+                    }
+                    () = tokio::time::sleep_until(until) => break,
+                }
+            }
+            let lost: Vec<u8> = (1..=SAMPLES).filter(|i| !have.contains(i)).collect();
+            assert!(
+                dropped.load(Ordering::Relaxed) > 0,
+                "the hop dropped nothing"
+            );
+            assert!(lost.is_empty(), "samples lost: {lost:?}");
+            a.close().await;
+            b.close().await;
+            hub.abort();
             server.close().await.unwrap();
         })
         .await;
