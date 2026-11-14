@@ -874,16 +874,23 @@ impl StreamsState {
         self.stream_receive_window = window;
     }
 
-    /// Set the receive_window and returns whether the receive_window has been
-    /// expanded or shrunk: true if expanded, false if shrunk.
+    /// Set the receive_window and returns whether it granted the peer new
+    /// credit, for a `MAX_DATA` to announce.
+    ///
+    /// A shrink keeps the credit already sent and records it as debt, which
+    /// reads pay back before they grant more. A growth pays what is left of
+    /// that debt first: the peer still has that credit, and granting the whole
+    /// growth on top of it would leave it more than the window after each
+    /// shrink and growth.
     pub(crate) fn set_receive_window(&mut self, receive_window: VarInt) -> bool {
         let receive_window = receive_window.into();
         let mut expanded = false;
         if receive_window > self.receive_window {
-            self.local_max_data = self
-                .local_max_data
-                .saturating_add(receive_window - self.receive_window);
-            expanded = true;
+            let growth: u64 = receive_window - self.receive_window;
+            let paid = growth.min(self.receive_window_shrink_debt);
+            self.receive_window_shrink_debt -= paid;
+            self.local_max_data = self.local_max_data.saturating_add(growth - paid);
+            expanded = growth > paid;
         } else {
             let diff = self.receive_window - receive_window;
             self.receive_window_shrink_debt = self.receive_window_shrink_debt.saturating_add(diff);
@@ -2048,6 +2055,39 @@ mod tests {
         assert_eq!(server.receive_window_shrink_debt, 0);
         assert_eq!(server.local_max_data, expected_local_max_data);
         assert!(should_transmit.should_transmit());
+    }
+
+    #[test]
+    fn a_window_shrunk_and_grown_back_grants_no_credit_beyond_it() {
+        // Xray's Hysteria client shrinks an idle connection's receive window
+        // and grows it back once data moves again. The credit the peer had
+        // stays with it across the shrink, so the growth owes it nothing
+        // until the reads have paid the shrink back.
+        let mut server = make(Side::Server);
+        let window = server.receive_window;
+        let mut received = 0;
+        for cycle in 0..8 {
+            assert!(!server.set_receive_window(VarInt::from_u32(4096)));
+            assert!(
+                !server.set_receive_window(VarInt::from_u64(window).unwrap()),
+                "cycle {cycle}: the peer still has the window's credit"
+            );
+            assert_eq!(server.receive_window, window);
+            // The peer sends a little and the reader takes it.
+            let read = 64 * 1024;
+            received += read;
+            server.add_read_credits(read);
+            assert!(
+                server.local_max_data - received <= window,
+                "cycle {cycle}: the peer may send {} beyond what it sent, the window is {window}",
+                server.local_max_data - received
+            );
+        }
+        // Grown past what it was, the window grants the difference at once.
+        let larger = 2 * window;
+        assert!(server.set_receive_window(VarInt::from_u64(larger).unwrap()));
+        assert_eq!(server.local_max_data - received, larger);
+        assert_eq!(server.receive_window_shrink_debt, 0);
     }
 
     #[test]
