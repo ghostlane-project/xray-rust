@@ -151,15 +151,48 @@ The idle timeout defaults to 30 seconds and, as in Xray, there is no keepalive
 unless `keepAlivePeriod` sets one. quic-go grows the receive windows from their
 initial value to the maximum, while quinn keeps a Hysteria connection's windows
 fixed, so the larger of the two is the window. Without either, the 2 MiB stream
-and 3 MiB connection windows remain, or 1 MiB and 3 MiB on a constrained host,
-no more than the 2 MiB and 3 MiB quic-go starts a connection with; Xray's
+and 3 MiB connection windows remain, or the constrained host's below; Xray's
 Hysteria dialer defaults to 8 MiB and 20 MiB, as sing-box's Hysteria2 client
-does. ChromeParrot replaces both with Chrome's on any host. A constrained host
-also grows its send window to 4 MiB instead of 10 MB; the
-[stream limits](ffi.md#hysteria-concurrency-limits) are the same on every host.
-`disableGSO` turns off segmentation offload. `maxIncomingStreams`
+does. `disableGSO` turns off segmentation offload. `maxIncomingStreams`
 has no effect, as in Xray's dialer, and `disableStatelessReset` only affects
 Xray-core's servers. `debug: true` fails before the outbound starts.
+
+#### Hysteria windows on a constrained host
+
+A constrained host is one whose runtime profile is `MOBILE`, `MOBILE_PLUS` or
+`LOW_MEMORY`, or `DEFAULT` on iOS, Android, tvOS and watchOS. On such a host a
+Hysteria connection may hold less: the receive windows are what it holds
+unread, and the send window what it holds unacknowledged.
+
+| Window | Standard host | Constrained host | Applies when |
+| --- | --- | --- | --- |
+| Stream receive | 2 MiB | 1 MiB | ChromeParrot is off and `quicParams` sets no `initStreamReceiveWindow` |
+| Connection receive | 3 MiB | 3 MiB | ChromeParrot is off and `quicParams` sets no `initConnectionReceiveWindow` |
+| Send, the most it grows to | 10 MB | 4 MiB | always |
+
+The receive windows reach the wire only with ChromeParrot off, which takes
+`"disableChromeParrot": true` in the outbound's `finalmask.quicParams`. Without
+`quicParams`, or without that field, ChromeParrot is on and the connection runs
+Chrome's 6 MiB and 15 MiB on every host ([ChromeParrot](#chromeparrot)). So a
+Hysteria2 outbound runs 1 MiB and 3 MiB on a constrained host when its
+`streamSettings.finalmask` reads, here with a Salamander mask:
+
+```json
+"finalmask": {
+  "udp": [{"type": "salamander", "settings": {"password": "<obfs password>"}}],
+  "quicParams": {"disableChromeParrot": true}
+}
+```
+
+With ChromeParrot off, an `initStreamReceiveWindow` or
+`initConnectionReceiveWindow` is kept on every host, and a
+`maxStreamReceiveWindow` or `maxConnectionReceiveWindow` only raises the host's
+start: one below it leaves it. The send window starts at 2 MiB and grows
+toward twice the congestion window, up to the ceiling, with ChromeParrot on or
+off. The TCP stream and UDP session limits are the same on every host
+([stream limits](ffi.md#hysteria-concurrency-limits)). The memory class is read
+when the core builds the outbound, at its first flow, and its connections keep
+these windows.
 
 An ignored interop test transfers 3 MiB each way through pinned Xray-core with
 server rates `brutalUp: "100 mbps"` and `brutalDown: "8 mbps"`. A client with
