@@ -1,0 +1,11 @@
+[package]
+name = "olc-kcp"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+description = "KCP as kcp-go v5.6.72 runs it in the olcRTC vp8channel transport, sans-IO"
+
+[dependencies]

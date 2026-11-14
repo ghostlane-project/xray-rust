@@ -16,6 +16,7 @@ members = [
     "crates/xray-bench",
     "fuzz",
     "olc/olc-wire",
+    "olc/olc-kcp",
     "olc/olc-muxconn",
     "olc/olc-client",
     "olc/interop/oracle-client",
