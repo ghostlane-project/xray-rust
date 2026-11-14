@@ -1738,6 +1738,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "olc-salutejazz"
+version = "0.10.0"
+dependencies = [
+ "olc-net",
+ "olc-rtc",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "olc-smux"
 version = "0.1.0"
 dependencies = [

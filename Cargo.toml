@@ -19,6 +19,7 @@ members = [
     "olc/olc-muxconn",
     "olc/olc-net",
     "olc/olc-rtc",
+    "olc/olc-salutejazz",
     "olc/olc-client",
     "olc/interop/oracle-client",
 ]
