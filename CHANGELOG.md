@@ -127,6 +127,43 @@ long-term supported release series.
   and the threads keep, for a host under memory pressure.
 - Vision gives back its frame buffers once a frame is written or read,
   rather than keeping up to 64 KiB and its padding for the flow's life.
+- The byte budget also counts what an HTTP/2 response has received and its
+  reader has not taken: XHTTP's HTTP/2 responses, the HTTP outbound's
+  HTTP/2 CONNECT tunnels, DNS over HTTPS on HTTP/2, and gRPC calls'
+  downlinks. Each holds bytes of it for that queue beyond its floor (a
+  public `memory_budget::ReceiveGate`), all of them together at most
+  `ByteBudget::window_cap()`, `B` less `B / RELAY_RESERVE_DIVISOR` (an
+  eighth, the relays' alone), and hands each read's credit back at that read
+  unless its queue is above the floor and does not fit what it may hold, or
+  `B` was lowered below what is held. Then the credit waits until the queue
+  fits: until the windows' part, less what the other streams hold, covers
+  it and `B` can hold it, at the latest until the stream's reads take the
+  queue down to the floor. One task per budget settles every stream that
+  holds credit back whenever bytes come back to the budget while it has
+  room, whether or not its reader reads again; no gate and no reader waits
+  in the budget's queue. Until the queue fits, credit a paused reader took
+  still counts in its connection's window (h2 releases a stream's and the
+  connection's together), so the connection's other streams can wait on it,
+  up to that stream's window. Room in `B` is not enough: while other paused
+  streams' queues hold the windows' part, a paused stream's credit waits on
+  their readers, and a queue larger than the whole part waits on its own
+  reader. A stream read and left open holds nothing, and a body dropped
+  mid-download hands back the credit its reader took. The
+  queue is counted in payload bytes, as h2 counts it; a gRPC message the
+  call's decoder holds until it is whole (up to 4 MiB) is not counted.
+  `H2Client::with_byte_budget` and `GrpcTransport::with_byte_budget` hold a
+  client's streams within a budget other than the process's; XHTTP's
+  transport and the HTTP outbound use the process's.
+  `ByteBudgetUsage` gains `window_bytes`. SETTINGS, the first connection
+  WINDOW_UPDATE and h2's WINDOW_UPDATE threshold are unchanged: only when
+  later credit goes out moves, and only while the budget presses.
+  Hysteria2's QUIC windows are not counted; each connection keeps the
+  windows it announced.
+- Vendored quinn-proto: growing a connection's receive window pays the
+  credit an earlier shrink left with the peer before it grants more, so a
+  shrink and a growth never leave the peer more credit than the window.
+  Nothing in xray-rust shrinks that window today (XHTTP H3's tuning only
+  grows it), so no behaviour changes.
 
 ## 0.10.0 - 2026-11-13
 

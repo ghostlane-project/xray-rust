@@ -44,6 +44,7 @@ use super::config::GrpcConfig;
 use super::h2client::{
     build_grpc_call, h2_handshake, open_grpc_call, H2Connection, H2ConnectionIdleWatch,
 };
+use crate::memory_budget::ByteBudget;
 use crate::network_change::reset_after;
 use crate::{
     utls_tls::TlsAlpnPolicy, BoxedTransportStream, ConnectorConfig, HappyEyeballsConfig,
@@ -69,6 +70,8 @@ const CONNECTION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 pub struct GrpcTransport {
     config: GrpcConfig,
     pool: Arc<GrpcConnectionPool>,
+    /// The budget each call's downlink queue is held within.
+    byte_budget: &'static ByteBudget,
 }
 
 impl GrpcTransport {
@@ -76,7 +79,17 @@ impl GrpcTransport {
         Self {
             config,
             pool: Arc::new(GrpcConnectionPool::new()),
+            byte_budget: ByteBudget::process(),
         }
+    }
+
+    /// Holds the downlink queues of the calls this handle opens from now on
+    /// within `budget` instead of the process's ([`ByteBudget::process`]).
+    /// The pool, and so the connection, stays shared with the handle's
+    /// clones.
+    pub fn with_byte_budget(mut self, budget: &'static ByteBudget) -> Self {
+        self.byte_budget = budget;
+        self
     }
 
     /// The settings this transport dials with.
@@ -208,7 +221,7 @@ impl GrpcTransport {
                     let current_call = call
                         .take()
                         .expect("a gRPC call is rebuilt before every retry");
-                    match open_grpc_call(connection, current_call).await {
+                    match open_grpc_call(connection, current_call, self.byte_budget).await {
                         Ok(stream) => return Ok(Box::new(stream)),
                         Err(error) => {
                             *state = PoolState::Empty;

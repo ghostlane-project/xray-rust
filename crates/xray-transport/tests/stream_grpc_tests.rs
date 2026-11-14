@@ -5792,3 +5792,528 @@ mod stream_grpc_flow_control_tests {
         assert_eq!(received, VICTIM_PAYLOAD, "the second flow's own bytes");
     }
 }
+
+mod stream_grpc_budget_tests {
+    //! The downlink's credit under a phone's byte budget, one of the test's
+    //! own: calls that read keep up, and calls read and left open hold
+    //! nothing of it.
+    use std::future::poll_fn;
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use h2::server::{self, SendResponse};
+    use h2::SendStream;
+    use http::{HeaderValue, Response};
+    use tokio::io::AsyncReadExt;
+    use tokio::net::{TcpListener, TcpStream};
+    use xray_routing::{Network, Target, TargetAddr};
+    use xray_transport::memory_budget::ByteBudget;
+    use xray_transport::stream::grpc_test_only::encode_hunk;
+    use xray_transport::stream::{GrpcConfig, GrpcTransport, TransportLayer};
+    use xray_transport::{
+        BoxedTransportStream, ByteBudgetSettings, ConnectorConfig, MemoryClass, TransportDialer,
+    };
+
+    const DEADLINE: Duration = Duration::from_secs(30);
+    /// Calls on the one connection the pool gives an outbound.
+    const CALLS: usize = 8;
+    /// What each call downloads: many times its opening window.
+    const SIZE: usize = 4 * 1024 * 1024;
+    const HUNK: usize = 32 * 1024;
+
+    /// A byte budget of the test's own: the process's is shared by every
+    /// test in the binary, and what they hold of it moves its numbers.
+    fn budget_with(settings: ByteBudgetSettings) -> &'static ByteBudget {
+        Box::leak(Box::new(ByteBudget::with_settings(settings)))
+    }
+
+    fn config() -> GrpcConfig {
+        GrpcConfig {
+            service_name: "xray.grpc".to_owned(),
+            multi_mode: false,
+            authority: "grpc.example.com".parse().expect("a literal authority"),
+            user_agent: HeaderValue::from_static("grpc-go/1.81.0"),
+            idle_timeout_secs: 0,
+            health_check_timeout_secs: 0,
+            permit_without_stream: false,
+            initial_windows_size: 0,
+        }
+    }
+
+    async fn open_flow(
+        dialer: &TransportDialer,
+        transport: &TransportLayer,
+        addr: SocketAddr,
+    ) -> BoxedTransportStream {
+        let target = Target::new(TargetAddr::Ip(addr.ip()), addr.port(), Network::Tcp);
+        dialer
+            .connect_stream(&ConnectorConfig::Tcp, transport, &target, &[addr], None)
+            .await
+            .expect("the flow opens")
+    }
+
+    fn grpc_response() -> Response<()> {
+        Response::builder()
+            .status(200)
+            .header("content-type", "application/grpc")
+            .body(())
+            .expect("a well-formed response")
+    }
+
+    async fn send_all(send: &mut SendStream<Bytes>, mut chunk: Bytes) {
+        while !chunk.is_empty() {
+            send.reserve_capacity(chunk.len());
+            let granted = poll_fn(|cx| send.poll_capacity(cx))
+                .await
+                .expect("the send half is still streaming")
+                .expect("capacity, not an error");
+            let take = granted.min(chunk.len());
+            send.send_data(chunk.split_to(take), false)
+                .expect("send data");
+        }
+    }
+
+    /// A loopback peer that answers every call with [`SIZE`] bytes and then
+    /// holds the call open.
+    async fn spawn_peer() -> SocketAddr {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a loopback listener");
+        let addr = listener.local_addr().expect("the listener's address");
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(serve(socket));
+            }
+        });
+        addr
+    }
+
+    async fn serve(socket: TcpStream) {
+        let mut connection = server::handshake(socket).await.expect("server handshake");
+        while let Some(accepted) = connection.accept().await {
+            let (_request, respond) = accepted.expect("a well-formed request");
+            tokio::spawn(download(respond));
+        }
+    }
+
+    async fn download(mut respond: SendResponse<Bytes>) {
+        let mut send = respond
+            .send_response(grpc_response(), false)
+            .expect("respond");
+        let hunk = Bytes::from(encode_hunk(&vec![0xa5; HUNK]));
+        for _ in 0..SIZE / HUNK {
+            send_all(&mut send, hunk.clone()).await;
+        }
+        let _held = send;
+        std::future::pending::<()>().await;
+    }
+
+    /// Eight calls on one connection download under a phone's 3 MB at once
+    /// and all finish; read and left open, as a messenger's calls are, they
+    /// hold nothing of the budget, which the relays keep for their reads.
+    #[tokio::test]
+    async fn eight_calls_on_one_connection_finish_under_a_phone_budget_and_then_hold_nothing() {
+        let budget = budget_with(ByteBudgetSettings::for_class(MemoryClass::Constrained));
+        let addr = spawn_peer().await;
+        let dialer = TransportDialer::system().expect("a system dialer");
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config()).with_byte_budget(budget));
+        let mut flows = Vec::new();
+        for _ in 0..CALLS {
+            flows.push(open_flow(&dialer, &transport, addr).await);
+        }
+
+        let reads = futures_util::future::join_all(flows.iter_mut().map(|flow| async move {
+            let mut bytes = vec![0; SIZE];
+            flow.read_exact(&mut bytes).await.expect("the call reads");
+            bytes.iter().all(|byte| *byte == 0xa5)
+        }));
+        let intact = tokio::time::timeout(DEADLINE, reads)
+            .await
+            .expect("the calls stalled");
+        assert_eq!(intact, vec![true; CALLS], "every call's own bytes");
+
+        let usage = budget.usage();
+        assert_eq!(
+            usage.in_use, 0,
+            "{CALLS} calls read and left open hold {usage:?}"
+        );
+        drop(flows);
+    }
+
+    /// A peer that answers one call with `total` payload bytes in hunks and
+    /// counts the hunks' payload it has handed to h2, then holds the call.
+    async fn spawn_counting_peer(total: usize) -> (SocketAddr, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a loopback listener");
+        let addr = listener.local_addr().expect("the listener's address");
+        let sent = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&sent);
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.expect("the client connects");
+            let mut connection = server::handshake(socket).await.expect("server handshake");
+            let (_request, mut respond) = connection
+                .accept()
+                .await
+                .expect("a call")
+                .expect("a well-formed request");
+            tokio::spawn(async move {
+                let mut send = respond
+                    .send_response(grpc_response(), false)
+                    .expect("respond");
+                let hunk = Bytes::from(encode_hunk(&vec![0xa5; HUNK]));
+                for _ in 0..total / HUNK {
+                    send_all(&mut send, hunk.clone()).await;
+                    counter.fetch_add(HUNK, Ordering::SeqCst);
+                }
+                let _held = send;
+                std::future::pending::<()>().await;
+            });
+            while connection.accept().await.is_some() {}
+        });
+        (addr, sent)
+    }
+
+    /// Waits until the peer has sent nothing more for 300 ms; returns what it
+    /// has sent.
+    async fn settled(sent: &AtomicUsize) -> usize {
+        let mut last = sent.load(Ordering::SeqCst);
+        let mut quiet = 0;
+        while quiet < 3 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let now = sent.load(Ordering::SeqCst);
+            quiet = if now == last { quiet + 1 } else { 0 };
+            last = now;
+        }
+        last
+    }
+
+    /// A call whose queue is beyond its budget's windows' part gets no credit
+    /// for what its reader takes until the queue is back within it: the
+    /// peer, its 4 MiB stream window spent, sends nothing more while 3 MiB
+    /// stay queued under a 1 MB budget, where without the budget the 1 MiB
+    /// read would have gone back at once. Then the call finishes and holds
+    /// nothing.
+    #[tokio::test]
+    async fn a_call_queued_beyond_its_budget_gets_credit_back_only_as_its_reader_drains_it() {
+        const WINDOW: usize = 4 * 1024 * 1024;
+        const MIB: usize = 1024 * 1024;
+        const TOTAL: usize = 2 * WINDOW;
+        let budget = budget_with(ByteBudgetSettings {
+            capacity: MIB,
+            floor: 4 * 1024,
+        });
+        let (addr, sent) = spawn_counting_peer(TOTAL).await;
+        let dialer = TransportDialer::system().expect("a system dialer");
+        let config = GrpcConfig {
+            initial_windows_size: WINDOW as u32,
+            ..config()
+        };
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config).with_byte_budget(budget));
+        let mut flow = open_flow(&dialer, &transport, addr).await;
+
+        // Unread, the call's window fills and the peer stops.
+        let filled = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert!(
+            filled > WINDOW / 2 && filled < WINDOW,
+            "the peer sent {filled} B into a 4 MiB window"
+        );
+        let mut bytes = vec![0; MIB];
+        flow.read_exact(&mut bytes).await.expect("the call reads");
+        let after = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert_eq!(after, filled, "credit went back with 3 MiB still queued");
+        let usage = budget.usage();
+        assert_eq!(
+            usage.in_use,
+            budget.window_cap(),
+            "the queue holds the windows' part of B: {usage:?}"
+        );
+
+        let mut rest = vec![0; TOTAL - MIB];
+        tokio::time::timeout(DEADLINE, flow.read_exact(&mut rest))
+            .await
+            .expect("the call stalled")
+            .expect("the call reads");
+        assert!(rest.iter().chain(&bytes).all(|byte| *byte == 0xa5));
+        let usage = budget.usage();
+        assert_eq!(usage.in_use, 0, "a call read to its end holds {usage:?}");
+        drop(flow);
+    }
+
+    /// A call whose reader took most of its window under a spent budget and
+    /// paused gets the credit back once the budget has room for its queue,
+    /// though it does not read again; and not before: while another holder
+    /// has all of `B`, and after a few bytes of it come back, fewer than the
+    /// queue needs, the peer sends nothing more.
+    #[tokio::test]
+    async fn a_paused_call_gets_its_withheld_credit_back_once_the_budget_has_room() {
+        const WINDOW: usize = 4 * 1024 * 1024;
+        const MIB: usize = 1024 * 1024;
+        const KIB: usize = 1024;
+        const TOTAL: usize = 2 * WINDOW;
+        let budget = budget_with(ByteBudgetSettings {
+            capacity: MIB,
+            floor: 4 * KIB,
+        });
+        let mut other = xray_transport::memory_budget::BudgetPermits::new(budget);
+        assert_eq!(other.try_hold(MIB), MIB);
+        let (addr, sent) = spawn_counting_peer(TOTAL).await;
+        let dialer = TransportDialer::system().expect("a system dialer");
+        let config = GrpcConfig {
+            initial_windows_size: WINDOW as u32,
+            ..config()
+        };
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config).with_byte_budget(budget));
+        let mut flow = open_flow(&dialer, &transport, addr).await;
+
+        let filled = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert!(
+            filled > WINDOW / 2 && filled < WINDOW,
+            "the peer sent {filled} B into a 4 MiB window"
+        );
+        // All but 64 KiB read, with `B` spent: the credit stays back.
+        let mut bytes = vec![0; filled - 64 * KIB];
+        flow.read_exact(&mut bytes).await.expect("the call reads");
+        let after = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert_eq!(after, filled, "credit went back with B spent");
+
+        // 2 KiB of `B` come back, less than the queue needs.
+        assert_eq!(other.try_hold(MIB - 2 * KIB), MIB - 2 * KIB);
+        let after = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert_eq!(after, filled, "credit went back with B still spent");
+
+        drop(other);
+        let more = tokio::time::timeout(DEADLINE, settled(&sent))
+            .await
+            .expect("the peer settles");
+        assert!(
+            more > filled,
+            "the paused call's credit went back once B had room: {more} B sent, {filled} before"
+        );
+
+        let mut rest = vec![0; TOTAL - bytes.len()];
+        tokio::time::timeout(DEADLINE, flow.read_exact(&mut rest))
+            .await
+            .expect("the call stalled")
+            .expect("the call reads");
+        assert!(rest.iter().chain(&bytes).all(|byte| *byte == 0xa5));
+        let usage = budget.usage();
+        assert_eq!(usage.in_use, 0, "a call read to its end holds {usage:?}");
+        drop(flow);
+    }
+}
+
+mod stream_grpc_bench_tests {
+    //! gRPC downloads at a simulated 120 ms round trip on a phone, run by
+    //! hand with `--ignored`: numbers for the tables.
+    use std::future::poll_fn;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use h2::server::{self, SendResponse};
+    use h2::SendStream;
+    use http::{HeaderValue, Response};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::mpsc;
+    use tokio::time::Instant;
+    use xray_routing::{Network, Target, TargetAddr};
+    use xray_transport::stream::grpc_test_only::encode_hunk;
+    use xray_transport::stream::{GrpcConfig, GrpcTransport, TransportLayer};
+    use xray_transport::{BoxedTransportStream, ConnectorConfig, MemoryClass, TransportDialer};
+
+    const HUNK: usize = 32 * 1024;
+
+    fn config() -> GrpcConfig {
+        GrpcConfig {
+            service_name: "xray.grpc".to_owned(),
+            multi_mode: false,
+            authority: "grpc.example.com".parse().expect("a literal authority"),
+            user_agent: HeaderValue::from_static("grpc-go/1.81.0"),
+            idle_timeout_secs: 0,
+            health_check_timeout_secs: 0,
+            permit_without_stream: false,
+            initial_windows_size: 0,
+        }
+    }
+
+    async fn send_all(send: &mut SendStream<Bytes>, mut chunk: Bytes) -> bool {
+        while !chunk.is_empty() {
+            send.reserve_capacity(chunk.len());
+            let Some(Ok(granted)) = poll_fn(|cx| send.poll_capacity(cx)).await else {
+                return false;
+            };
+            let take = granted.min(chunk.len());
+            if send.send_data(chunk.split_to(take), false).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// A peer that answers each call, once the call has sent its first
+    /// bytes, with `each` payload bytes as fast as its credit lets it, and
+    /// then holds the call.
+    async fn spawn_peer(each: usize) -> SocketAddr {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a loopback listener");
+        let addr = listener.local_addr().expect("the listener's address");
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut connection = server::handshake(socket).await.expect("server handshake");
+                    while let Some(Ok((request, respond))) = connection.accept().await {
+                        tokio::spawn(answer(request.into_body(), respond, each));
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    async fn answer(mut body: h2::RecvStream, mut respond: SendResponse<Bytes>, each: usize) {
+        let response = Response::builder()
+            .status(200)
+            .header("content-type", "application/grpc")
+            .body(())
+            .expect("a well-formed response");
+        let mut send = respond.send_response(response, false).expect("respond");
+        if body.data().await.is_none() {
+            return;
+        }
+        let hunk = Bytes::from(encode_hunk(&vec![0xa5; HUNK]));
+        for _ in 0..each.div_ceil(HUNK) {
+            if !send_all(&mut send, hunk.clone()).await {
+                return;
+            }
+        }
+        let _held = (send, body);
+        std::future::pending::<()>().await;
+    }
+
+    /// A TCP relay to `to` that holds every byte `one_way` in each
+    /// direction.
+    async fn delay_relay(to: SocketAddr, one_way: Duration) -> SocketAddr {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a loopback listener");
+        let addr = listener.local_addr().expect("the listener's address");
+        tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                let server = TcpStream::connect(to).await.expect("the peer accepts");
+                let (client_read, client_write) = client.into_split();
+                let (server_read, server_write) = server.into_split();
+                tokio::spawn(pipe(client_read, server_write, one_way));
+                tokio::spawn(pipe(server_read, client_write, one_way));
+            }
+        });
+        addr
+    }
+
+    async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, one_way: Duration) {
+        let (queue, mut queued) = mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+        let writer = tokio::spawn(async move {
+            while let Some((due, bytes)) = queued.recv().await {
+                tokio::time::sleep_until(due).await;
+                if to.write_all(&bytes).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let mut buffer = vec![0; 64 * 1024];
+        while let Ok(read @ 1..) = from.read(&mut buffer).await {
+            let _ = queue.send((Instant::now() + one_way, buffer[..read].to_vec()));
+        }
+        drop(queue);
+        let _ = writer.await;
+    }
+
+    async fn open_flow(
+        dialer: &TransportDialer,
+        transport: &TransportLayer,
+        addr: SocketAddr,
+    ) -> BoxedTransportStream {
+        let target = Target::new(TargetAddr::Ip(addr.ip()), addr.port(), Network::Tcp);
+        dialer
+            .connect_stream(&ConnectorConfig::Tcp, transport, &target, &[addr], None)
+            .await
+            .expect("the flow opens")
+    }
+
+    /// Mbit/s of `calls` downloads of `each` payload bytes at once on one
+    /// connection through a 120 ms round trip, with a phone's windows and
+    /// the process's byte budget, if it has one, at a phone's; `None` if
+    /// they did not all finish within 20 s. Every call is open before any
+    /// asks for data.
+    async fn download_at_120ms(calls: usize, each: usize) -> Option<f64> {
+        let peer = spawn_peer(each).await;
+        let relay = delay_relay(peer, Duration::from_millis(60)).await;
+        let dialer = TransportDialer::system().expect("a system dialer");
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config()));
+        let mut flows = Vec::new();
+        for _ in 0..calls {
+            flows.push(open_flow(&dialer, &transport, relay).await);
+        }
+        let started = Instant::now();
+        for flow in &mut flows {
+            flow.write_all(b"g").await.expect("the call writes");
+            flow.flush().await.expect("the call flushes");
+        }
+        let reads = flows.into_iter().map(|mut flow| async move {
+            let mut bytes = vec![0; each];
+            flow.read_exact(&mut bytes).await.is_ok()
+        });
+        let finished = tokio::time::timeout(
+            Duration::from_secs(20),
+            futures_util::future::join_all(reads),
+        )
+        .await
+        .is_ok_and(|reads| reads.into_iter().all(|read| read));
+        let elapsed = started.elapsed();
+        let mbit = (calls * each) as f64 * 8.0 / elapsed.as_secs_f64() / 1e6;
+        finished.then_some(mbit)
+    }
+
+    /// One call, four and 32 on one connection, each best of three.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "a benchmark: prints Mbit/s at a simulated 120 ms round trip"]
+    async fn grpc_downloads_at_a_120ms_round_trip() {
+        const MIB: usize = 1024 * 1024;
+        xray_transport::set_memory_class(Some(MemoryClass::Constrained));
+        for (calls, each) in [(1, 16 * MIB), (4, 4 * MIB), (32, MIB)] {
+            let mut runs = Vec::new();
+            for _ in 0..3 {
+                runs.push(download_at_120ms(calls, each).await);
+            }
+            let best = runs.iter().flatten().copied().fold(0.0, f64::max);
+            let shown: Vec<String> = runs
+                .iter()
+                .map(|run| match run {
+                    Some(mbit) => format!("{mbit:.0}"),
+                    None => "stalled".to_owned(),
+                })
+                .collect();
+            eprintln!(
+                "GRPC-RTT120 calls {calls}: best {best:.0} Mbit/s of [{}]",
+                shown.join(", ")
+            );
+        }
+        xray_transport::set_memory_class(None);
+    }
+}

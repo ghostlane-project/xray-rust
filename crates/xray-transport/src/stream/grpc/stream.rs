@@ -26,6 +26,8 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use super::framing::{encode_hunk, HunkDecoder, HunkMode, MAX_HUNK_PAYLOAD_LEN};
 use super::h2client::H2ConnectionDriver;
 use super::keepalive::OpenCall;
+use crate::memory_budget::ByteBudget;
+use crate::stream::h2_budget::SharedGate;
 use crate::{TransportError, TransportStream};
 
 /// Where [`GrpcStream::poll_drain_uplink`] stopped.
@@ -158,6 +160,10 @@ pub struct GrpcStream {
     /// succeeded. Every other way a downlink can end is an error, not this.
     eof: bool,
     send_closed: bool,
+    /// The downlink's queue within the transport's byte budget, and the
+    /// credit its reads free, with the downlink's flow control once it is
+    /// there.
+    window: Arc<SharedGate>,
     /// The connection task this call rides on, held so that
     /// [`Self::connection_is_finished`] has something to ask.
     ///
@@ -198,6 +204,7 @@ impl GrpcStream {
         mode: HunkMode,
         driver: Arc<H2ConnectionDriver>,
         open_call: OpenCall,
+        byte_budget: &'static ByteBudget,
     ) -> Self {
         Self {
             downlink: Downlink::Awaiting(response),
@@ -215,6 +222,7 @@ impl GrpcStream {
             downlink_carried_data: false,
             eof: false,
             send_closed: false,
+            window: SharedGate::new(byte_budget, None),
             driver,
             _open_call: open_call,
         }
@@ -487,6 +495,9 @@ impl GrpcStream {
     /// that we call success and xray-core calls an error is the kind of
     /// disagreement that gets debugged on someone else's server.
     fn finish_downlink(&mut self) -> io::Result<()> {
+        // The downlink is done: credit still held back goes to the
+        // connection, the queue's bytes of the budget go back.
+        self.window.close();
         // Checked before the status because it is the more precise complaint:
         // grpc-go turns an EOF inside a message into `io.ErrUnexpectedEOF`
         // rather than letting it pass as the end of the stream
@@ -762,7 +773,7 @@ impl AsyncRead for GrpcStream {
                 Downlink::Awaiting(response) => {
                     let response = ready!(Pin::new(response).poll(cx))
                         .map_err(|error| h2_io_error("no gRPC response", &error))?;
-                    let (head, body) = response.into_parts();
+                    let (head, mut body) = response.into_parts();
                     if let Err(reason) = validate_response_head(head.status, &head.headers) {
                         // Drop the receive half and retain only the verdict.
                         // In particular, no queued DATA reaches the decoder.
@@ -782,6 +793,7 @@ impl AsyncRead for GrpcStream {
                     // `the_reset_behind_a_trailers_only_response` is for.
                     this.head_ended_the_call = body.is_end_stream();
                     this.response_head = Some(head.headers);
+                    this.window.open(body.flow_control().clone());
                     this.downlink = Downlink::Reading(body);
                     continue;
                 }
@@ -791,14 +803,26 @@ impl AsyncRead for GrpcStream {
                 Downlink::Reading(recv) => recv,
             };
 
-            match ready!(recv.poll_data(cx)) {
+            let data = match recv.poll_data(cx) {
+                Poll::Ready(data) => data,
+                Poll::Pending => {
+                    // Nothing is queued: credit held back goes out now.
+                    this.window
+                        .hand_back(0)
+                        .map_err(|error| h2_io_error("could not release the window", &error))?;
+                    return Poll::Pending;
+                }
+            };
+            match data {
                 Some(Ok(chunk)) => {
                     // The window has to be handed back explicitly or the peer
                     // stalls the moment it has sent 65535 bytes, which is the
                     // connection and stream default. h2 releases the stream
-                    // and connection windows together here.
-                    recv.flow_control()
-                        .release_capacity(chunk.len())
+                    // and connection windows together here, at once unless
+                    // the queue holds more than the floor and the call's gate
+                    // cannot hold it within the byte budget.
+                    this.window
+                        .hand_back(chunk.len())
                         .map_err(|error| h2_io_error("could not release the window", &error))?;
                     this.decoder.push(&chunk);
                     this.downlink_carried_data = true;
