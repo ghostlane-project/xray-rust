@@ -37,8 +37,9 @@
 //! that its writer may still hold (a TLS session's records) until it
 //! flushes: [`BudgetPermits`].
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Waker};
 
 use crate::{memory_class, MemoryClass};
@@ -141,9 +142,10 @@ pub struct ByteBudget {
     floor: AtomicUsize,
     in_use: AtomicUsize,
     peak: AtomicUsize,
-    /// How many tasks wait for bytes; checked before taking the lock.
+    /// The queue's length; read before the lock is taken.
     waiting: AtomicUsize,
-    wakers: Mutex<Vec<Waker>>,
+    /// Holders waiting for bytes, in the order they began to wait.
+    queue: Mutex<VecDeque<Arc<Waiter>>>,
 }
 
 impl Default for ByteBudget {
@@ -161,7 +163,7 @@ impl ByteBudget {
             in_use: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             waiting: AtomicUsize::new(0),
-            wakers: Mutex::new(Vec::new()),
+            queue: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -191,7 +193,7 @@ impl ByteBudget {
             }
         }
         // A larger budget may have room for a waiter now.
-        self.wake_all();
+        self.serve(&mut self.lock_queue());
     }
 
     pub fn settings(&self) -> ByteBudgetSettings {
@@ -259,13 +261,24 @@ impl ByteBudget {
         }
     }
 
+    /// Gives `bytes` back: to the holders waiting, first come first served,
+    /// as far as they cover what each is short of, and the rest to the
+    /// budget. Only the waiters whose bytes are all there are woken.
     fn give(&self, bytes: usize) {
         if bytes == 0 {
             return;
         }
-        self.in_use.fetch_sub(bytes, Ordering::SeqCst);
         if self.waiting.load(Ordering::SeqCst) != 0 {
-            self.wake_all();
+            let mut queue = self.lock_queue();
+            let rest = self.hand_out(&mut queue, bytes);
+            self.in_use.fetch_sub(rest, Ordering::SeqCst);
+            return;
+        }
+        self.in_use.fetch_sub(bytes, Ordering::SeqCst);
+        // A holder that began to wait after the check above has missed
+        // these bytes, or else it found them free (`wait`).
+        if self.waiting.load(Ordering::SeqCst) != 0 {
+            self.serve(&mut self.lock_queue());
         }
     }
 
@@ -274,30 +287,96 @@ impl ByteBudget {
         self.capacity().saturating_sub(self.in_use())
     }
 
-    /// Wakes the task of `cx` once bytes come back or the budget grows.
-    /// Returns whether the budget has free bytes already; the task is
-    /// registered either way, so a caller that finds none can return
-    /// `Pending`.
-    pub fn wake_when_free(&self, cx: &mut Context<'_>) -> bool {
-        {
-            let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
-            if !wakers.iter().any(|waker| waker.will_wake(cx.waker())) {
-                wakers.push(cx.waker().clone());
-            }
-            self.waiting.store(wakers.len(), Ordering::SeqCst);
-        }
-        self.free() > 0
+    fn lock_queue(&self) -> MutexGuard<'_, VecDeque<Arc<Waiter>>> {
+        self.queue.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn wake_all(&self) {
-        let wakers = {
-            let mut wakers = self.wakers.lock().unwrap_or_else(PoisonError::into_inner);
-            self.waiting.store(0, Ordering::SeqCst);
-            std::mem::take(&mut *wakers)
-        };
-        for waker in wakers {
-            waker.wake();
+    /// Hands `bytes`, taken already, to the waiters at the front of the
+    /// queue; returns what none of them is short of.
+    fn hand_out(&self, queue: &mut VecDeque<Arc<Waiter>>, mut bytes: usize) -> usize {
+        while bytes > 0 {
+            let Some(front) = queue.front() else {
+                break;
+            };
+            let mut state = front.lock();
+            if front.queued.load(Ordering::SeqCst) {
+                let handed = bytes.min(state.short);
+                front.handed.fetch_add(handed, Ordering::SeqCst);
+                state.short -= handed;
+                bytes -= handed;
+                if state.short > 0 {
+                    break;
+                }
+                front.queued.store(false, Ordering::SeqCst);
+                if let Some(waker) = state.waker.take() {
+                    waker.wake();
+                }
+            }
+            drop(state);
+            queue.pop_front();
         }
+        self.drop_stale(queue);
+        bytes
+    }
+
+    /// Hands what is free to the waiters at the front of the queue.
+    fn serve(&self, queue: &mut VecDeque<Arc<Waiter>>) {
+        while let Some(front) = queue.front() {
+            let mut state = front.lock();
+            if front.queued.load(Ordering::SeqCst) {
+                let handed = self.take(state.short);
+                front.handed.fetch_add(handed, Ordering::SeqCst);
+                state.short -= handed;
+                if state.short > 0 {
+                    break;
+                }
+                front.queued.store(false, Ordering::SeqCst);
+                if let Some(waker) = state.waker.take() {
+                    waker.wake();
+                }
+            }
+            drop(state);
+            queue.pop_front();
+        }
+        self.drop_stale(queue);
+    }
+
+    /// Pops the holders at the front that stopped waiting, and counts the
+    /// rest.
+    fn drop_stale(&self, queue: &mut VecDeque<Arc<Waiter>>) {
+        while queue
+            .front()
+            .is_some_and(|front| !front.queued.load(Ordering::SeqCst))
+        {
+            queue.pop_front();
+        }
+        self.waiting.store(queue.len(), Ordering::SeqCst);
+    }
+}
+
+/// A holder's place in its budget's queue.
+#[derive(Debug, Default)]
+struct Waiter {
+    /// In the queue and short of bytes. Set only by the holder, cleared by
+    /// whoever ends the wait, both under `state`.
+    queued: AtomicBool,
+    /// Bytes handed to the holder while it waited: taken of the budget for
+    /// it, and its once it next holds.
+    handed: AtomicUsize,
+    state: Mutex<WaitState>,
+}
+
+#[derive(Debug, Default)]
+struct WaitState {
+    /// The holder's task, woken once its bytes are all handed to it.
+    waker: Option<Waker>,
+    /// What it still waits for.
+    short: usize,
+}
+
+impl Waiter {
+    fn lock(&self) -> MutexGuard<'_, WaitState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -306,12 +385,18 @@ impl ByteBudget {
 pub struct BudgetPermits<'b> {
     budget: &'b ByteBudget,
     held: usize,
+    /// Its place in the queue, from the first time it waited.
+    waiter: Option<Arc<Waiter>>,
 }
 
 impl<'b> BudgetPermits<'b> {
     /// Bytes held for a moment: a read and its write.
     pub fn new(budget: &'b ByteBudget) -> Self {
-        Self { budget, held: 0 }
+        Self {
+            budget,
+            held: 0,
+            waiter: None,
+        }
     }
 
     pub fn budget(&self) -> &'b ByteBudget {
@@ -326,6 +411,9 @@ impl<'b> BudgetPermits<'b> {
     /// `bytes` and takes what is missing as far as the budget allows. Never
     /// waits. Returns what is held.
     pub fn try_hold(&mut self, bytes: usize) -> usize {
+        if let Some(waiter) = &self.waiter {
+            self.held += waiter.handed.swap(0, Ordering::SeqCst);
+        }
         if bytes > self.held {
             self.held += self.budget.take(bytes - self.held);
         } else if bytes < self.held {
@@ -335,8 +423,65 @@ impl<'b> BudgetPermits<'b> {
         self.held
     }
 
-    /// Gives back everything held.
+    /// Has the task of `cx` woken once the budget can give this holder
+    /// `bytes` in all, counting what it holds: the holders that wait are
+    /// handed the bytes given back in the order they began to wait, and
+    /// each is woken once it has all it waits for, so a give wakes no more
+    /// tasks than it has bytes for. Waiting again keeps the holder's place.
+    ///
+    /// Returns whether the bytes are there already (free, or handed to it
+    /// meanwhile); then the caller holds them now rather than wait.
+    pub fn wake_when_free(&mut self, cx: &mut Context<'_>, bytes: usize) -> bool {
+        let budget = self.budget;
+        let held = self.held;
+        // No holder waits for more than all of `B`: it would never be woken.
+        let bytes = bytes.min(budget.capacity());
+        let waiter = self.waiter.get_or_insert_with(Arc::default);
+        let mut queue = budget.lock_queue();
+        {
+            let mut state = waiter.lock();
+            let short = bytes.saturating_sub(held + waiter.handed.load(Ordering::SeqCst));
+            if short == 0 {
+                return true;
+            }
+            state.short = short;
+            if !state
+                .waker
+                .as_ref()
+                .is_some_and(|waker| waker.will_wake(cx.waker()))
+            {
+                state.waker = Some(cx.waker().clone());
+            }
+            if !waiter.queued.swap(true, Ordering::SeqCst) {
+                queue.push_back(Arc::clone(waiter));
+            }
+            budget.waiting.store(queue.len(), Ordering::SeqCst);
+        }
+        // Bytes given back before the count above was stored went to the
+        // budget, not to the queue: hand them out now.
+        budget.serve(&mut queue);
+        !waiter.queued.load(Ordering::SeqCst)
+    }
+
+    /// Ends a wait the holder no longer needs: its place goes, and bytes
+    /// handed to it go to the next waiter.
+    pub fn stop_waiting(&mut self) {
+        let Some(waiter) = &self.waiter else {
+            return;
+        };
+        if waiter.queued.load(Ordering::SeqCst) {
+            let mut state = waiter.lock();
+            waiter.queued.store(false, Ordering::SeqCst);
+            state.short = 0;
+            state.waker = None;
+        }
+        let late = waiter.handed.swap(0, Ordering::SeqCst);
+        self.budget.give(late);
+    }
+
+    /// Gives back everything held, and stops waiting.
     pub fn release(&mut self) {
+        self.stop_waiting();
         self.try_hold(0);
     }
 }
@@ -349,8 +494,6 @@ impl Drop for BudgetPermits<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
     use std::task::Wake;
 
     use super::*;
@@ -441,32 +584,123 @@ mod tests {
         assert_eq!(late.try_hold(30 * KIB), 20 * KIB);
     }
 
-    struct Flag(AtomicBool);
+    /// A task's waker that counts its wakes.
+    struct Wakes(AtomicUsize);
 
-    impl Wake for Flag {
+    impl Wake for Wakes {
         fn wake(self: Arc<Self>) {
-            self.0.store(true, Ordering::SeqCst);
+            self.0.fetch_add(1, Ordering::SeqCst);
         }
     }
 
+    fn task() -> (Arc<Wakes>, Waker) {
+        let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+        let waker = Waker::from(Arc::clone(&wakes));
+        (wakes, waker)
+    }
+
+    fn wakes(task: &Wakes) -> usize {
+        task.0.load(Ordering::SeqCst)
+    }
+
     #[test]
-    fn a_waiter_is_woken_when_bytes_come_back_or_the_budget_grows() {
+    fn waiters_get_the_bytes_given_back_in_turn_and_only_those_covered_wake() {
+        let budget = budget(64 * KIB, 4 * KIB);
+        let mut all = BudgetPermits::new(&budget);
+        all.try_hold(64 * KIB);
+        let tasks: Vec<_> = (0..3).map(|_| task()).collect();
+        let mut waiting: Vec<_> = (0..3).map(|_| BudgetPermits::new(&budget)).collect();
+        for (permits, (_, waker)) in waiting.iter_mut().zip(&tasks) {
+            assert_eq!(permits.try_hold(8 * KIB), 0);
+            let mut cx = Context::from_waker(waker);
+            assert!(!permits.wake_when_free(&mut cx, 8 * KIB));
+        }
+        // Waiting again keeps the place and does not queue twice.
+        let mut cx = Context::from_waker(&tasks[0].1);
+        assert!(!waiting[0].wake_when_free(&mut cx, 8 * KIB));
+        assert_eq!(budget.waiting.load(Ordering::SeqCst), 3);
+
+        all.try_hold(52 * KIB);
+        assert_eq!(
+            tasks.iter().map(|(task, _)| wakes(task)).collect::<Vec<_>>(),
+            [1, 0, 0],
+            "12 KiB back: the first waiter has its 8 KiB, the second 4 of its 8"
+        );
+        assert_eq!(budget.in_use(), 64 * KIB, "handed bytes stay taken");
+        assert_eq!(waiting[0].try_hold(8 * KIB), 8 * KIB);
+        all.try_hold(48 * KIB);
+        assert_eq!(
+            tasks.iter().map(|(task, _)| wakes(task)).collect::<Vec<_>>(),
+            [1, 1, 0]
+        );
+        assert_eq!(waiting[1].try_hold(8 * KIB), 8 * KIB);
+        assert_eq!(budget.waiting.load(Ordering::SeqCst), 1);
+        assert_eq!(budget.free(), 0);
+    }
+
+    #[test]
+    fn a_holder_that_stops_waiting_passes_its_bytes_on() {
+        let budget = budget(16 * KIB, 4 * KIB);
+        let mut all = BudgetPermits::new(&budget);
+        all.try_hold(16 * KIB);
+        let (first_task, first_waker) = task();
+        let (second_task, second_waker) = task();
+        let mut first = BudgetPermits::new(&budget);
+        let mut second = BudgetPermits::new(&budget);
+        assert!(!first.wake_when_free(&mut Context::from_waker(&first_waker), 8 * KIB));
+        assert!(!second.wake_when_free(&mut Context::from_waker(&second_waker), 8 * KIB));
+
+        all.try_hold(12 * KIB);
+        assert_eq!(wakes(&first_task), 0, "4 of its 8 KiB are handed to it");
+        drop(first);
+        assert_eq!(wakes(&second_task), 0, "the 4 KiB pass on; 4 more to come");
+        all.try_hold(8 * KIB);
+        assert_eq!(wakes(&second_task), 1);
+        second.stop_waiting();
+        assert_eq!(budget.in_use(), 8 * KIB, "an ended wait gives its bytes back");
+        assert_eq!(budget.waiting.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn bytes_given_back_before_the_wait_began_are_not_missed() {
+        let budget = budget(16 * KIB, 4 * KIB);
+        let mut all = BudgetPermits::new(&budget);
+        all.try_hold(16 * KIB);
+        let mut late = BudgetPermits::new(&budget);
+        assert_eq!(late.try_hold(4 * KIB), 0);
+        // Given back between the failed hold and the wait: no one was
+        // queued, so the bytes went to the budget.
+        all.try_hold(10 * KIB);
+        let (task, waker) = task();
+        assert!(
+            late.wake_when_free(&mut Context::from_waker(&waker), 4 * KIB),
+            "the bytes are there: hold them rather than wait"
+        );
+        assert_eq!(late.try_hold(4 * KIB), 4 * KIB);
+        assert_eq!(wakes(&task), 1, "served at once, so woken once");
+        assert_eq!(budget.waiting.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_larger_budget_serves_its_waiters() {
         let budget = budget(10 * KIB, 4 * KIB);
         let mut all = BudgetPermits::new(&budget);
         all.try_hold(10 * KIB);
-
-        let flag = Arc::new(Flag(AtomicBool::new(false)));
-        let waker = Waker::from(Arc::clone(&flag));
-        let mut cx = Context::from_waker(&waker);
-        assert!(!budget.wake_when_free(&mut cx));
-        all.try_hold(9 * KIB);
-        assert!(flag.0.swap(false, Ordering::SeqCst), "woken on give back");
-        assert!(budget.wake_when_free(&mut cx), "one byte in KiB is free");
-        all.try_hold(10 * KIB);
+        let (task, waker) = task();
+        let mut waiting = BudgetPermits::new(&budget);
+        assert!(!waiting.wake_when_free(&mut Context::from_waker(&waker), 4 * KIB));
         budget.set(Some(ByteBudgetSettings {
             capacity: 20 * KIB,
             floor: 4 * KIB,
         }));
-        assert!(flag.0.load(Ordering::SeqCst), "woken when the budget grows");
+        assert_eq!(wakes(&task), 1, "woken when the budget grows");
+        assert_eq!(waiting.try_hold(4 * KIB), 4 * KIB);
+        waiting.release();
+        // No holder waits for more than all of B.
+        let mut greedy = BudgetPermits::new(&budget);
+        assert!(!greedy.wake_when_free(&mut Context::from_waker(&waker), usize::MAX));
+        drop(all);
+        assert_eq!(wakes(&task), 2, "all of B came back to it");
+        assert_eq!(greedy.try_hold(usize::MAX), 20 * KIB);
     }
 }

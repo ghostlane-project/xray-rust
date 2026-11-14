@@ -299,6 +299,7 @@ impl<'p> RelayBuffer<'p> {
             let buffer = class_len(class_of(size));
             let need = (self.unflushed + buffer).saturating_sub(floor);
             if self.permits.try_hold(need) >= need {
+                self.permits.stop_waiting();
                 return Some(size);
             }
             if size <= smallest {
@@ -308,6 +309,12 @@ impl<'p> RelayBuffer<'p> {
         }
         self.permits.try_hold(self.unflushed.saturating_sub(floor));
         None
+    }
+
+    /// What the smallest read needs of the budget, beside the floor.
+    fn smallest_need(&self) -> usize {
+        let floor = self.permits.budget().floor();
+        (self.unflushed + class_len(0)).saturating_sub(floor)
     }
 
     /// Whether the writer has to be flushed before the next read: what it
@@ -331,12 +338,20 @@ impl<'p> RelayBuffer<'p> {
         let size = match self.plan() {
             Some(size) => size,
             None => {
-                // Woken once the budget has bytes again; the caller's flush
-                // makes room too.
-                self.permits.budget().wake_when_free(cx);
+                // Woken once the budget has handed this direction the bytes
+                // for its smallest read; the caller's flush makes room too.
+                if !self.permits.wake_when_free(cx, self.smallest_need()) {
+                    return Poll::Pending;
+                }
                 match self.plan() {
                     Some(size) => size,
-                    None => return Poll::Pending,
+                    None => {
+                        // Taken by another holder meanwhile: wait again.
+                        if self.permits.wake_when_free(cx, self.smallest_need()) {
+                            cx.waker().wake_by_ref();
+                        }
+                        return Poll::Pending;
+                    }
                 }
             }
         };
