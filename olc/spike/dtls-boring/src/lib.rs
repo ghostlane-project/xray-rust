@@ -418,6 +418,11 @@ impl DtlsInstance for BoringDtls {
         if self.active.is_none() {
             return Ok(());
         }
+        if !self.established && self.started.is_none() {
+            // str0m's first call after set_active: the client sends its ClientHello here (the
+            // server's accept() only arms itself).
+            return self.drive();
+        }
         if let Some(d) = self.deadline {
             if now >= d {
                 // SAFETY: the SSL pointer is live for as long as self.
