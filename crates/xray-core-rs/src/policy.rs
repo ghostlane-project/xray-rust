@@ -10,6 +10,8 @@ use xray_config::CoreConfig;
 use crate::connection::ConnectionTraffic;
 
 mod relay_buffer;
+#[cfg(test)]
+mod size_tests;
 #[cfg(target_os = "linux")]
 mod splice;
 mod split_relay;

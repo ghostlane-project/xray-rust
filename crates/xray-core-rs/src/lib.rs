@@ -44,6 +44,8 @@ mod tun;
 mod tun_admission;
 mod tun_fd;
 mod udp_ingress;
+#[cfg(test)]
+mod size_guard;
 
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]

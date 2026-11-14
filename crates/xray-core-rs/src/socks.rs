@@ -2665,6 +2665,9 @@ fn socks_udp_flow_global_id(client_addr: SocketAddr, target: &Target) -> [u8; 8]
 }
 
 #[cfg(test)]
+mod size_tests;
+
+#[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::mem::size_of;
