@@ -35,13 +35,14 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{Config, ConfigError, TRANSPORT_DATACHANNEL};
+use crate::config::{Config, ConfigError, TRANSPORT_DATACHANNEL, TRANSPORT_VP8CHANNEL};
 use crate::control::{self, End, Hooks};
 use crate::direct::Rules;
 use crate::hello::{self, HelloError, DEFAULT_TIMEOUT};
 use crate::lane::{Lane, DATACHANNEL};
 use crate::link::Link;
 use crate::pipe::{LinkEvent, EVENT_QUEUE};
+use crate::plane::{PlaneLane, SessLane};
 use crate::udp::Flows;
 
 /// `reconnectProvider`: the engine rejoined.
@@ -76,6 +77,9 @@ pub const RETRY_INITIAL_DELAY: Duration = Duration::from_millis(300);
 pub const RETRY_MAX_DELAY: Duration = Duration::from_secs(5);
 /// How long a request waits for a session (`defaultSessionReadyTimeout`).
 pub const SESSION_READY_TIMEOUT: Duration = Duration::from_secs(60);
+/// A control-plane transport's pong timeout, ms (`runtime.LivenessTimeout`
+/// for vp8channel: 45 s, the KCP control plane's retransmits included).
+pub const CONTROL_PLANE_LIVENESS_TIMEOUT_MS: u64 = 45_000;
 /// Requests that may wait for a session at once (`maxParkedRequests`).
 pub const MAX_PARKED: usize = 64;
 /// How long shutdown waits for the control loop's goodbye.
@@ -211,7 +215,7 @@ impl Client {
         on_session_open: Option<SessionListener>,
         inspect: impl FnOnce(&Arc<Inner>) + Send,
     ) -> Result<(), RunError> {
-        if cfg.transport != TRANSPORT_DATACHANNEL {
+        if cfg.transport != TRANSPORT_DATACHANNEL && cfg.transport != TRANSPORT_VP8CHANNEL {
             return Err(ConfigError::Transport(cfg.transport.clone()).into());
         }
         let keys = Arc::new(
@@ -355,8 +359,11 @@ pub(crate) struct Inner {
 #[derive(Default)]
 pub(crate) struct Sess {
     pub(crate) session: Option<Session>,
+    /// The control session, on a link with a control plane (the data
+    /// session is the control session otherwise).
+    pub(crate) control_session: Option<Session>,
     pub(crate) session_id: String,
-    pub(crate) lane: Option<Arc<Lane>>,
+    pub(crate) lane: Option<SessLane>,
     control_stop: Option<CancellationToken>,
     control_done: Option<tokio::task::JoinHandle<()>>,
     /// Which control loop is current; a dead one names itself by it.
@@ -474,49 +481,96 @@ impl Inner {
     }
 
     /// A fresh lane and smux session over the link; the link hands its
-    /// records to the new lane from now on.
-    fn new_session(&self) -> Result<(Arc<Lane>, Session), RunError> {
+    /// records to the new lane from now on. A link with a control plane
+    /// (vp8channel) gets a lane on each plane and a control session on the
+    /// control one (`NewSessionPairWithConns`), returned second.
+    fn new_session(&self) -> Result<(SessLane, Session, Option<Session>), RunError> {
+        let smux_err = |e: olc_smux::Error| RunError::Smux(e.to_string());
+        if let Some(vp8) = self.link.vp8() {
+            let features = olc_muxconn::Features {
+                max_payload_size: crate::vp8link::MAX_PAYLOAD_SIZE,
+                write_interval: Duration::ZERO,
+            };
+            let (data, dio) = PlaneLane::new(
+                vp8.clone(),
+                self.keys.clone(),
+                &features,
+                olc_wire::record::Lane::Data,
+            );
+            let (control, cio) = PlaneLane::new(
+                vp8.clone(),
+                self.keys.clone(),
+                &features,
+                olc_wire::record::Lane::Control,
+            );
+            let lane = SessLane::Planes {
+                data: data.clone(),
+                control: control.clone(),
+            };
+            if let Some(old) = self.sess().lane.replace(lane.clone()) {
+                old.close();
+            }
+            self.link.set_planes(Some(data), Some(control));
+            let max = features.max_payload_size;
+            let (session, driver) =
+                Session::client(dio, olc_smux::Config::client_data(max, true)).map_err(smux_err)?;
+            tokio::spawn(async move {
+                let _ = driver.await;
+            });
+            let (csession, cdriver) =
+                Session::client(cio, olc_smux::Config::control(max)).map_err(smux_err)?;
+            tokio::spawn(async move {
+                let _ = cdriver.await;
+            });
+            return Ok((lane, session, Some(csession)));
+        }
         let (lane, io) = Lane::new(self.link.clone(), self.keys.clone(), &DATACHANNEL)
             .map_err(|e| RunError::Smux(e.to_string()))?;
-        let old = self.sess().lane.replace(lane.clone());
+        let old = self.sess().lane.replace(SessLane::Batched(lane.clone()));
         if let Some(old) = old {
             old.close();
         }
         self.link.set_data(Some(lane.clone()));
         let cfg = olc_smux::Config::client_data(DATACHANNEL.max_payload_size, false);
-        let (session, driver) =
-            Session::client(io, cfg).map_err(|e| RunError::Smux(e.to_string()))?;
+        let (session, driver) = Session::client(io, cfg).map_err(smux_err)?;
         tokio::spawn(async move {
             let _ = driver.await;
         });
-        Ok((lane, session))
+        Ok((SessLane::Batched(lane), session, None))
     }
 
     /// `bringUpLink` after the link joined: the first session and its
     /// handshake.
     async fn bring_up(self: &Arc<Self>) -> Result<(), RunError> {
         let _g = self.reconnect_mu.lock().await;
-        let (lane, session) = self.new_session()?;
+        let (lane, session, control) = self.new_session()?;
+        let close = |session: &Session, control: &Option<Session>| {
+            let _ = session.close();
+            if let Some(c) = control {
+                let _ = c.close();
+            }
+        };
+        let hello_on = control.as_ref().unwrap_or(&session);
         let opened =
-            match hello::open_control_stream(&session, &self.device_id, DEFAULT_TIMEOUT, &self.run)
+            match hello::open_control_stream(hello_on, &self.device_id, DEFAULT_TIMEOUT, &self.run)
                 .await
             {
                 Ok(o) => o,
                 Err(err) => {
                     let classified = self.classify(err, &lane);
-                    let _ = session.close();
+                    close(&session, &control);
                     lane.close();
                     return Err(RunError::Handshake(classified));
                 }
             };
         if let Err(e) = self.bind_peer(&opened.welcome.peer_id).await {
-            let _ = session.close();
+            close(&session, &control);
             lane.close();
             return Err(RunError::Peer(e));
         }
         let sid = opened.welcome.session_id.clone();
         crate::info!("session {sid} opened (device={})", self.device_id);
-        self.install(session, sid.clone(), opened.stream);
+        self.install(session, control, sid.clone(), opened.stream);
         self.notify_session_open(&sid);
         Ok(())
     }
@@ -535,7 +589,7 @@ impl Inner {
     }
 
     /// `classifyHandshakeFailure`.
-    fn classify(&self, err: HelloError, lane: &Lane) -> Classified {
+    fn classify(&self, err: HelloError, lane: &SessLane) -> Classified {
         let stats = lane.decrypt_stats();
         let kind = match &err {
             HelloError::Reply(olc_wire::handshake::HandshakeError::ProtocolVersion(_)) => {
@@ -558,12 +612,19 @@ impl Inner {
 
     /// Makes the session current, wakes the parked requests and starts its
     /// control loop.
-    fn install(self: &Arc<Self>, session: Session, sid: String, control: olc_smux::Stream) {
+    fn install(
+        self: &Arc<Self>,
+        session: Session,
+        control_session: Option<Session>,
+        sid: String,
+        control: olc_smux::Stream,
+    ) {
         let id = self.next_control.fetch_add(1, Ordering::Relaxed) + 1;
         let stop = self.run.child_token();
         {
             let mut s = self.sess();
             s.session = Some(session);
+            s.control_session = control_session;
             s.session_id.clone_from(&sid);
             s.control_stop = Some(stop.clone());
             s.control_id = id;
@@ -593,7 +654,12 @@ impl Inner {
             send_stalled: Box::new(stalled),
             on_pong: Box::new(|_| {}),
         };
-        let liveness = self.cfg.liveness;
+        let mut liveness = self.cfg.liveness;
+        // `tunedConfig`: a control-plane transport's pongs get 45 s
+        // (`runtime.LivenessTimeout`) unless the config asks for more.
+        if self.link.vp8().is_some() && liveness.timeout() <= olc_wire::control::DEFAULT_TIMEOUT {
+            liveness.timeout_ms = CONTROL_PLANE_LIVENESS_TIMEOUT_MS;
+        }
         let handle = tokio::spawn(async move {
             let end = control::run(control, liveness, hooks, stop.clone()).await;
             if stop.is_cancelled() {
@@ -621,6 +687,9 @@ impl Inner {
             self.link.reset_peer();
             s.session_id.clear();
             s.control_done = None;
+            if let Some(c) = s.control_session.take() {
+                let _ = c.close();
+            }
             (s.lane.take(), s.session.take(), s.control_stop.take())
         };
         if let Some(lane) = lane {
@@ -816,15 +885,22 @@ impl Inner {
 
     /// `tryReopenSession`.
     async fn try_reopen_session(self: &Arc<Self>, run: &CancellationToken, attempt: u32) -> Round {
-        let (lane, session) = match self.new_session() {
+        let (lane, session, control) = match self.new_session() {
             Ok(x) => x,
             Err(e) => {
                 crate::info!("smux re-init failed (attempt {attempt}): {e}");
                 return Round::Silent;
             }
         };
+        let close = |session: &Session| {
+            let _ = session.close();
+            if let Some(c) = &control {
+                let _ = c.close();
+            }
+        };
+        let hello_on = control.as_ref().unwrap_or(&session);
         let opened =
-            match hello::open_control_stream(&session, &self.device_id, DEFAULT_TIMEOUT, run).await
+            match hello::open_control_stream(hello_on, &self.device_id, DEFAULT_TIMEOUT, run).await
             {
                 Ok(o) => o,
                 Err(err) => {
@@ -835,7 +911,7 @@ impl Inner {
                             "handshake on reconnect failed (attempt {attempt}): {classified}"
                         );
                     }
-                    let _ = session.close();
+                    close(&session);
                     return if run.is_cancelled() {
                         Round::Stopped
                     } else if refused {
@@ -849,21 +925,21 @@ impl Inner {
             };
         if let Err(e) = self.link.confirm_peer(&opened.welcome.peer_id).await {
             crate::info!("peer confirmation on reconnect failed (attempt {attempt}): {e}");
-            let _ = session.close();
+            close(&session);
             return Round::Silent;
         }
         if let Err(e) = self.link.wait_for_peer().await {
             crate::info!("wait for peer on reconnect failed (attempt {attempt}): {e}");
-            let _ = session.close();
+            close(&session);
             return Round::Silent;
         }
         if run.is_cancelled() {
-            let _ = session.close();
+            close(&session);
             return Round::Stopped;
         }
         let sid = opened.welcome.session_id.clone();
         crate::info!("session {sid} reopened (device={})", self.device_id);
-        self.install(session, sid.clone(), opened.stream);
+        self.install(session, control, sid.clone(), opened.stream);
         self.notify_session_open(&sid);
         self.failed_rounds.store(0, Ordering::Relaxed);
         Round::Opened
@@ -885,6 +961,9 @@ impl Inner {
         let (lane, session) = {
             let mut s = self.sess();
             s.session_id.clear();
+            if let Some(c) = s.control_session.take() {
+                let _ = c.close();
+            }
             (s.lane.take(), s.session.take())
         };
         if let Some(session) = session {

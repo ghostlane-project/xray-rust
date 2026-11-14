@@ -10,13 +10,20 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
-/// The transport the client runs: the only one the port has so far.
+/// The transport the client runs by default: messages on the engine's
+/// data channel.
 pub const TRANSPORT_DATACHANNEL: &str = "datachannel";
+/// The transport that rides the engine's video track as VP8 frames
+/// ([`crate::vp8link`]); it needs an engine with a video track.
+pub const TRANSPORT_VP8CHANNEL: &str = "vp8channel";
 
 /// The interop hub's engine (`interop-pipe`, the default).
 pub const ENGINE_INTEROP_PIPE: &str = "interop-pipe";
 /// The SaluteJazz carrier's engine.
 pub const ENGINE_SALUTEJAZZ: &str = "salutejazz";
+/// The interop hub's peer-to-peer engine: signalling in a hub room, one
+/// WebRTC peer connection with a video line ([`crate::p2p`]).
+pub const ENGINE_INTEROP_P2P: &str = "interop-p2p";
 
 /// No auth provider: the engine joins `url` with `token` and `room_id` as
 /// given (Go's `none`, the default).
@@ -62,9 +69,20 @@ pub struct Config {
     pub rooms: Vec<String>,
     /// The 32-byte key, hex.
     pub key: String,
-    /// The transport; `datachannel`.
+    /// The transport: `datachannel` (the default) or `vp8channel`.
     #[serde(default = "datachannel")]
     pub transport: String,
+    /// The room's peer-routing channel both ends set (Go's `ChannelID`,
+    /// `room.channel`): vp8channel's binding token comes from it, or from
+    /// the URL when it is empty.
+    #[serde(default)]
+    pub channel: String,
+    /// vp8channel's frames a second; 0 for the app's 60.
+    #[serde(default)]
+    pub vp8_fps: u32,
+    /// vp8channel's KCP packets a frame; 0 for 64.
+    #[serde(default)]
+    pub vp8_batch: usize,
     /// The resolver the server is asked to use for names, `host:port`
     /// (Go's `DNSServer`; the client sends DNS over the stream to whatever
     /// address a query names).
@@ -172,13 +190,15 @@ pub enum ConfigError {
     #[error("setup key set: {0}")]
     Key(String),
     /// A transport the port does not carry yet.
-    #[error("unsupported transport {0:?}: the Rust client carries datachannel")]
+    #[error("unsupported transport {0:?}: the Rust client carries datachannel and vp8channel")]
     Transport(String),
     /// A direct rule that does not parse (`route.ErrRule`).
     #[error("{0}")]
     Rule(String),
     /// An engine the port does not carry.
-    #[error("unsupported engine {0:?}: the Rust client carries interop-pipe and salutejazz")]
+    #[error(
+        "unsupported engine {0:?} for the transport: the Rust client carries interop-pipe and salutejazz (datachannel) and interop-p2p (vp8channel)"
+    )]
     Engine(String),
     /// A provider the port does not carry, or one whose engine is not the
     /// one named.
@@ -206,6 +226,9 @@ impl std::fmt::Debug for Config {
             .field("rooms", &self.rooms)
             .field("key", &hidden(&self.key))
             .field("transport", &self.transport)
+            .field("channel", &self.channel)
+            .field("vp8_fps", &self.vp8_fps)
+            .field("vp8_batch", &self.vp8_batch)
             .field("dns", &self.dns)
             .field("socks", &self.socks)
             .field("device_id", &self.device_id)
@@ -342,6 +365,29 @@ mod tests {
         let min = Config::from_json(br#"{"url":"u","key":"k"}"#).unwrap();
         assert_eq!(min.transport, "datachannel");
         assert_eq!(min.socks, "127.0.0.1:0");
+        assert_eq!(
+            (min.channel.as_str(), min.vp8_fps, min.vp8_batch),
+            ("", 0, 0)
+        );
+    }
+
+    #[test]
+    fn the_p2p_gates_config_names_its_channel_and_numbers() {
+        let cfg = Config::from_json(
+            br#"{"url":"tcp://127.0.0.1:9/gate-r","key":"00","transport":"vp8channel","engine":"interop-p2p","channel":"c0ffee","vp8_fps":60,"vp8_batch":64,"ice_local_ip":"127.0.0.1"}"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.transport, TRANSPORT_VP8CHANNEL);
+        assert_eq!(cfg.engine_name().unwrap(), ENGINE_INTEROP_P2P);
+        assert_eq!(
+            (cfg.channel.as_str(), cfg.vp8_fps, cfg.vp8_batch),
+            ("c0ffee", 60, 64)
+        );
+        let dbg = format!("{cfg:?}");
+        assert!(
+            dbg.contains("c0ffee") && dbg.contains("vp8_batch: 64"),
+            "{dbg}"
+        );
     }
 
     #[test]

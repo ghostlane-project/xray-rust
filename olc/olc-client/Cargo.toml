@@ -11,8 +11,10 @@ publish = false
 libc.workspace = true
 olc-muxconn = { path = "../olc-muxconn" }
 olc-net = { path = "../olc-net" }
+olc-rtc = { path = "../olc-rtc" }
 olc-salutejazz = { path = "../olc-salutejazz" }
 olc-smux = { path = "../olc-smux" }
+olc-vp8channel = { path = "../olc-vp8channel" }
 olc-wire = { path = "../olc-wire" }
 rand.workspace = true
 serde.workspace = true

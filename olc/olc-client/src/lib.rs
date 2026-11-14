@@ -39,7 +39,9 @@ pub mod hello;
 pub mod lane;
 pub mod link;
 pub mod names;
+pub mod p2p;
 pub mod pipe;
+pub mod plane;
 pub mod sizes;
 pub mod socks;
 pub mod supervisor;
@@ -48,6 +50,7 @@ pub mod sys;
 mod testhub;
 pub mod tunnel;
 pub mod udp;
+pub mod vp8link;
 
 pub use olc_net::{debug, info, log, net, resolver};
 

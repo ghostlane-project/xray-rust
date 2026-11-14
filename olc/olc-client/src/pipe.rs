@@ -379,7 +379,7 @@ impl PipeLink {
 }
 
 /// Writes one frame into `buf`, replacing what it held.
-fn frame_into(buf: &mut Vec<u8>, kind: u8, payload: &[u8]) -> io::Result<()> {
+pub(crate) fn frame_into(buf: &mut Vec<u8>, kind: u8, payload: &[u8]) -> io::Result<()> {
     if payload.len() > MAX_PAYLOAD {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -395,7 +395,10 @@ fn frame_into(buf: &mut Vec<u8>, kind: u8, payload: &[u8]) -> io::Result<()> {
 }
 
 /// Reads one frame's payload into `buf`; its kind and length.
-async fn read_frame(read: &mut OwnedReadHalf, buf: &mut [u8]) -> io::Result<(u8, usize)> {
+pub(crate) async fn read_frame(
+    read: &mut OwnedReadHalf,
+    buf: &mut [u8],
+) -> io::Result<(u8, usize)> {
     let mut hdr = [0u8; FRAME_HEADER];
     read.read_exact(&mut hdr).await?;
     let len = u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]) as usize;
