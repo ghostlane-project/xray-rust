@@ -232,6 +232,10 @@ fn cycles(rt: &OlcrtcRuntime, socks: SocketAddr, n: usize, url: &str) -> ExitCod
                 return ExitCode::FAILURE;
             }
         };
+        if i + 1 == n {
+            // MemoryWatch's reading with a session up, once.
+            eprintln!("ffi memory running {}", olc_ffi::memory_stats());
+        }
         let t1 = Instant::now();
         if let Err(e) = rt.stop(STOP_MS) {
             olc_client::info!("ffi cycle={i} stop failed: {e}");
@@ -253,6 +257,7 @@ fn cycles(rt: &OlcrtcRuntime, socks: SocketAddr, n: usize, url: &str) -> ExitCod
             rt.state()
         );
     }
+    eprintln!("ffi memory stopped {}", olc_ffi::memory_stats());
     eprintln!(
         "ffi cycles done n={n} workers={}",
         ghostlane_runtime::runtime::built().map_or(0, |p| p.workers)

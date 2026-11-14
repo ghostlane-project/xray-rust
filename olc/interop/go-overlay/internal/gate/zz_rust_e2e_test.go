@@ -147,7 +147,7 @@ func (e *e2eEnv) serverOn(engineName string, ep Endpoint, ring []string, allowPr
 		env = append(env, privateTargetsEnv+"=1")
 	}
 	cmd.Env = env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = childProc(true)
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = stopGrace
 	err = cmd.Start()
@@ -321,7 +321,14 @@ func (e *e2eEnv) failover(first string) {
 		bad, why = "tcp://"+ln.Addr().String()+"/"+name, "ended with error: "
 		_ = ln.Close()
 	case "empty":
-		bad, why = e.target.hub.URL(name+"-empty"), "ended with error: handshake: no peer in room"
+		// The FFI's driver runs each room as Go's mobile runtime does, so its
+		// error comes wrapped as runPublicClient (mobile/runtime.go:95) and
+		// the client (pkg/olcrtc/client/client.go:166) wrap it.
+		wrap := ""
+		if filepath.Base(*gateRustBin) == "olc-ffi-client" {
+			wrap = "run public client: client: "
+		}
+		bad, why = e.target.hub.URL(name+"-empty"), "ended with error: "+wrap+"handshake: no peer in room"
 	default:
 		t.Fatalf("no first room %q", first)
 	}

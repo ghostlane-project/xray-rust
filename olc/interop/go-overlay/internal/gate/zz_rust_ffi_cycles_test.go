@@ -15,7 +15,9 @@
 // (none, on this build), the threads never passed the runtime's own (its
 // workers, its four blocking threads and main) and ended no higher than they
 // began, and the live heap after the last stop is within 1 MiB of the heap
-// after the tenth (the pools are warm by then).
+// after the tenth (the pools are warm by then). memory_stats(), MemoryWatch's
+// reading, is taken with the last session up and after the last stop: one
+// run alive, then none, and every layer with its §9 budget.
 
 package gate
 
@@ -48,6 +50,18 @@ const ffiBlocking = 4
 type ffiCycle struct {
 	readyMS, fetched, stopMS, tasks, rtThreads, osThreads, live int
 	state                                                       string
+}
+
+// ffiMemory is the part of a memory_stats() reading ("ffi memory <when>
+// <json>") the test checks.
+type ffiMemory struct {
+	V      int `json:"v"`
+	Budget int `json:"budget"`
+	N      struct {
+		Runs  int `json:"runs"`
+		Conns int `json:"conns"`
+	} `json:"n"`
+	Layers map[string][]*int64 `json:"layers"`
 }
 
 // parseFFICycle reads "ffi cycle=<i> ready_ms= fetched= stop_ms= tasks=
@@ -114,7 +128,7 @@ func TestRustFFICycles(t *testing.T) {
 	cmd.Env = append(os.Environ(), "OLC_FFI_CYCLES="+strconv.Itoa(ffiCycles),
 		"OLC_FFI_FETCH="+env.target.origin.URLs.Small)
 	// The child dies with the test process, not only when ctx ends.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = childProc(false)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = stopBudget
 	var out bytes.Buffer
@@ -130,7 +144,18 @@ func TestRustFFICycles(t *testing.T) {
 
 	cycles := make([]ffiCycle, 0, ffiCycles)
 	workers := -1
+	readings := map[string]ffiMemory{}
 	for _, line := range strings.Split(text, "\n") {
+		if i := strings.Index(line, "ffi memory "); i >= 0 {
+			when, raw, _ := strings.Cut(line[i+len("ffi memory "):], " ")
+			var m ffiMemory
+			if err := json.Unmarshal([]byte(raw), &m); err != nil {
+				t.Fatalf("memory_stats() %s: %v in %q", when, err, raw)
+			}
+			readings[when] = m
+			t.Logf("memory_stats() %s: %s", when, raw)
+			continue
+		}
 		if i := strings.Index(line, "ffi cycles done "); i >= 0 {
 			for _, f := range strings.Fields(line[i:]) {
 				if v, ok := strings.CutPrefix(f, "workers="); ok {
@@ -155,6 +180,23 @@ func TestRustFFICycles(t *testing.T) {
 	if len(cycles) != ffiCycles || workers < 1 {
 		t.Fatalf("%d cycles, workers=%d; want %d and the runtime's workers:\n%s", len(cycles), workers,
 			ffiCycles, tail(text, 20))
+	}
+	// MemoryWatch's reading: one run alive with the last session up, none
+	// after the last stop, every layer with §9's budget.
+	for when, runs := range map[string]int{"running": 1, "stopped": 0} {
+		m, ok := readings[when]
+		if !ok {
+			t.Fatalf("no memory_stats() reading %s", when)
+		}
+		if m.V != 1 || m.Budget != 12<<20 || m.N.Runs != runs || (runs == 0 && m.N.Conns != 0) {
+			t.Fatalf("memory_stats() %s: v=%d budget=%d runs=%d conns=%d; want v=1, budget 12 MiB, %d runs",
+				when, m.V, m.Budget, m.N.Runs, m.N.Conns, runs)
+		}
+		for name, l := range m.Layers {
+			if len(l) != 3 || l[2] == nil || *l[2] <= 0 {
+				t.Fatalf("memory_stats() %s: layer %s is %v; want [held, cap, budget]", when, name, l)
+			}
+		}
 	}
 	maxOf := func(cs []ffiCycle, f func(ffiCycle) int) int {
 		m := 0

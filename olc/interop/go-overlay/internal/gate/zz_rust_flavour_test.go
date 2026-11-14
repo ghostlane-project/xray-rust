@@ -249,7 +249,7 @@ func startRust(ctx context.Context, bin string, ep Endpoint, extra func(*rustCon
 	cmd := exec.CommandContext(runCtx, bin, path)
 	// The child dies with the test process (a panic or -timeout runs no
 	// cleanup), not only when halt stops it.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = childProc(false)
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = stopBudget
 	stderr, err := cmd.StderrPipe()
