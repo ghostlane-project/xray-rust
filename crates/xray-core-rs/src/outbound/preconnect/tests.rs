@@ -275,3 +275,31 @@ async fn dropping_the_pool_closes_what_it_holds() {
     }
     assert_eq!(closed, 1);
 }
+
+/// A network reset stops the dialers and closes what they hold, as closing
+/// does, but the next request starts new dialers and takes a connection
+/// opened after the reset. A reset with no dialers running does nothing.
+#[tokio::test(start_paused = true)]
+async fn a_reset_closes_what_the_dialers_hold_and_the_next_request_dials_again() {
+    let fake = Arc::new(Fake::default());
+    let pool = PreConnections::new(2).unwrap();
+    pool.reset();
+    take(&pool, &fake, 443).await.unwrap();
+    assert_eq!(fake.opened(), 2);
+    pool.reset();
+    pool.reset();
+    pool.join().await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    assert_eq!(fake.opened(), 2);
+    let mut closed = 0;
+    for number in 0..2 {
+        closed += usize::from(fake.closed(number).await);
+    }
+    // The held one closed; the taken one is the request's.
+    assert_eq!(closed, 1);
+    assert!(take(&pool, &fake, 443).await.unwrap() >= 2);
+    settle().await;
+    assert_eq!(fake.opened(), 4);
+    pool.close();
+    pool.join().await;
+}

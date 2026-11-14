@@ -1,5 +1,6 @@
 //! The OS network changed under live connections on UDP sockets of their
-//! own: QUIC carriers and mKCP.
+//! own: QUIC carriers and mKCP. A host's reset of the network also lets go
+//! of the connections the TCP transports keep for later flows.
 
 use std::sync::Arc;
 
@@ -39,9 +40,102 @@ impl NetworkChanges {
     }
 }
 
+/// One core's signal that the host reset its network, as a host does when
+/// the device moved to another network: a connection a transport keeps for
+/// later flows, opened on the old path, is let go instead of waiting for its
+/// timeouts, and so is an answer a DNS cache kept from it.
+///
+/// Each reset starts a new generation. A pooled connection belongs to the
+/// generation its dial started in: it is handed to no flow of a later one,
+/// and the pool lets it go when the generation moves on, idle or not. A
+/// dialer made from another by cloning shares its resets, as it shares its
+/// [`NetworkChanges`].
+#[derive(Clone, Debug)]
+pub struct NetworkResets(Arc<watch::Sender<u64>>);
+
+impl Default for NetworkResets {
+    fn default() -> Self {
+        Self(Arc::new(watch::channel(0).0))
+    }
+}
+
+impl NetworkResets {
+    /// Starts a new generation. Nonblocking: the pools that follow it let
+    /// their connections go on their own tasks, and every other holder
+    /// checks the generation before its next use. Returns how many pooled
+    /// connections and slots follow it, not how many were let go.
+    pub fn reset(&self) -> u64 {
+        self.0
+            .send_modify(|generation| *generation = generation.wrapping_add(1));
+        self.0.receiver_count() as u64
+    }
+
+    /// The current generation, 0 until the first reset.
+    pub fn generation(&self) -> u64 {
+        *self.0.borrow()
+    }
+
+    pub(crate) fn follow(&self) -> watch::Receiver<u64> {
+        self.0.subscribe()
+    }
+}
+
+/// Returns once `resets` has moved past `generation`, at once if it already
+/// has; never when the signal is gone with its dialer, as no reset can come.
+pub(crate) async fn reset_after(resets: &mut watch::Receiver<u64>, generation: u64) {
+    if resets
+        .wait_for(|current| *current != generation)
+        .await
+        .is_err()
+    {
+        std::future::pending::<()>().await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Resets count generations, every dialer made from one shares them,
+    /// and a follower wakes for a reset it has not seen, even one made
+    /// before it waited.
+    #[tokio::test]
+    async fn resets_count_generations_shared_by_derived_dialers() {
+        let base = crate::TransportDialer::system().unwrap();
+        let derived = base
+            .clone()
+            .with_socket_options(Arc::new(crate::SocketOptions::default()));
+        assert_eq!(derived.network_resets().generation(), 0);
+        assert_eq!(base.network_resets().reset(), 0);
+        let mut follower = derived.network_resets().follow();
+        assert_eq!(base.network_resets().generation(), 1);
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            reset_after(&mut follower, 1),
+        )
+        .await
+        .expect_err("no reset since the follower's generation");
+        assert_eq!(base.network_resets().reset(), 1);
+        assert_eq!(derived.network_resets().generation(), 2);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            reset_after(&mut follower, 1),
+        )
+        .await
+        .expect("a follower sees a reset made before it waited");
+
+        let other = crate::TransportDialer::system().unwrap();
+        assert_eq!(other.network_resets().generation(), 0);
+
+        // With its dialer gone, the follower waits for nothing.
+        drop((base, derived));
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            reset_after(&mut follower, 2),
+        )
+        .await
+        .expect_err("no reset can come without the dialer");
+    }
 
     /// One signal for a core: a dialer made from another by cloning shares
     /// it, so a notification on the first reaches whoever follows the second.

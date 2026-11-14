@@ -175,6 +175,27 @@ impl PreConnections {
         }
     }
 
+    /// Stops the dialers and closes the connections they hold, as a network
+    /// reset asks; unlike [`Self::close`], the next request starts new
+    /// dialers. A request waiting for a connection gives up.
+    pub(super) fn reset(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if !matches!(*state, State::Running { .. }) {
+            return;
+        }
+        let State::Running { dialers, .. } = std::mem::replace(&mut *state, State::Idle) else {
+            unreachable!("matched as running above");
+        };
+        drop(state);
+        for dialer in &dialers {
+            dialer.abort();
+        }
+        let mut stopped = self.stopped.lock().unwrap_or_else(PoisonError::into_inner);
+        // Repeated resets keep only the dialers still winding down.
+        stopped.retain(|dialer| !dialer.is_finished());
+        stopped.extend(dialers);
+    }
+
     /// Waits for the dialers [`Self::close`] stopped.
     pub(super) async fn join(&self) {
         let stopped =

@@ -18,8 +18,8 @@ use xray_runtime::Shutdown;
 use xray_transport::{
     CachingDnsResolver, CompiledNameServerPolicies, ConfiguredDnsResolver,
     DnsQueryStrategy as TransportDnsQueryStrategy, DnsQueryTransport, DnsResolver, NameServer,
-    NameServerPolicy, NameServerTransport, RouteProbe, SocketProtector, SystemDnsResolver,
-    SystemRouteDnsResolver, TransportDialer, TransportError,
+    NameServerPolicy, NameServerTransport, NetworkResets, RouteProbe, SocketProtector,
+    SystemDnsResolver, SystemRouteDnsResolver, TransportDialer, TransportError,
 };
 use xray_tun::{TunConfig, TunEndpoint};
 
@@ -509,6 +509,16 @@ pub enum CoreError {
     StartupProbe(#[from] StartupProbeError),
 }
 
+/// What [`Core::reset_network`] asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NetworkReset {
+    /// Relayed flows asked to close: not flows that have closed yet.
+    pub closed_connections: u64,
+    /// Carriers asked to move to a fresh socket, counted as the rebinds
+    /// count them: not paths validated.
+    pub rebound_carriers: u64,
+}
+
 pub struct Core {
     config: Arc<CoreConfig>,
     state: CoreState,
@@ -542,10 +552,11 @@ struct CoreDnsDependencies {
 
 impl Core {
     pub fn new(config: CoreConfig) -> Result<Self, CoreError> {
+        let transport_dialer = Arc::new(TransportDialer::system()?);
         Self::with_managed_dns_dependencies(
             config,
-            system_dns_resolver(),
-            Arc::new(TransportDialer::system()?),
+            system_dns_resolver(&transport_dialer),
+            transport_dialer,
             TunRuntimeOptions::default(),
         )
     }
@@ -578,10 +589,11 @@ impl Core {
         config: CoreConfig,
         tun_runtime_options: TunRuntimeOptions,
     ) -> Result<Self, CoreError> {
+        let transport_dialer = Arc::new(TransportDialer::system()?);
         Self::with_managed_dns_dependencies(
             config,
-            system_dns_resolver(),
-            Arc::new(TransportDialer::system()?),
+            system_dns_resolver(&transport_dialer),
+            transport_dialer,
             tun_runtime_options,
         )
     }
@@ -628,7 +640,7 @@ impl Core {
     ) -> Result<Self, CoreError> {
         Self::with_managed_dns_dependencies(
             config,
-            system_dns_resolver(),
+            system_dns_resolver(&transport_dialer),
             transport_dialer,
             tun_runtime_options,
         )
@@ -1056,6 +1068,36 @@ impl Core {
         self.outbound_factory().rebind_wireguard()
     }
 
+    /// Lets go of what a change of the host's network leaves on the old
+    /// path, as sing-box's `resetNetwork` does, without stopping the core or
+    /// its listeners:
+    ///
+    /// - the connections kept for later flows are let go, and no later flow
+    ///   is handed one dialed before the call: the HTTP/2 connections of gRPC
+    ///   and XHTTP (HTTP/1.1 and HTTP/2), an HTTP proxy's shared HTTP/2
+    ///   connection, Mux.Cool parents and VLESS `testpre` connections;
+    /// - the core's own DNS caches forget their answers, so the next lookup
+    ///   asks on the new network; FakeDNS mappings are kept;
+    /// - QUIC carriers and WireGuard take a fresh socket, as
+    ///   [`Self::rebind_hysteria`], [`Self::rebind_quic`] and
+    ///   [`Self::rebind_wireguard`] do: XHTTP over HTTP/3 is moved, not let go;
+    /// - every relayed flow is asked to close, as [`Self::close_connection`]
+    ///   asks one, so its application dials again at once.
+    ///
+    /// The pools are reset before the flows close, so a flow an application
+    /// opens in reply dials on the new network. Nonblocking, needs no Tokio
+    /// context, and harmless when repeated, before start or after stop.
+    pub fn reset_network(&self) -> NetworkReset {
+        self.transport_dialer.network_resets().reset();
+        self.outbound_factory().reset_shared_connections();
+        let rebound_carriers =
+            self.rebind_hysteria() + self.rebind_quic() + self.rebind_wireguard();
+        NetworkReset {
+            closed_connections: self.connection_registry.close_all(),
+            rebound_carriers,
+        }
+    }
+
     /// Cancels current and future preflight probes, and on-demand probes on a running core.
     ///
     /// This shared, nonblocking teardown step lets hosts drain shared probe
@@ -1295,6 +1337,7 @@ impl Core {
                 config.as_ref(),
                 resolver,
                 self.dns_rules.route_probe.as_ref(),
+                self.transport_dialer.network_resets(),
             )
         } else {
             Arc::clone(&self.dns_resolver)
@@ -1619,27 +1662,36 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-fn system_dns_resolver() -> Arc<dyn DnsResolver> {
-    Arc::new(CachingDnsResolver::new(Arc::new(SystemDnsResolver)))
+/// The system resolver behind a cache that forgets its answers when the
+/// network of `dialer` is reset.
+fn system_dns_resolver(dialer: &TransportDialer) -> Arc<dyn DnsResolver> {
+    Arc::new(
+        CachingDnsResolver::new(Arc::new(SystemDnsResolver))
+            .with_network_resets(dialer.network_resets()),
+    )
 }
 
 /// The destination cache over `resolver`, behind the global
 /// `queryStrategy: "UseSystem"` narrowing when it is set, so cached entries
-/// follow the system's routes.
+/// follow the system's routes. It forgets its answers on `network_resets`.
 fn destination_dns_cache_for_config(
     config: &CoreConfig,
     resolver: Arc<dyn DnsResolver>,
     route_probe: Option<&Arc<dyn RouteProbe>>,
+    network_resets: &NetworkResets,
 ) -> Arc<dyn DnsResolver> {
     let cached: Arc<dyn DnsResolver> = if config.dns.disable_cache {
         resolver
     } else if config.dns.serve_stale {
-        Arc::new(CachingDnsResolver::with_stale_ttl(
-            resolver,
-            Duration::from_secs(u64::from(config.dns.serve_expired_ttl)),
-        ))
+        Arc::new(
+            CachingDnsResolver::with_stale_ttl(
+                resolver,
+                Duration::from_secs(u64::from(config.dns.serve_expired_ttl)),
+            )
+            .with_network_resets(network_resets),
+        )
     } else {
-        Arc::new(CachingDnsResolver::new(resolver))
+        Arc::new(CachingDnsResolver::new(resolver).with_network_resets(network_resets))
     };
     match route_probe {
         Some(probe) if config.dns.check_system_routes => {
@@ -1937,8 +1989,8 @@ mod tests {
     use xray_config::{parse_xray_json, DnsHostTarget, DnsServerConfig, DnsServerEndpoint};
     use xray_transport::{
         DnsLookup, DnsQueryMetadata, DnsQueryTransport, DnsQueryTransportKind, DnsResolver,
-        NameServer, NameServerTransport, SocketHandle, SocketProtector, TransportDialer,
-        TransportError,
+        NameServer, NameServerTransport, NetworkResets, SocketHandle, SocketProtector,
+        TransportDialer, TransportError,
     };
 
     use super::{
@@ -2047,6 +2099,7 @@ mod tests {
             &config,
             cached_inner.clone() as Arc<dyn DnsResolver>,
             None,
+            &NetworkResets::default(),
         );
         assert!(cached.resolve("missing.example", 443).await.is_err());
         assert!(cached.resolve("missing.example", 443).await.is_err());
@@ -2058,6 +2111,7 @@ mod tests {
             &config,
             uncached_inner.clone() as Arc<dyn DnsResolver>,
             None,
+            &NetworkResets::default(),
         );
         assert!(uncached.resolve("missing.example", 443).await.is_err());
         assert!(uncached.resolve("missing.example", 443).await.is_err());

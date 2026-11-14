@@ -2175,6 +2175,64 @@ async fn http_tcp_connection_is_visible_and_host_close_cancels_the_relay() {
     .unwrap();
 }
 
+/// A host's network reset closes every flow open at the call, as a host close
+/// does, and leaves the listener and later flows alone. Without traffic,
+/// repeated, before start and after stop, it closes nothing.
+#[tokio::test]
+async fn a_network_reset_closes_every_open_flow_and_keeps_the_listener() {
+    timeout(Duration::from_secs(3), async {
+        let (echo_addr, echo_handle) = spawn_multi_echo_server(3).await;
+        let mut core = Core::new(runtime_config_with_freedom_outbound()).unwrap();
+        assert_eq!(core.reset_network().closed_connections, 0);
+        core.start().await.unwrap();
+        let socks_addr = core.inbound_addr(Some("socks-in")).unwrap();
+        assert_eq!(core.reset_network().closed_connections, 0);
+
+        let mut before = Vec::new();
+        for _ in 0..2 {
+            let mut flow = TcpStream::connect(socks_addr).await.unwrap();
+            socks5_connect(&mut flow, echo_addr).await;
+            assert_echoes(&mut flow, b"before the reset").await;
+            before.push(flow);
+        }
+        assert_eq!(core.connection_snapshot().connections.len(), 2);
+
+        assert_eq!(core.reset_network().closed_connections, 2);
+        for flow in &mut before {
+            let mut byte = [0u8; 1];
+            assert_eq!(flow.read(&mut byte).await.unwrap(), 0);
+        }
+        let deadline = TokioInstant::now() + Duration::from_secs(1);
+        while !core.connection_snapshot().connections.is_empty() {
+            assert!(
+                TokioInstant::now() < deadline,
+                "reset flows stayed registered"
+            );
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(core.reset_network().closed_connections, 0);
+
+        assert_eq!(core.inbound_addr(Some("socks-in")).unwrap(), socks_addr);
+        let mut after = TcpStream::connect(socks_addr).await.unwrap();
+        socks5_connect(&mut after, echo_addr).await;
+        assert_echoes(&mut after, b"after the reset").await;
+        let accounting = core.outbound_accounting_snapshot();
+        let direct = accounting
+            .outbounds
+            .iter()
+            .find(|outbound| outbound.outbound_tag.as_deref() == Some("direct"))
+            .unwrap();
+        assert_eq!(direct.opened_connections, 3);
+        assert_eq!(direct.host_closed_connections, 2);
+
+        core.stop().await.unwrap();
+        assert_eq!(core.reset_network().closed_connections, 0);
+        echo_handle.await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn managed_dns_runtime_is_shared_per_core_and_isolated_between_cores() {
     timeout(Duration::from_secs(3), async {

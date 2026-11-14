@@ -33,6 +33,7 @@ pub struct TransportDialer {
     /// holds dialers.
     replaced: Option<Arc<Replaced>>,
     network_changes: crate::NetworkChanges,
+    network_resets: crate::NetworkResets,
 }
 
 /// What [`TransportDialer::with_route_probe`],
@@ -117,6 +118,7 @@ impl TransportDialer {
             tcp_fragment: None,
             replaced: None,
             network_changes: crate::NetworkChanges::default(),
+            network_resets: crate::NetworkResets::default(),
         })
     }
 
@@ -133,6 +135,7 @@ impl TransportDialer {
             tcp_fragment: None,
             replaced: None,
             network_changes: crate::NetworkChanges::default(),
+            network_resets: crate::NetworkResets::default(),
         }
     }
 
@@ -190,6 +193,13 @@ impl TransportDialer {
     /// it, so one [`crate::NetworkChanges::notify`] reaches them all.
     pub fn network_changes(&self) -> &crate::NetworkChanges {
         &self.network_changes
+    }
+
+    /// The signal this dialer's pooled connections and DNS caches follow
+    /// when the host resets its network. Every dialer made from this one
+    /// shares it, so one [`crate::NetworkResets::reset`] reaches them all.
+    pub fn network_resets(&self) -> &crate::NetworkResets {
+        &self.network_resets
     }
 
     pub fn with_reality_engine(mut self, reality: Arc<dyn RealityTlsEngine>) -> Self {

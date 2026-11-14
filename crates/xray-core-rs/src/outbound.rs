@@ -710,6 +710,17 @@ impl VlessTcpOutbound {
         }
     }
 
+    /// Lets the Mux.Cool parents and the `testpre` connections go, as a
+    /// network reset asks; unlike [`Self::close`], later flows open new ones.
+    pub(crate) fn reset(&self) {
+        if let Some(mux) = &self.payload.mux {
+            mux.reset();
+        }
+        if let Some(pre_connections) = &self.payload.pre_connections {
+            pre_connections.reset();
+        }
+    }
+
     pub(crate) async fn join(&self) {
         if let Some(mux) = &self.payload.mux {
             mux.join().await;
@@ -1234,6 +1245,19 @@ impl TcpOutbound {
             Self::Chained { outbound, proxy } => {
                 outbound.close_shared_connections();
                 proxy.close_shared_connections();
+            }
+            _ => {}
+        }
+    }
+
+    /// Lets the same connections go as [`Self::close_shared_connections`],
+    /// as a network reset asks, and keeps the next ones again.
+    pub(crate) fn reset_shared_connections(&self) {
+        match self {
+            Self::Http(http) => http.reset(),
+            Self::Chained { outbound, proxy } => {
+                outbound.reset_shared_connections();
+                proxy.reset_shared_connections();
             }
             _ => {}
         }
@@ -3979,6 +4003,34 @@ impl OutboundFactory {
             }
             if let Some(Ok(outbound)) = entry.hysteria.get() {
                 outbound.close();
+            }
+        }
+    }
+
+    /// Lets every connection the outbounds keep for later flows go, as a
+    /// network reset asks: an HTTP proxy's shared HTTP/2 connection, the
+    /// Mux.Cool parents of VLESS, Trojan, VMess and Shadowsocks, and VLESS
+    /// `testpre` connections. Unlike [`Self::close_sessions`], later flows
+    /// open new ones. A closed factory stays as it is.
+    pub(crate) fn reset_shared_connections(&self) {
+        if self.sessions_closed.load(Ordering::Acquire) {
+            return;
+        }
+        for entry in &self.entries {
+            if let Some(Ok(outbound)) = entry.tcp.get() {
+                outbound.reset_shared_connections();
+            }
+            if let Some(Ok(outbound)) = entry.vless.get() {
+                outbound.reset();
+            }
+            if let Some(Ok(outbound)) = entry.trojan.get() {
+                outbound.reset();
+            }
+            if let Some(Ok(outbound)) = entry.shadowsocks.get() {
+                outbound.reset();
+            }
+            if let Some(Ok(outbound)) = entry.vmess.get() {
+                outbound.reset();
             }
         }
     }

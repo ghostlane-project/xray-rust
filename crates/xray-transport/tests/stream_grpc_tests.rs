@@ -4854,6 +4854,62 @@ mod stream_grpc_pool_tests {
         assert_eq!(peer.accepted(), 2, "the idle connection was replaced");
     }
 
+    /// A network reset lets the pooled connection go at once, with no flow
+    /// arriving to notice, and the next flow dials a fresh one.
+    #[tokio::test]
+    async fn a_network_reset_retires_the_pooled_connection() {
+        let peer = GrpcPeer::spawn(AfterFirstCall::KeepServing).await;
+        let dialer = dialer();
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config()));
+        let TransportLayer::Grpc(grpc) = &transport else {
+            panic!("the transport under test is gRPC");
+        };
+
+        within_deadline(async {
+            let mut first = open_flow(&dialer, &transport, peer.addr).await;
+            round_trip(&mut first, b"first").await;
+            end_flow(first).await;
+        })
+        .await;
+        assert!(grpc.holds_a_live_connection().await);
+
+        dialer.network_resets().reset();
+        until_the_pool_is_empty(grpc).await;
+
+        within_deadline(async {
+            let mut second = open_flow(&dialer, &transport, peer.addr).await;
+            round_trip(&mut second, b"second").await;
+            end_flow(second).await;
+        })
+        .await;
+        assert_eq!(peer.accepted(), 2, "the flow after the reset dialed again");
+    }
+
+    /// A flow right after a reset, before the pool's own task has run, is
+    /// not handed the connection of the old network, and a flow still open
+    /// on that connection keeps working until it ends.
+    #[tokio::test]
+    async fn a_flow_after_a_network_reset_never_rides_the_old_connection() {
+        let peer = GrpcPeer::spawn(AfterFirstCall::KeepServing).await;
+        let dialer = dialer();
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config()));
+
+        within_deadline(async {
+            let mut open = open_flow(&dialer, &transport, peer.addr).await;
+            round_trip(&mut open, b"before").await;
+
+            dialer.network_resets().reset();
+            let mut after = open_flow(&dialer, &transport, peer.addr).await;
+            round_trip(&mut after, b"after").await;
+            assert_eq!(peer.accepted(), 2, "the flow after the reset dialed again");
+
+            round_trip(&mut open, b"still open").await;
+            end_flow(open).await;
+            end_flow(after).await;
+        })
+        .await;
+    }
+
     /// Two calls at once on the pooled connection, neither reading the other's
     /// bytes.
     #[tokio::test]

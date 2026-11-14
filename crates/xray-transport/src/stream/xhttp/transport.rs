@@ -17,7 +17,7 @@ use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard};
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
@@ -48,7 +48,7 @@ use super::request::{
 use super::session::{generate_session_id, XhttpSessionIdError};
 use crate::{
     utls_tls::TlsAlpnPolicy, BoxedTransportStream, ConnectorConfig, HappyEyeballsConfig,
-    TransportDialer, TransportError, TransportStream,
+    NetworkResets, TransportDialer, TransportError, TransportStream,
 };
 
 const PACKET_RESPONSE_CAP_FALLBACK: usize = 1;
@@ -527,6 +527,7 @@ impl XhttpTransport {
         candidates: &[SocketAddr],
         happy_eyeballs: Option<&HappyEyeballsConfig>,
     ) -> Result<BoxedTransportStream, XhttpTransportError> {
+        self.follow_network_resets(dialer.network_resets());
         self.open_stream_with_mode_dial(self.mode_dial(
             dialer,
             connector,
@@ -549,6 +550,8 @@ impl XhttpTransport {
         down_dialer: &TransportDialer,
         down: XhttpConnectTarget<'_>,
     ) -> Result<BoxedTransportStream, XhttpTransportError> {
+        self.follow_network_resets(dialer.network_resets());
+        download.follow_network_resets(down_dialer.network_resets());
         let up_dial = self.mode_dial(
             dialer,
             upload.connector,
@@ -576,6 +579,21 @@ impl XhttpTransport {
     ) -> Result<BoxedTransportStream, XhttpTransportError> {
         self.open_with_download(upload, Some((download, down)))
             .await
+    }
+
+    /// Lets every client slot go, with the connections it keeps, when
+    /// `resets` moves on, and hands no flow after a reset a slot made before
+    /// it. The first call binds the transport to its core's resets; later
+    /// calls change nothing. HTTP/3 is not let go: a change of network moves
+    /// its QUIC connections to a fresh socket ([`crate::NetworkChanges`]).
+    ///
+    /// The flows open on a slot keep it until they end. `pub` only for the
+    /// integration tests, which open flows through dials of their own.
+    #[doc(hidden)]
+    pub fn follow_network_resets(&self, resets: &NetworkResets) {
+        if self.http_version != XhttpHttpVersion::Http3 {
+            self.xmux.follow_network_resets(resets);
+        }
     }
 
     fn mode_dial(
@@ -2446,6 +2464,9 @@ struct XmuxManager {
     rng: Arc<StdMutex<Box<dyn RngCore + Send>>>,
     clock: XhttpClock,
     clients: AsyncMutex<Vec<Arc<XmuxClient>>>,
+    /// The core's network resets, once a flow has been opened through one
+    /// of its dialers.
+    resets: OnceLock<NetworkResets>,
 }
 
 impl XmuxManager {
@@ -2496,19 +2517,51 @@ impl XmuxManager {
             rng,
             clock,
             clients: AsyncMutex::new(Vec::new()),
+            resets: OnceLock::new(),
         })
+    }
+
+    /// The network generation new client slots belong to.
+    fn generation(&self) -> u64 {
+        self.resets.get().map_or(0, NetworkResets::generation)
+    }
+
+    /// Binds the manager to `resets` and, on the first call, starts the task
+    /// that lets every slot of an earlier generation go when it moves on.
+    fn follow_network_resets(self: &Arc<Self>, resets: &NetworkResets) {
+        if self.resets.set(resets.clone()).is_err() {
+            return;
+        }
+        let manager = Arc::downgrade(self);
+        let mut follower = resets.follow();
+        tokio::spawn(async move {
+            while follower.changed().await.is_ok() {
+                let generation = *follower.borrow_and_update();
+                let Some(manager) = manager.upgrade() else {
+                    return;
+                };
+                manager.clients.lock().await.retain(|client| {
+                    let current = client.generation == generation;
+                    if !current {
+                        client.mark_closed();
+                    }
+                    current
+                });
+            }
+        });
     }
 
     async fn select_client(
         &self,
     ) -> Result<(Arc<XmuxClient>, XmuxUsageLease), XhttpTransportError> {
         let now = (self.clock)();
+        let generation = self.generation();
         let mut clients = self.clients.lock().await;
-        clients.retain(|client| client.is_reusable(now));
+        clients.retain(|client| client.generation == generation && client.is_reusable(now));
 
         if clients.is_empty() || (self.connections > 0 && clients.len() < self.connections as usize)
         {
-            let client = self.new_client(&mut clients, now)?;
+            let client = self.new_client(&mut clients, now, generation)?;
             let usage = XmuxUsageLease::new(Arc::clone(&client));
             drop(clients);
             return Ok((client, usage));
@@ -2526,7 +2579,7 @@ impl XmuxManager {
             (0..clients.len()).collect()
         };
         if eligible.is_empty() {
-            let client = self.new_client(&mut clients, now)?;
+            let client = self.new_client(&mut clients, now, generation)?;
             let usage = XmuxUsageLease::new(Arc::clone(&client));
             drop(clients);
             return Ok((client, usage));
@@ -2556,6 +2609,7 @@ impl XmuxManager {
         &self,
         clients: &mut Vec<Arc<XmuxClient>>,
         now: Instant,
+        generation: u64,
     ) -> Result<Arc<XmuxClient>, XhttpTransportError> {
         let (reuse_times, request_times, reusable_secs) = {
             let mut rng = self
@@ -2596,6 +2650,7 @@ impl XmuxManager {
             left_requests: AtomicI32::new(left_requests),
             unreusable_at,
             closed: AtomicBool::new(false),
+            generation,
         });
         clients.push(Arc::clone(&client));
         Ok(client)
@@ -2611,6 +2666,8 @@ struct XmuxClient {
     left_requests: AtomicI32,
     unreusable_at: Option<Instant>,
     closed: AtomicBool,
+    /// The network generation the slot was made in.
+    generation: u64,
 }
 
 impl XmuxClient {

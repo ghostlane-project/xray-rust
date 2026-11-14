@@ -114,6 +114,16 @@ impl Runtime {
             p.close();
         }
     }
+    /// Closes every parent connection and its children; later children dial
+    /// a new parent. See [`Pool::reset`].
+    pub(super) fn reset(&self) {
+        if let Some(p) = &self.tcp {
+            p.reset();
+        }
+        if let Some(p) = &self.udp {
+            p.reset();
+        }
+    }
     pub(super) async fn join(&self) {
         if let Some(p) = &self.tcp {
             p.join().await;
@@ -139,6 +149,8 @@ pub(super) struct Pool {
     connecting: AsyncMutex<()>,
     closed: std::sync::atomic::AtomicBool,
     shutdown: tokio::sync::watch::Sender<bool>,
+    /// Counts [`Self::reset`]s, so a parent dialed before one is not admitted.
+    resets: AtomicU64,
 }
 impl Pool {
     pub(super) fn new(concurrency: u16) -> Self {
@@ -149,6 +161,7 @@ impl Pool {
             connecting: AsyncMutex::new(()),
             closed: std::sync::atomic::AtomicBool::new(false),
             shutdown: tokio::sync::watch::channel(false).0,
+            resets: AtomicU64::new(0),
         }
     }
     pub(super) async fn open<F>(&self, target: &Target, connect: F) -> Result<Child, CoreError>
@@ -224,13 +237,17 @@ impl Pool {
         for parent in retired {
             parent.join().await;
         }
+        let resets = self.resets.load(Ordering::Acquire);
         let stream =
             tokio::select! {_ = shutdown.changed()=>return Err(closed().into()),r=connect=>r?};
         let parent = Parent::new(stream);
         let child = parent.allocate(target, self.concurrency, global_id);
         let admitted = {
             let mut parents = lock(&self.parents);
-            if child.is_some() && !self.closed.load(Ordering::Acquire) {
+            if child.is_some()
+                && !self.closed.load(Ordering::Acquire)
+                && self.resets.load(Ordering::Acquire) == resets
+            {
                 parents.push(parent.clone());
                 true
             } else {
@@ -252,6 +269,17 @@ impl Pool {
     pub(super) fn close(&self) {
         self.closed.store(true, Ordering::Release);
         self.shutdown.send_replace(true);
+        for parent in lock(&self.parents).iter() {
+            parent.close();
+        }
+    }
+    /// Closes every parent connection and fails its children, as a network
+    /// reset asks; unlike [`Self::close`] the pool stays open, and the next
+    /// child dials a new parent. A parent whose connect was under way is not
+    /// admitted. The closed parents stay listed until the next cold connect
+    /// or [`Self::join`] retires them.
+    pub(super) fn reset(&self) {
+        self.resets.fetch_add(1, Ordering::AcqRel);
         for parent in lock(&self.parents).iter() {
             parent.close();
         }
@@ -1375,6 +1403,50 @@ mod tests {
         let n = peer.read(&mut bytes).await.unwrap();
         assert!(!bytes[..n].windows(15).any(|w| w == b"must not replay"));
         assert!(bytes[..n].windows(3).any(|w| w == b"new"));
+        pool.close();
+        pool.join().await;
+    }
+
+    /// A network reset closes every parent and fails its children, but not
+    /// the pool: the next child dials a new parent, and a parent whose
+    /// connect was under way at the reset is not admitted.
+    #[tokio::test]
+    async fn mux_reset_closes_parents_and_the_next_child_dials_a_new_one() {
+        let pool = Pool::new(4);
+        let target = destination(RoutingNetwork::Tcp);
+        pool.reset();
+        let (stream, _old_peer) = pair();
+        let mut old = pool.open(&target, async { Ok(stream) }).await.unwrap();
+        pool.reset();
+        assert!(old.write_all(b"old path").await.is_err());
+        assert!(old.read_u8().await.is_err());
+        let (stream, mut peer) = pair();
+        let mut new = pool.open(&target, async { Ok(stream) }).await.unwrap();
+        new.write_all(b"new").await.unwrap();
+        new.flush().await.unwrap();
+        let mut bytes = [0; 512];
+        let n = peer.read(&mut bytes).await.unwrap();
+        assert!(bytes[..n].windows(3).any(|w| w == b"new"));
+        assert_eq!(lock(&pool.parents).len(), 1, "the reset parent is retired");
+        pool.close();
+        pool.join().await;
+
+        let pool = Pool::new(4);
+        let (stream, _peer) = pair();
+        let (started, connecting) = tokio::sync::oneshot::channel();
+        let (deliver, delivered) = tokio::sync::oneshot::channel();
+        let open = pool.open(&target, async move {
+            let _ = started.send(());
+            Ok(delivered.await.unwrap())
+        });
+        let reset = async {
+            connecting.await.unwrap();
+            pool.reset();
+            assert!(deliver.send(stream).is_ok());
+        };
+        let (opened, ()) = tokio::join!(open, reset);
+        assert!(opened.is_err());
+        assert!(lock(&pool.parents).is_empty());
         pool.close();
         pool.join().await;
     }
