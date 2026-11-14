@@ -189,8 +189,8 @@ pub async fn start_vision_server(uplink: Uplink) -> (SocketAddr, Arc<rustls::Cli
     (addr, client)
 }
 
-/// One flow at the server: `o` opens it and is answered `k`; `d` asks for a
-/// MiB, `u` brings one and is answered `k`.
+/// One flow at the server: `o` opens it and is answered `k`; `p` is answered
+/// `k`; `d` asks for a MiB, `u` brings one and is answered `k`.
 async fn vision_session<S>(mut tls: S, uplink: Uplink) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -240,6 +240,10 @@ where
                         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
                     }
                 }
+                tls.write_all(b"k").await?;
+                tls.flush().await?;
+            }
+            b'p' => {
                 tls.write_all(b"k").await?;
                 tls.flush().await?;
             }
@@ -409,6 +413,17 @@ pub async fn open_vision_flow(socks: SocketAddr) -> TcpStream {
     stream.read_exact(&mut answer).await.unwrap();
     assert_eq!(&answer, b"k");
     stream
+}
+
+/// Pings the server `times` times, a byte each and each answered, so each
+/// is a packet of its own.
+pub async fn ping(stream: &mut TcpStream, times: usize) {
+    for _ in 0..times {
+        stream.write_all(b"p").await.unwrap();
+        let mut answer = [0; 1];
+        stream.read_exact(&mut answer).await.unwrap();
+        assert_eq!(&answer, b"k");
+    }
 }
 
 /// Asks for a MiB and reads it.
