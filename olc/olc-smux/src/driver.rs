@@ -77,6 +77,17 @@ impl<T> Driver<T> {
     }
 }
 
+/// A driver dropped before the session ended (its task aborted, its
+/// runtime gone) ends the session: nothing would read or write for it, and
+/// its streams would wait forever.
+impl<T> Drop for Driver<T> {
+    fn drop(&mut self) {
+        if self.conn.is_some() {
+            self.shared.lock().close_session(Some(Error::ClosedPipe));
+        }
+    }
+}
+
 impl<T: AsyncRead + AsyncWrite + Unpin> Driver<T> {
     /// Go starts its tickers with the session (`smux/session.go:162-164,521-522`);
     /// here they start at the first poll, which needs the runtime's clock.
@@ -109,7 +120,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Driver<T> {
             // smux/session.go:531-537: nothing arrived for a whole timeout,
             // and the reader is not just waiting for tokens.
             if !st.active {
-                if st.bucket > 0 {
+                // Reading stopped for room is waiting, as for tokens.
+                if st.rx_room() > 0 {
                     st.close_session(Some(Error::Timeout));
                     return;
                 }
