@@ -43,7 +43,9 @@ pub enum SocksParseError {
     TruncatedUdpDatagram,
     #[error("socks udp payload is too large")]
     PayloadTooLarge,
-    #[error("socks udp-in-tcp frame header does not match its address")]
+    /// A `FWD_UDP` frame whose header does not end where its address does,
+    /// or a frame asked for a target that is not UDP.
+    #[error("invalid socks udp-in-tcp frame")]
     InvalidUdpFrame,
     #[error("no acceptable socks authentication methods")]
     NoAcceptableMethods,
@@ -328,14 +330,19 @@ pub async fn read_socks5_target<R: AsyncRead + Unpin>(
     Ok(Target::new(addr, port, network))
 }
 
+/// Reads a SOCKS5 `CONNECT` request's target. Any other command is
+/// [`SocksParseError::UnsupportedCommand`] with the command that was read.
 pub async fn parse_socks5_request<R: AsyncRead + Unpin>(
     reader: R,
 ) -> Result<Target, SocksParseError> {
     let request = parse_socks5_request_message(reader).await?;
-    if request.command != SocksCommand::Connect {
-        return Err(SocksParseError::UnsupportedCommand(3));
+    match request.command {
+        SocksCommand::Connect => Ok(request.target),
+        SocksCommand::UdpAssociate => {
+            Err(SocksParseError::UnsupportedCommand(SOCKS5_UDP_ASSOCIATE))
+        }
+        SocksCommand::UdpInTcp => Err(SocksParseError::UnsupportedCommand(SOCKS5_FWD_UDP)),
     }
-    Ok(request.target)
 }
 
 pub async fn parse_socks5_connect<S>(mut stream: S) -> Result<Target, SocksParseError>
@@ -457,7 +464,7 @@ pub fn encode_socks5_udp_in_tcp_frame(
     payload: &[u8],
 ) -> Result<Vec<u8>, SocksParseError> {
     if target.network != Network::Udp {
-        return Err(SocksParseError::UnsupportedCommand(SOCKS5_CONNECT));
+        return Err(SocksParseError::InvalidUdpFrame);
     }
     let data_len = u16::try_from(payload.len()).map_err(|_| SocksParseError::PayloadTooLarge)?;
     let mut frame = Vec::with_capacity(UDP_IN_TCP_LENGTHS + 19 + payload.len());
@@ -476,7 +483,8 @@ pub fn encode_socks5_udp_in_tcp_frame(
 /// and the buffer reserves room for the rest. A whole frame leaves the buffer,
 /// and the next one may follow at once. An address that cannot be read, or a
 /// header that does not end where its address does, is an error after which
-/// nothing more on the connection can be read as frames.
+/// nothing more on the connection can be read as frames; it is found once
+/// the header is in, without waiting for the data the header announces.
 pub fn decode_socks5_udp_in_tcp_frame(
     buffer: &mut BytesMut,
 ) -> Result<Option<SocksUdpDatagram>, SocksParseError> {
@@ -485,16 +493,19 @@ pub fn decode_socks5_udp_in_tcp_frame(
     };
     let header_len = usize::from(header_len);
     let frame_len = header_len + usize::from(u16::from_be_bytes([high, low]));
-    if buffer.len() < frame_len {
+    let Some(header) = buffer.get(..header_len) else {
         buffer.reserve(frame_len - buffer.len());
         return Ok(None);
-    }
-    let header = &buffer[..header_len];
+    };
     let (addr, offset) = parse_target_addr(header, UDP_IN_TCP_LENGTHS)?;
     if offset + 2 != header_len {
         return Err(SocksParseError::InvalidUdpFrame);
     }
-    let port = u16::from_be_bytes([header[offset], header[offset + 1]]);
+    if buffer.len() < frame_len {
+        buffer.reserve(frame_len - buffer.len());
+        return Ok(None);
+    }
+    let port = u16::from_be_bytes([buffer[offset], buffer[offset + 1]]);
     let payload = Bytes::copy_from_slice(&buffer[header_len..frame_len]);
     buffer.advance(frame_len);
     Ok(Some(SocksUdpDatagram {

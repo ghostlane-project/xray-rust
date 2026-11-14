@@ -964,7 +964,10 @@ fn socks5_udp_in_tcp_frames_lay_out_as_hev_socks5_writes_them() {
         443,
         Network::Tcp,
     );
-    assert!(encode_socks5_udp_in_tcp_frame(&tcp, b"x").is_err());
+    assert_eq!(
+        encode_socks5_udp_in_tcp_frame(&tcp, b"x"),
+        Err(SocksParseError::InvalidUdpFrame)
+    );
 }
 
 /// Frames split by the reads that carry them, a byte at a time, and several
@@ -1116,6 +1119,38 @@ fn socks5_udp_in_tcp_frames_refuse_a_header_that_misstates_its_address() {
     bad_name.extend_from_slice(b"exa mpl");
     bad_name.extend_from_slice(&53_u16.to_be_bytes());
     assert_eq!(decode(&bad_name), Err(SocksParseError::InvalidDomain));
+    assert_eq!(
+        decode(&[0, 0, 7, 3, 0, 0, 53]),
+        Err(SocksParseError::InvalidDomain),
+        "an empty domain"
+    );
+    // Refused once the header is in, without waiting for the 65,535 bytes
+    // of data it announces.
+    assert_eq!(
+        decode(&[0xff, 0xff, 9, 1, 192, 0, 2, 7, 0, 53]),
+        Err(SocksParseError::InvalidUdpFrame)
+    );
+    let mut buffer = BytesMut::from(&[0xff, 0xff, 10, 1, 192, 0, 2, 7][..]);
+    assert_eq!(decode_socks5_udp_in_tcp_frame(&mut buffer), Ok(None));
+    buffer.extend_from_slice(&[0, 53]);
+    assert_eq!(
+        decode_socks5_udp_in_tcp_frame(&mut buffer),
+        Ok(None),
+        "a header that holds is followed by its data"
+    );
+}
+
+/// `parse_socks5_request` reads only `CONNECT` and names the command it
+/// refused, whichever it was.
+#[tokio::test]
+async fn socks5_connect_request_names_the_command_it_refuses() {
+    for command in [3, 5] {
+        let bytes = [5, command, 0, 1, 192, 0, 2, 7, 0, 80];
+        assert_eq!(
+            parse_socks5_request(&bytes[..]).await,
+            Err(SocksParseError::UnsupportedCommand(command))
+        );
+    }
 }
 
 #[test]
