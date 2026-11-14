@@ -3330,10 +3330,10 @@ diff --color -ruN a/src/connection/streams/state.rs b/src/connection/streams/sta
  
      #[test]
 +    fn a_window_shrunk_and_grown_back_grants_no_credit_beyond_it() {
-+        // Xray's Hysteria client shrinks an idle connection's receive window
-+        // and grows it back once data moves again. The credit the peer had
-+        // stays with it across the shrink, so the growth owes it nothing
-+        // until the reads have paid the shrink back.
++        // A client that sizes a connection's receive window to a budget
++        // shrinks it while idle and grows it back once data moves. The credit
++        // the peer had stays with it across the shrink, so the growth owes it
++        // nothing until the reads have paid the shrink back.
 +        let mut server = make(Side::Server);
 +        let window = server.receive_window;
 +        let mut received = 0;
