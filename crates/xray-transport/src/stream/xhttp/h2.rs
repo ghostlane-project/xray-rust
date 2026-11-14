@@ -189,6 +189,8 @@ pub struct H2Client {
     driver: Arc<H2ConnectionDriver>,
     /// Where responses count the DATA they read, for an adaptive window.
     bdp: Option<Arc<BdpSampler>>,
+    /// The budget the responses' queues are held within.
+    byte_budget: &'static ByteBudget,
 }
 
 #[derive(Debug)]
@@ -197,6 +199,14 @@ struct H2ConnectionDriver {
 }
 
 impl H2Client {
+    /// Holds the queues of the responses this client opens from now on
+    /// within `budget` instead of the process's ([`ByteBudget::process`]),
+    /// which every client starts with.
+    pub fn with_byte_budget(mut self, budget: &'static ByteBudget) -> Self {
+        self.byte_budget = budget;
+        self
+    }
+
     /// Whether the connection driver is still running.
     ///
     /// A graceful GOAWAY completes the driver successfully but still makes
@@ -301,6 +311,7 @@ impl H2Client {
                 response_is_bodyless,
                 cancel_on_drop: true,
                 bdp: self.bdp.clone(),
+                byte_budget: self.byte_budget,
             },
         ))
     }
@@ -399,6 +410,7 @@ pub async fn connect_h2_with_window(
         send_request,
         driver,
         bdp: sampler,
+        byte_budget: ByteBudget::process(),
     })
 }
 
@@ -834,6 +846,7 @@ pub struct H2PendingResponse {
     response_is_bodyless: bool,
     cancel_on_drop: bool,
     bdp: Option<Arc<BdpSampler>>,
+    byte_budget: &'static ByteBudget,
 }
 
 impl H2PendingResponse {
@@ -873,6 +886,7 @@ impl H2PendingResponse {
                 None,
                 self.shared.clone(),
                 None,
+                self.byte_budget,
             ));
         }
 
@@ -881,6 +895,7 @@ impl H2PendingResponse {
             Some(recv),
             self.shared.clone(),
             self.bdp.take(),
+            self.byte_budget,
         ))
     }
 }
@@ -911,7 +926,7 @@ pub struct H2ResponseBody {
     failure: Option<String>,
     shared: Arc<SharedSend>,
     bdp: Option<Arc<BdpSampler>>,
-    /// The response's queue within the process's byte budget, and the
+    /// The response's queue within the client's byte budget, and the
     /// credit its reads free ([`hand_back`]).
     window: ReceiveGate<'static>,
 }
@@ -1000,6 +1015,7 @@ impl H2ResponseBody {
         recv: Option<RecvStream>,
         shared: Arc<SharedSend>,
         bdp: Option<Arc<BdpSampler>>,
+        byte_budget: &'static ByteBudget,
     ) -> Self {
         let Some(mut recv) = recv else {
             return Self {
@@ -1013,7 +1029,7 @@ impl H2ResponseBody {
                 failure: None,
                 shared,
                 bdp,
-                window: ReceiveGate::new(ByteBudget::process()),
+                window: ReceiveGate::new(byte_budget),
             };
         };
         let flow = recv.flow_control().clone();
@@ -1030,7 +1046,7 @@ impl H2ResponseBody {
             failure: None,
             shared,
             bdp,
-            window: ReceiveGate::new(ByteBudget::process()),
+            window: ReceiveGate::new(byte_budget),
         }
     }
 

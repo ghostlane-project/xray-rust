@@ -5794,8 +5794,8 @@ mod stream_grpc_flow_control_tests {
 }
 
 mod stream_grpc_budget_tests {
-    //! The downlink's credit under the process's byte budget, set to a
-    //! phone's: calls that read keep up, and calls read and left open hold
+    //! The downlink's credit under a phone's byte budget, one of the test's
+    //! own: calls that read keep up, and calls read and left open hold
     //! nothing of it.
     use std::future::poll_fn;
     use std::net::SocketAddr;
@@ -5809,6 +5809,7 @@ mod stream_grpc_budget_tests {
     use tokio::net::{TcpListener, TcpStream};
     use xray_routing::{Network, Target, TargetAddr};
     use xray_transport::stream::grpc_test_only::encode_hunk;
+    use xray_transport::memory_budget::ByteBudget;
     use xray_transport::stream::{GrpcConfig, GrpcTransport, TransportLayer};
     use xray_transport::{
         BoxedTransportStream, ByteBudgetSettings, ConnectorConfig, MemoryClass, TransportDialer,
@@ -5821,23 +5822,10 @@ mod stream_grpc_budget_tests {
     const SIZE: usize = 4 * 1024 * 1024;
     const HUNK: usize = 32 * 1024;
 
-    /// The process has one byte budget; the tests that set it take turns.
-    static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-    struct BudgetTurn {
-        _turn: tokio::sync::MutexGuard<'static, ()>,
-    }
-
-    impl Drop for BudgetTurn {
-        fn drop(&mut self) {
-            xray_transport::set_byte_budget(None);
-        }
-    }
-
-    async fn budget_of(class: MemoryClass) -> BudgetTurn {
-        let turn = TURN.lock().await;
-        xray_transport::set_byte_budget(Some(ByteBudgetSettings::for_class(class)));
-        BudgetTurn { _turn: turn }
+    /// A byte budget of the test's own: the process's is shared by every
+    /// test in the binary, and what they hold of it moves its numbers.
+    fn budget_with(settings: ByteBudgetSettings) -> &'static ByteBudget {
+        Box::leak(Box::new(ByteBudget::with_settings(settings)))
     }
 
     fn config() -> GrpcConfig {
@@ -5926,10 +5914,11 @@ mod stream_grpc_budget_tests {
     /// hold nothing of the budget, which the relays keep for their reads.
     #[tokio::test]
     async fn eight_calls_on_one_connection_finish_under_a_phone_budget_and_then_hold_nothing() {
-        let _turn = budget_of(MemoryClass::Constrained).await;
+        let budget = budget_with(ByteBudgetSettings::for_class(MemoryClass::Constrained));
         let addr = spawn_peer().await;
         let dialer = TransportDialer::system().expect("a system dialer");
-        let transport = TransportLayer::Grpc(GrpcTransport::new(config()));
+        let transport =
+            TransportLayer::Grpc(GrpcTransport::new(config()).with_byte_budget(budget));
         let mut flows = Vec::new();
         for _ in 0..CALLS {
             flows.push(open_flow(&dialer, &transport, addr).await);
@@ -5945,9 +5934,9 @@ mod stream_grpc_budget_tests {
             .expect("the calls stalled");
         assert_eq!(intact, vec![true; CALLS], "every call's own bytes");
 
-        let usage = xray_transport::byte_budget_usage();
-        assert!(
-            usage.in_use <= 64 * 1024,
+        let usage = budget.usage();
+        assert_eq!(
+            usage.in_use, 0,
             "{CALLS} calls read and left open hold {usage:?}"
         );
         drop(flows);

@@ -1,44 +1,30 @@
 //! Receive credit, backpressure and latency regressions for issue #28, and
-//! the same credit under the process's byte budget.
+//! the same credit under a byte budget.
 use super::*;
 use h2::SendStream;
 use tokio::time::{sleep_until, Instant};
+use xray_transport::memory_budget::ByteBudget;
 use xray_transport::{ByteBudgetSettings, MemoryClass};
 
 const STREAM_WINDOW: usize = 4 * 1024 * 1024;
 
-/// The process has one byte budget for every flow in this binary. The tests
-/// here move megabytes through it, so they take turns, each under the budget
-/// of the memory class its windows belong to; the binary's other tests move
-/// a few kilobytes at a time, within the floor each flow keeps outside it.
-static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// A test's turn with the budget; the budget follows the memory class again
-/// when the turn ends.
-struct BudgetTurn {
-    _turn: tokio::sync::MutexGuard<'static, ()>,
-}
-
-impl Drop for BudgetTurn {
-    fn drop(&mut self) {
-        xray_transport::set_byte_budget(None);
-    }
-}
-
-/// Takes the turn with the process's budget set to `class`'s: 15 MB for a
-/// desktop's 4 MiB windows, 3 MB for a phone's adaptive ones.
-async fn budget_of(class: MemoryClass) -> BudgetTurn {
-    let turn = TURN.lock().await;
-    xray_transport::set_byte_budget(Some(ByteBudgetSettings::for_class(class)));
-    xray_transport::reset_byte_budget_peak();
-    BudgetTurn { _turn: turn }
+/// A byte budget of the test's own with `class`'s numbers: 15 MB for a
+/// desktop's 4 MiB windows, 3 MB for a phone's adaptive ones. A test whose
+/// credit depends on the budget holds its responses within its own, so no
+/// other test in the binary moves its numbers and the memory class of the
+/// host that runs it does not either.
+fn budget_of(class: MemoryClass) -> &'static ByteBudget {
+    Box::leak(Box::new(ByteBudget::with_settings(
+        ByteBudgetSettings::for_class(class),
+    )))
 }
 
 #[tokio::test(start_paused = true)]
 async fn configured_receive_windows_bound_unread_data_and_replenish_only_consumed_bytes() {
-    let _turn = budget_of(MemoryClass::Standard).await;
+    let budget = budget_of(MemoryClass::Standard);
     for window in [65535, 1024 * 1024, 8 * 1024 * 1024, 16 * 1024 * 1024] {
         let (client, mut server) = pair_with_window(server::Builder::new(), Some(window)).await;
+        let client = client.with_byte_budget(budget);
         let (mut body, mut send) = response_pair(&client, &mut server).await;
         timeout(DEADLINE, send_bytes(&mut send, window as usize))
             .await
@@ -80,9 +66,9 @@ async fn invalid_receive_window_is_rejected_before_writing_the_preface() {
 
 #[tokio::test(start_paused = true)]
 async fn a_larger_stream_override_does_not_raise_shared_connection_credit() {
-    let _turn = budget_of(MemoryClass::Standard).await;
     let (client, mut server) =
         pair_with_window(server::Builder::new(), Some(8 * 1024 * 1024)).await;
+    let client = client.with_byte_budget(budget_of(MemoryClass::Standard));
     let mut stalled = Vec::new();
     for _ in 0..2 {
         let (body, mut send) = response_pair(&client, &mut server).await;
@@ -136,8 +122,8 @@ async fn response_pair(
 /// open, not only after a third of it has been read.
 #[tokio::test(start_paused = true)]
 async fn a_sixteenth_of_the_window_read_returns_its_credit_while_the_window_is_open() {
-    let _turn = budget_of(MemoryClass::Standard).await;
     let (client, mut server) = pair().await;
+    let client = client.with_byte_budget(budget_of(MemoryClass::Standard));
     let (mut body, mut send) = response_pair(&client, &mut server).await;
     timeout(DEADLINE, send_bytes(&mut send, STREAM_WINDOW / 4))
         .await
@@ -161,8 +147,8 @@ async fn a_sixteenth_of_the_window_read_returns_its_credit_while_the_window_is_o
 /// fast reader does not send a WINDOW_UPDATE for every read.
 #[tokio::test(start_paused = true)]
 async fn a_smaller_read_keeps_its_credit_while_the_window_is_open() {
-    let _turn = budget_of(MemoryClass::Standard).await;
     let (client, mut server) = pair().await;
+    let client = client.with_byte_budget(budget_of(MemoryClass::Standard));
     let (mut body, mut send) = response_pair(&client, &mut server).await;
     timeout(DEADLINE, send_bytes(&mut send, STREAM_WINDOW / 4))
         .await
@@ -207,8 +193,8 @@ async fn assert_blocked(send: &mut SendStream<Bytes>) {
 
 #[tokio::test(start_paused = true)]
 async fn unread_response_is_bounded_and_partial_reads_return_credit() {
-    let _turn = budget_of(MemoryClass::Standard).await;
     let (client, mut server) = pair().await;
+    let client = client.with_byte_budget(budget_of(MemoryClass::Standard));
     let (mut body, mut send) = response_pair(&client, &mut server).await;
     timeout(DEADLINE, send_bytes(&mut send, STREAM_WINDOW))
         .await
@@ -243,8 +229,8 @@ async fn unread_response_is_bounded_and_partial_reads_return_credit() {
 
 #[tokio::test(start_paused = true)]
 async fn stalled_responses_share_a_bounded_connection_and_cancel_restores_progress() {
-    let _turn = budget_of(MemoryClass::Standard).await;
     let (client, mut server) = pair().await;
+    let client = client.with_byte_budget(budget_of(MemoryClass::Standard));
     let mut stalled = Vec::new();
     for _ in 0..3 {
         let (body, mut send) = response_pair(&client, &mut server).await;
@@ -337,7 +323,6 @@ fn delay_direction(
 
 #[tokio::test(start_paused = true)]
 async fn single_download_pipelines_across_a_113ms_path() {
-    let _turn = budget_of(MemoryClass::Standard).await;
     let (client_io, client_wire) = tokio::io::duplex(1024 * 1024);
     let (server_wire, server_io) = tokio::io::duplex(1024 * 1024);
     let (client_read, client_write) = tokio::io::split(client_wire);
@@ -360,7 +345,10 @@ async fn single_download_pipelines_across_a_113ms_path() {
         }
         sender.await.unwrap();
     });
-    let client = connect_h2(Box::new(client_io)).await.unwrap();
+    let client = connect_h2(Box::new(client_io))
+        .await
+        .unwrap()
+        .with_byte_budget(budget_of(MemoryClass::Standard));
     let started = Instant::now();
     let mut body = client
         .send_fixed(
@@ -397,10 +385,12 @@ const ADAPTIVE: H2ReceiveWindow = H2ReceiveWindow::Adaptive {
     max: 4 * 1024 * 1024,
 };
 
+/// A client with `window` whose responses are held within `budget`.
 async fn pair_over(
     client_io: DuplexStream,
     server_io: DuplexStream,
     window: H2ReceiveWindow,
+    budget: &'static ByteBudget,
 ) -> (H2Client, TestServer) {
     let client = connect_h2_with_window(Box::new(client_io), None, window);
     let server = server::Builder::new().handshake::<_, Bytes>(server_io);
@@ -413,15 +403,15 @@ async fn pair_over(
         commands: Some(commands),
         driver: Some(driver),
     };
-    (client.unwrap(), server)
+    (client.unwrap().with_byte_budget(budget), server)
 }
 
 /// A stalled reader on a constrained host pins the opening window, not Go's.
 #[tokio::test(start_paused = true)]
 async fn an_adaptive_window_holds_a_stalled_reader_to_its_opening_window() {
-    let _turn = budget_of(MemoryClass::Constrained).await;
     let (client_io, server_io) = tokio::io::duplex(1024 * 1024);
-    let (client, mut server) = pair_over(client_io, server_io, ADAPTIVE).await;
+    let budget = budget_of(MemoryClass::Constrained);
+    let (client, mut server) = pair_over(client_io, server_io, ADAPTIVE, budget).await;
     let (body, mut send) = response_pair(&client, &mut server).await;
 
     timeout(DEADLINE, send_bytes(&mut send, 1024 * 1024))
@@ -466,13 +456,14 @@ async fn delay(
     let _ = writer.await;
 }
 
-/// Reads an 8 MiB response over a 40 ms round trip and returns how long it
-/// took on the paused clock.
+/// Reads an 8 MiB response over a 40 ms round trip, under a phone's budget,
+/// and returns how long it took on the paused clock.
 async fn download_over_a_long_link(window: H2ReceiveWindow) -> Duration {
     const SIZE: usize = 8 * 1024 * 1024;
 
     let (client_io, server_io) = delayed_link(Duration::from_millis(20));
-    let (client, mut server) = pair_over(client_io, server_io, window).await;
+    let budget = budget_of(MemoryClass::Constrained);
+    let (client, mut server) = pair_over(client_io, server_io, window, budget).await;
     let (mut body, mut send) = response_pair(&client, &mut server).await;
     let sender = tokio::spawn(async move {
         send_bytes(&mut send, SIZE).await;
@@ -498,7 +489,6 @@ async fn download_over_a_long_link(window: H2ReceiveWindow) -> Duration {
 /// more round trips, 280 ms; growing to 4 MiB brings that under five.
 #[tokio::test(start_paused = true)]
 async fn an_adaptive_window_grows_for_a_reader_that_keeps_up() {
-    let _turn = budget_of(MemoryClass::Constrained).await;
     let fixed = download_over_a_long_link(H2ReceiveWindow::Fixed(1024 * 1024)).await;
     let adaptive = download_over_a_long_link(ADAPTIVE).await;
 
@@ -519,9 +509,9 @@ async fn an_adaptive_window_grows_for_a_reader_that_keeps_up() {
 async fn a_reader_that_stops_with_more_than_the_budget_queued_keeps_its_credit_until_it_drains() {
     const WINDOW: usize = 8 * 1024 * 1024;
     const MIB: usize = 1024 * 1024;
-    let _turn = budget_of(MemoryClass::Constrained).await;
-    let budget = xray_transport::byte_budget_usage().capacity;
+    let budget = budget_of(MemoryClass::Constrained);
     let (client, mut server) = pair_with_window(server::Builder::new(), Some(WINDOW as u32)).await;
+    let client = client.with_byte_budget(budget);
     let (mut body, mut send) = response_pair(&client, &mut server).await;
     timeout(DEADLINE, send_bytes(&mut send, WINDOW))
         .await
@@ -532,8 +522,11 @@ async fn a_reader_that_stops_with_more_than_the_budget_queued_keeps_its_credit_u
     let mut bytes = vec![0; 2 * MIB];
     body.read_exact(&mut bytes).await.unwrap();
     assert_blocked(&mut send).await;
-    let usage = xray_transport::byte_budget_usage();
-    assert_eq!(usage.in_use, budget, "the queue holds all of B: {usage:?}");
+    let usage = budget.usage();
+    assert_eq!(
+        usage.in_use, usage.capacity,
+        "the queue holds all of B: {usage:?}"
+    );
 
     // 2 MiB stay queued, within B: the 6 MiB read go back, and no more.
     let mut bytes = vec![0; 4 * MIB];
@@ -548,11 +541,13 @@ async fn a_reader_that_stops_with_more_than_the_budget_queued_keeps_its_credit_u
 
 /// Opens `idle` responses on a fresh connection over a 120 ms round trip with
 /// a phone's windows, reads 1 MiB from each and leaves them open; then times
-/// a download of `size` on one more. Returns the time and what the budget had
-/// taken while only the idle responses were open.
+/// a download of `size` on one more, all within a phone's budget of its own.
+/// Returns the time and what the budget had taken while only the idle
+/// responses were open.
 async fn beside_idle_streams(idle: usize, size: usize) -> (Duration, usize) {
     let (client_io, server_io) = delayed_link(Duration::from_millis(60));
-    let (client, mut server) = pair_over(client_io, server_io, ADAPTIVE).await;
+    let budget = budget_of(MemoryClass::Constrained);
+    let (client, mut server) = pair_over(client_io, server_io, ADAPTIVE, budget).await;
     let mut open = Vec::new();
     for _ in 0..idle {
         let (mut body, mut send) = response_pair(&client, &mut server).await;
@@ -564,7 +559,7 @@ async fn beside_idle_streams(idle: usize, size: usize) -> (Duration, usize) {
         read.unwrap();
         open.push((body, send));
     }
-    let held = xray_transport::byte_budget_usage().in_use;
+    let held = budget.in_use();
 
     let (mut body, mut send) = response_pair(&client, &mut server).await;
     let sender = tokio::spawn(async move {
@@ -597,14 +592,10 @@ async fn beside_idle_streams(idle: usize, size: usize) -> (Duration, usize) {
 #[tokio::test(start_paused = true)]
 async fn responses_left_open_after_their_reads_leave_a_new_download_its_speed() {
     const SIZE: usize = 8 * 1024 * 1024;
-    let _turn = budget_of(MemoryClass::Constrained).await;
     let (lone, _) = beside_idle_streams(0, SIZE).await;
     let (beside, held) = beside_idle_streams(4, SIZE).await;
     eprintln!("XHTTP/H2 phone, 8 MiB at RTT 120 ms: alone {lone:?}, beside four idle {beside:?}");
-    assert!(
-        held <= 64 * 1024,
-        "four idle responses held {held} B of the budget"
-    );
+    assert_eq!(held, 0, "four idle responses held {held} B of the budget");
     assert!(
         beside <= lone * 5 / 4,
         "beside four idle responses {beside:?}, alone {lone:?}"
@@ -618,8 +609,9 @@ async fn responses_left_open_after_their_reads_leave_a_new_download_its_speed() 
 async fn eight_parallel_downloads_on_one_connection_all_finish_under_a_phone_budget() {
     const STREAMS: usize = 8;
     const SIZE: usize = 6 * 1024 * 1024;
-    let _turn = budget_of(MemoryClass::Constrained).await;
+    let budget = budget_of(MemoryClass::Constrained);
     let (client, mut server) = pair().await;
+    let client = client.with_byte_budget(budget);
     let mut bodies = Vec::new();
     let mut senders = Vec::new();
     for _ in 0..STREAMS {
@@ -647,9 +639,9 @@ async fn eight_parallel_downloads_on_one_connection_all_finish_under_a_phone_bud
     for sender in senders {
         sender.await.unwrap();
     }
-    let usage = xray_transport::byte_budget_usage();
-    assert!(
-        usage.in_use <= 64 * 1024,
+    let usage = budget.usage();
+    assert_eq!(
+        usage.in_use, 0,
         "finished downloads still hold the budget: {usage:?}"
     );
     drop(bodies);

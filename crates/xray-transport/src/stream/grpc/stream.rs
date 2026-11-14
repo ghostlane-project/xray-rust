@@ -160,7 +160,7 @@ pub struct GrpcStream {
     /// succeeded. Every other way a downlink can end is an error, not this.
     eof: bool,
     send_closed: bool,
-    /// The downlink's queue within the process's byte budget, and the
+    /// The downlink's queue within the transport's byte budget, and the
     /// credit its reads free ([`hand_back`]).
     window: ReceiveGate<'static>,
     /// The connection task this call rides on, held so that
@@ -203,6 +203,7 @@ impl GrpcStream {
         mode: HunkMode,
         driver: Arc<H2ConnectionDriver>,
         open_call: OpenCall,
+        byte_budget: &'static ByteBudget,
     ) -> Self {
         Self {
             downlink: Downlink::Awaiting(response),
@@ -220,7 +221,7 @@ impl GrpcStream {
             downlink_carried_data: false,
             eof: false,
             send_closed: false,
-            window: ReceiveGate::new(ByteBudget::process()),
+            window: ReceiveGate::new(byte_budget),
             driver,
             _open_call: open_call,
         }

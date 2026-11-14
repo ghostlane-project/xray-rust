@@ -1,4 +1,4 @@
-//! HTTP/2 receive credit handed back within the process's byte budget.
+//! HTTP/2 receive credit handed back within a byte budget.
 //!
 //! A stream's receive window is what its peer may send before it is read:
 //! h2 queues every DATA frame the window lets in. What waits in that queue,
