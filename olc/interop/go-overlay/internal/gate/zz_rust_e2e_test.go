@@ -32,6 +32,9 @@
 //     cuts the server alone; the client, still in the room, gives the session
 //     up as peer-close, reopens and carries a pull. The Go client runs it
 //     first, as the reference;
+//   - supervisor failover: the client's config names two rooms; the first
+//     fails (an address nothing listens on, then a room nobody is in), and
+//     the room supervisor moves on to the second, which carries a pull;
 //   - stalled far end: the hub stops reading the client's connection while
 //     uploads fill every buffer in front of it, so the client's write to the
 //     hub blocks for good. Liveness gives the session up and the client
@@ -296,6 +299,57 @@ func (e *e2eEnv) peerClose(flavour string) {
 }
 
 // pull fetches the origin's 1 KB through socks.
+// failover is TestSupervisorFailoverProfilesReachWorkingSOCKS
+// (e2e/tunnel_test.go:1481-1555) on the Rust client's room supervisor: its
+// first room fails and the next, where the pinned server is, carries a pull.
+// first is how the first room fails: "dead", an address nothing listens on
+// (the Go test's failing provider: the run ends at its connect); "empty", a
+// hub room nobody is in (the run ends when its handshake finds no peer).
+// The rooms start in order, one cycle (mobile/runtime.go:150-161).
+func (e *e2eEnv) failover(first string) {
+	t := e.t
+	t.Helper()
+	name, ep := e.room(e.key())
+	defer e.server(ep, []string{ep.Key}, true)()
+	var bad, why string
+	switch first {
+	case "dead":
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad, why = "tcp://"+ln.Addr().String()+"/"+name, "ended with error: "
+		_ = ln.Close()
+	case "empty":
+		bad, why = e.target.hub.URL(name+"-empty"), "ended with error: handshake: no peer in room"
+	default:
+		t.Fatalf("no first room %q", first)
+	}
+	log := e.capture.Begin()
+	socks, _ := e.client(ep, func(c *rustConfig) {
+		c.URL, c.Rooms = bad, []string{ep.Room}
+	})
+	e.pullSoon(socks, 10*time.Second)
+	text := log.Text()
+	at := 0
+	for _, want := range []string{
+		"failover cycle=1 starting room=" + bad,
+		"failover cycle=1 room=" + bad + " " + why,
+		"failover cycle=1 starting room=" + ep.Room,
+		"SOCKS5 server listening on ",
+	} {
+		i := strings.Index(text[at:], want)
+		if i < 0 {
+			t.Fatalf("%s first room: no %q after the lines before it:\n%s", first, want, tail(text, 30))
+		}
+		at += i + len(want)
+	}
+	if n := log.Count("failover cycle="); n != 3 {
+		t.Fatalf("%s first room: %d supervisor lines, want 3 (two starts, one end):\n%s", first, n, tail(text, 30))
+	}
+	t.Logf("%s first room: the supervisor moved on to the next and it carried a pull", first)
+}
+
 func (e *e2eEnv) pull(socks string) error {
 	dial, err := SocksDialer(socks)
 	if err != nil {
@@ -600,6 +654,13 @@ func TestRustE2E(t *testing.T) {
 		env.t = t
 		for _, flavour := range []string{"cli", "rust"} {
 			env.peerClose(flavour)
+		}
+	})
+
+	t.Run("supervisor failover", func(t *testing.T) {
+		env.t = t
+		for _, first := range []string{"dead", "empty"} {
+			env.failover(first)
 		}
 	})
 

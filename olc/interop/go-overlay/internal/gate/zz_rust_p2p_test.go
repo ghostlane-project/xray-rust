@@ -354,6 +354,20 @@ func coturnAnswers(mode string, port, tlsPort int) bool {
 	return err == nil && n >= 20 && binary.BigEndian.Uint16(resp) == 0x0101
 }
 
+// interopThroughS5 is S0-S5 as the interop target runs them, for the
+// targets that keep to those (p2p, fakeroom, live): S6 wants a server whose
+// bridge opens late, which only the interop target's pipe stages, and S7 is
+// judged on the interop target.
+func interopThroughS5(all []Scenario) []Scenario {
+	var out []Scenario
+	for _, s := range interopScenarios(all, nil) {
+		if s.ID != "S6" && s.ID != "S7" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // TestGateP2P is the gate on the p2p target.
 func TestGateP2P(t *testing.T) {
 	if *gateTargetName != targetP2P {
@@ -399,7 +413,7 @@ func TestGateP2P(t *testing.T) {
 
 	registryMu.Lock()
 	saved := registry
-	registry = interopScenarios(saved)
+	registry = interopThroughS5(saved)
 	registryMu.Unlock()
 	t.Cleanup(func() {
 		registryMu.Lock()

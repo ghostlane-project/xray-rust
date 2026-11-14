@@ -298,7 +298,7 @@ func TestGateRustFakeRoom(t *testing.T) {
 
 	registryMu.Lock()
 	saved := registry
-	registry = interopScenarios(saved)
+	registry = interopThroughS5(saved)
 	registryMu.Unlock()
 	t.Cleanup(func() {
 		registryMu.Lock()
