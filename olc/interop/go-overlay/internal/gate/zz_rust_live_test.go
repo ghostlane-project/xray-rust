@@ -14,23 +14,29 @@
 //
 // One run joins the service three times (the server, the Go client, the
 // Rust client), besides the one create call and a rejoin for any reconnect
-// a cell reports. Go's known S2/S3 failures on this pair (known.go) apply to
+// a cell reports; with -olcrtc.gate-rust-only the Go client stays out, so a
+// run is the create call and two joins (the server, the Rust client). Go's known S2/S3 failures on this pair (known.go) apply to
 // the rust cells as they do to Go's. olc/interop/live.sh runs it with the
 // phones' build tags (the Go client is then the mobile flavour).
 
 package gate
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 )
 
 var gateRustLive = flag.Bool("olcrtc.gate-rust-live", false,
 	"run TestGateRustLive: the Rust client in a real SaluteJazz room (joins the live service)")
+
+var gateRustOnly = flag.Bool("olcrtc.gate-rust-only", false,
+	"TestGateRustLive without the Go client: one join fewer (the server and the Rust client)")
 
 // TestGateRustLive is the rust step on the local target's SaluteJazz pair.
 func TestGateRustLive(t *testing.T) {
@@ -42,7 +48,11 @@ func TestGateRustLive(t *testing.T) {
 			"-olcrtc.gate-transports=%s", providerSaluteJazz, transportData)
 	}
 	root := moduleRoot(t)
-	target, thresholds, secrets := gateTarget(t, root, "", false)
+	local, thresholds, secrets := gateTarget(t, root, "", false)
+	// The live budget: one room, and the Rust client joins once. The gate
+	// tries a server that did not come up and a client the provider refused
+	// once more; here neither is tried again.
+	target := &onceTarget{Target: local}
 
 	registryMu.Lock()
 	saved := registry
@@ -54,14 +64,18 @@ func TestGateRustLive(t *testing.T) {
 		registryMu.Unlock()
 	})
 
-	goFlavour := ownFlavour(leanBuild)
-	if goFlavour == mobileFlavour {
-		phoneSettings(t)
-	}
-	clients := []Client{
-		flavourClient(goFlavour),
-		rustClient{bin: *gateRustBin, start: startBudget, stop: stopBudget, logf: t.Logf,
-			extra: func(cfg *rustConfig) { cfg.Provider = providerSaluteJazz }},
+	rust := &onceClient{Client: rustClient{bin: *gateRustBin, start: startBudget, stop: stopBudget, logf: t.Logf,
+		extra: func(cfg *rustConfig) {
+			cfg.Provider = providerSaluteJazz
+			cfg.MaxJoins = 1
+		}}}
+	clients := []Client{rust}
+	if !*gateRustOnly {
+		goFlavour := ownFlavour(leanBuild)
+		if goFlavour == mobileFlavour {
+			phoneSettings(t)
+		}
+		clients = []Client{flavourClient(goFlavour), rust}
 	}
 	dir, err := resolveDir(root, *gateDir)
 	if err != nil {
@@ -102,4 +116,35 @@ func TestGateRustLive(t *testing.T) {
 	if why := gateFailure(rep); why != "" {
 		t.Errorf("gate: %s; the report goes to %s", why, opt.ReportPath)
 	}
+}
+
+// errLiveBudget refuses a second room or a second Rust start in a live run.
+var errLiveBudget = errors.New("the live step's budget is one room and one Rust start: not tried again")
+
+// onceTarget opens one server, ever: the gate's second try of a server that
+// did not come up would be a second room.
+type onceTarget struct {
+	Target
+	opened atomic.Bool
+}
+
+func (t *onceTarget) Open(ctx context.Context, p Pair, dir string, opt OpenOptions) (Endpoint, func(), error) {
+	if t.opened.Swap(true) {
+		return Endpoint{}, nil, errLiveBudget
+	}
+	return t.Target.Open(ctx, p, dir, opt)
+}
+
+// onceClient starts its client once: the gate's second try of a client the
+// provider refused would be another join.
+type onceClient struct {
+	Client
+	started atomic.Bool
+}
+
+func (c *onceClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, error) {
+	if c.started.Swap(true) {
+		return nil, errLiveBudget
+	}
+	return c.Client.Start(ctx, ep)
 }

@@ -32,6 +32,11 @@ pub const PROVIDER_NONE: &str = "none";
 /// `<code>:<password>`, and the connector comes from its preconnect.
 pub const PROVIDER_SALUTEJAZZ: &str = "salutejazz";
 
+/// `iceTransportPolicy: "all"`: host and relayed candidates.
+pub const ICE_POLICY_ALL: &str = "all";
+/// `iceTransportPolicy: "relay"`: relayed candidates only.
+pub const ICE_POLICY_RELAY: &str = "relay";
+
 /// One run of the client. Its `Debug` shows neither the key, the room's
 /// password nor the SOCKS password.
 #[derive(Clone, Deserialize, PartialEq, Eq)]
@@ -64,6 +69,16 @@ pub struct Config {
     /// `net.ice_local_ip`); the default route's when empty.
     #[serde(default)]
     pub ice_local_ip: String,
+    /// WebRTC's `iceTransportPolicy`: [`ICE_POLICY_ALL`] when empty (pion's
+    /// and Go's only behaviour), or [`ICE_POLICY_RELAY`], every path through
+    /// the carrier's TURN servers (the interop tests' relay-only runs).
+    #[serde(default)]
+    pub ice_transport_policy: String,
+    /// The most joins this run may start on the carrier, rejoins included;
+    /// 0 is no limit (Go has none). A live test against the real service
+    /// sets it, so a run spends a fixed number of joins and no more.
+    #[serde(default)]
+    pub max_joins: u32,
     /// More rooms to fail over to, in order (the supervisor's profiles).
     #[serde(default)]
     pub rooms: Vec<String>,
@@ -207,6 +222,9 @@ pub enum ConfigError {
     /// `ice_local_ip` is not an address.
     #[error("ice_local_ip {0:?} is not an IP address")]
     IceLocalIp(String),
+    /// `ice_transport_policy` is neither `all` nor `relay`.
+    #[error("ice_transport_policy {0:?}: all or relay")]
+    IcePolicy(String),
     /// The SOCKS listen address cannot be used (`ErrInvalidConfig`).
     #[error("invalid config: {0}")]
     Socks(&'static str),
@@ -223,6 +241,8 @@ impl std::fmt::Debug for Config {
             .field("room_id", &self.room_id)
             .field("name", &self.name)
             .field("ice_local_ip", &self.ice_local_ip)
+            .field("ice_transport_policy", &self.ice_transport_policy)
+            .field("max_joins", &self.max_joins)
             .field("rooms", &self.rooms)
             .field("key", &hidden(&self.key))
             .field("transport", &self.transport)
@@ -309,6 +329,18 @@ impl Config {
             .parse()
             .map(Some)
             .map_err(|_| ConfigError::IceLocalIp(self.ice_local_ip.clone()))
+    }
+
+    /// Whether only relayed candidates are used.
+    ///
+    /// # Errors
+    /// [`ConfigError::IcePolicy`].
+    pub fn relay_only(&self) -> Result<bool, ConfigError> {
+        match self.ice_transport_policy.as_str() {
+            "" | ICE_POLICY_ALL => Ok(false),
+            ICE_POLICY_RELAY => Ok(true),
+            other => Err(ConfigError::IcePolicy(other.to_owned())),
+        }
     }
 
     /// Where the SOCKS front listens: IPv4 only, as Go listens `tcp4`
@@ -414,6 +446,20 @@ mod tests {
         assert_eq!(cfg.host_ip().unwrap(), Some("192.0.2.7".parse().unwrap()));
         let bad = Config::from_json(br#"{"url":"u","key":"k","ice_local_ip":"nope"}"#).unwrap();
         assert!(matches!(bad.host_ip(), Err(ConfigError::IceLocalIp(_))));
+        let policy = |p: &str| {
+            Config::from_json(
+                format!(r#"{{"url":"u","key":"k","ice_transport_policy":"{p}"}}"#).as_bytes(),
+            )
+            .unwrap()
+            .relay_only()
+        };
+        assert_eq!(cfg.relay_only(), Ok(false));
+        assert_eq!(policy("all"), Ok(false));
+        assert_eq!(policy("relay"), Ok(true));
+        assert!(matches!(policy("public"), Err(ConfigError::IcePolicy(_))));
+        assert_eq!(cfg.max_joins, 0);
+        let capped = Config::from_json(br#"{"url":"u","key":"k","max_joins":2}"#).unwrap();
+        assert_eq!(capped.max_joins, 2);
     }
 
     #[test]

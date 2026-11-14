@@ -375,6 +375,8 @@ impl P2pLink {
             dtls_version: DtlsVersion::Dtls12,
             host_ip: self.host_ip,
             sctp_max_buffered: SCTP_BUFFERED,
+            turn: Vec::new(),
+            relay_only: false,
         }
     }
 

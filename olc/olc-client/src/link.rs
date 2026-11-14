@@ -102,6 +102,8 @@ impl Link {
                     password,
                     name: cfg.participant_name(),
                     host_ip: cfg.host_ip()?,
+                    relay_only: cfg.relay_only()?,
+                    max_joins: cfg.max_joins,
                 };
                 Ok(Link::SaluteJazz(
                     olc_salutejazz::Link::connect(jazz, events).await?,

@@ -32,6 +32,7 @@
 
 pub mod ice;
 pub mod peer;
+pub mod turn;
 
 use std::sync::Arc;
 
@@ -63,7 +64,11 @@ pub fn dtls_name() -> &'static str {
 #[cfg(test)]
 pub(crate) mod testing {
     use std::future::Future;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::Arc;
     use std::time::Duration;
+
+    use tokio::net::UdpSocket;
 
     /// One async test's bound.
     pub(crate) const TEST_BOUND: Duration = Duration::from_secs(20);
@@ -74,5 +79,50 @@ pub(crate) mod testing {
             Ok(out) => out,
             Err(_) => panic!("the test did not finish within {TEST_BOUND:?}"),
         }
+    }
+
+    const TURN_USER: &str = "1763100000:olc";
+    const TURN_PASS: &str = "turn-test-password";
+    const TURN_REALM: &str = "olc.test";
+
+    /// A TURN server on loopback (webrtc-rs's, tests only) relaying from
+    /// 127.0.0.1, and the entry a peer's config names it by. It speaks RFC
+    /// 8489's nonce cookie and SHA-256; the classic path (no cookie, as
+    /// coturn and pion answer) is the interop harness's, against pion's
+    /// server (zz_rust_relay_test.go).
+    pub(crate) async fn turn_server() -> (turn::server::Server, crate::turn::TurnServer) {
+        use turn::relay::relay_static::RelayAddressGeneratorStatic;
+        use turn::server::config::{ConnConfig, ServerConfig};
+        let conn = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = conn.local_addr().unwrap();
+        let server = turn::server::Server::new(ServerConfig {
+            conn_configs: vec![ConnConfig {
+                conn,
+                relay_addr_generator: Box::new(RelayAddressGeneratorStatic {
+                    relay_address: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                    address: "127.0.0.1".to_owned(),
+                    net: Arc::new(webrtc_util::vnet::net::Net::new(None)),
+                }),
+            }],
+            realm: TURN_REALM.to_owned(),
+            // RFC 8489's handler: the nonce cookie, SHA-256 and MD5 offered.
+            auth_handler: Arc::new(
+                turn::auth::StaticAuthHandler::new(
+                    [(TURN_USER.to_owned(), TURN_PASS.to_owned())].into(),
+                )
+                .unwrap(),
+            ),
+            channel_bind_timeout: Duration::from_secs(0),
+            alloc_close_notify: None,
+        })
+        .await
+        .unwrap();
+        let entry = crate::turn::TurnServer {
+            host: addr.ip().to_string(),
+            port: addr.port(),
+            username: TURN_USER.into(),
+            password: TURN_PASS.into(),
+        };
+        (server, entry)
     }
 }
