@@ -819,8 +819,8 @@ impl AsyncRead for GrpcStream {
                     // stalls the moment it has sent 65535 bytes, which is the
                     // connection and stream default. h2 releases the stream
                     // and connection windows together here, at once unless
-                    // the byte budget is spent and the queue holds more than
-                    // the floor.
+                    // the queue holds more than the floor and the call's gate
+                    // cannot hold it within the byte budget.
                     this.window
                         .hand_back(chunk.len())
                         .map_err(|error| h2_io_error("could not release the window", &error))?;

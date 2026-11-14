@@ -1169,7 +1169,8 @@ impl AsyncRead for H2ResponseBody {
 
         if copied > 0 {
             // Credit goes back as the reader takes bytes, at once unless the
-            // byte budget is spent and the queue holds more than the floor.
+            // queue holds more than the floor and the stream's gate cannot
+            // hold it within the byte budget.
             if let Err(error) = this.hand_back(copied) {
                 return Poll::Ready(Err(error));
             }

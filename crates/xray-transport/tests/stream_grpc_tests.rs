@@ -6048,10 +6048,10 @@ mod stream_grpc_budget_tests {
     }
 
     /// A call whose reader took most of its window under a spent budget and
-    /// paused gets the credit back once the budget has room, though it does
-    /// not read again; and not before: while another holder has all of `B`,
-    /// and after a few bytes of it come back, fewer than the queue needs, the
-    /// peer sends nothing more.
+    /// paused gets the credit back once the budget has room for its queue,
+    /// though it does not read again; and not before: while another holder
+    /// has all of `B`, and after a few bytes of it come back, fewer than the
+    /// queue needs, the peer sends nothing more.
     #[tokio::test]
     async fn a_paused_call_gets_its_withheld_credit_back_once_the_budget_has_room() {
         const WINDOW: usize = 4 * 1024 * 1024;

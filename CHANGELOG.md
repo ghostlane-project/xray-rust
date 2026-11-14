@@ -40,15 +40,20 @@ long-term supported release series.
   `ByteBudget::window_cap()`, `B` less `B / RELAY_RESERVE_DIVISOR` (an
   eighth, the relays' alone), and hands each read's credit back at that read
   unless its queue is above the floor and does not fit what it may hold, or
-  `B` was lowered below what is held; then the credit waits until the
-  stream's reads take the queue back within it, or until bytes come back to
-  the budget while it has room: one task per budget then settles every
-  stream that holds credit back, whether or not its reader reads again. No
-  task waits on the budget. While `B` is spent, credit a paused reader took
+  `B` was lowered below what is held. Then the credit waits until the queue
+  fits: until the windows' part, less what the other streams hold, covers
+  it and `B` can hold it, at the latest until the stream's reads take the
+  queue down to the floor. One task per budget settles every stream that
+  holds credit back whenever bytes come back to the budget while it has
+  room, whether or not its reader reads again; no gate and no reader waits
+  in the budget's queue. Until the queue fits, credit a paused reader took
   still counts in its connection's window (h2 releases a stream's and the
   connection's together), so the connection's other streams can wait on it,
-  up to that stream's window. A stream read and left open holds nothing, and
-  a body dropped mid-download hands back the credit its reader took. The
+  up to that stream's window. Room in `B` is not enough: while other paused
+  streams' queues hold the windows' part, a paused stream's credit waits on
+  their readers, and a queue larger than the whole part waits on its own
+  reader. A stream read and left open holds nothing, and a body dropped
+  mid-download hands back the credit its reader took. The
   queue is counted in payload bytes, as h2 counts it; a gRPC message the
   call's decoder holds until it is whole (up to 4 MiB) is not counted.
   `H2Client::with_byte_budget` and `GrpcTransport::with_byte_budget` hold a

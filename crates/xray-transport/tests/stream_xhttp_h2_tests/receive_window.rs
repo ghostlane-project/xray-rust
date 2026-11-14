@@ -709,11 +709,13 @@ async fn a_body_dropped_mid_download_hands_its_withheld_credit_to_the_connection
 }
 
 /// Credit paused readers took under a spent budget goes back once the budget
-/// has room, though neither reads again; and not before. Two responses fill
-/// the connection's 16 MiB, their readers take all but 8 KiB each and stop:
-/// while `B` is spent, a third response gets nothing, even after a few bytes
-/// of `B` come back, fewer than the queues need; once `B` is free it gets its
-/// window, and the paused queues hold their bytes of `B`.
+/// has room for their queues, though neither reads again; and not before.
+/// Two responses fill the connection's 16 MiB, their readers take all but
+/// 8 KiB each and stop: while `B` is spent, a third response gets nothing,
+/// even after a few bytes of `B` come back, fewer than the queues need; once
+/// `B` is free it gets its window, and the paused queues hold their bytes of
+/// `B`. (When the paused queues themselves fill the windows' part, room in
+/// `B` is not enough: the next test.)
 #[tokio::test(start_paused = true)]
 async fn paused_readers_hand_back_their_withheld_credit_once_the_budget_has_room() {
     const WINDOW: usize = 8 * 1024 * 1024;
@@ -760,10 +762,91 @@ async fn paused_readers_hand_back_their_withheld_credit_once_the_budget_has_room
     drop(other);
     timeout(DEADLINE, send_bytes(&mut victim, WINDOW))
         .await
-        .expect("the paused readers' credit goes back once B has room");
+        .expect("the paused readers' credit goes back once B has room for their queues");
     assert_eq!(
         budget.in_use(),
         2 * (LEFT - FLOOR),
+        "each paused queue holds its bytes beyond the floor"
+    );
+    drop((first, second));
+    assert_eq!(budget.in_use(), 0);
+    server.close().await;
+}
+
+/// Room in `B` is not enough: a paused stream's credit goes back once the
+/// windows' part, less what the other gates hold, covers its queue, so it
+/// can wait on another paused stream's reader. Under a 1 MiB budget, whose
+/// windows' part is 896 KiB, two responses' readers take all but 600 KiB
+/// each and stop. The first queue fits; the second does not fit beside it,
+/// and its gate keeps the credit its reader took. Bytes come back to `B`
+/// while it has room, and a third response still gets only what the
+/// connection has beside that credit; once the first reader, not the
+/// second, reads 300 KiB, the second queue fits and the third response gets
+/// the rest of its window.
+#[tokio::test(start_paused = true)]
+async fn a_paused_streams_credit_waits_on_another_paused_streams_reader_while_b_has_room() {
+    const WINDOW: usize = 8 * 1024 * 1024;
+    /// `connect_h2_with_window`'s connection credit.
+    const CONNECTION: usize = 16 * 1024 * 1024;
+    const KIB: usize = 1024;
+    const FLOOR: usize = 4 * KIB;
+    const QUEUE: usize = 600 * KIB;
+    let budget: &'static ByteBudget =
+        Box::leak(Box::new(ByteBudget::with_settings(ByteBudgetSettings {
+            capacity: 1024 * KIB,
+            floor: FLOOR,
+        })));
+    let (client, mut server) = pair_with_window(server::Builder::new(), Some(WINDOW as u32)).await;
+    let client = client.with_byte_budget(budget);
+    let (mut first, mut send_first) = response_pair(&client, &mut server).await;
+    let (mut second, mut send_second) = response_pair(&client, &mut server).await;
+    timeout(DEADLINE, send_bytes(&mut send_first, WINDOW))
+        .await
+        .unwrap();
+    timeout(DEADLINE, send_bytes(&mut send_second, WINDOW))
+        .await
+        .unwrap();
+    // Every byte is queued before a reader starts.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let mut bytes = vec![0; WINDOW - QUEUE];
+    first.read_exact(&mut bytes).await.unwrap();
+    second.read_exact(&mut bytes).await.unwrap();
+    let usage = budget.usage();
+    assert_eq!(
+        usage.window_bytes,
+        budget.window_cap(),
+        "the first queue's {} KiB beyond the floor and what is left of the windows' part \
+         for the second: {usage:?}",
+        (QUEUE - FLOOR) / KIB
+    );
+    assert!(budget.free() > 0, "B has room: {usage:?}");
+
+    // Bytes come back to `B` while it has room: the settler runs a round.
+    let mut relay = xray_transport::memory_budget::BudgetPermits::new(budget);
+    assert_eq!(relay.try_hold(64 * KIB), 64 * KIB);
+    drop(relay);
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let (_victim_body, mut victim) = response_pair(&client, &mut server).await;
+    // The connection less the two queues and the credit the second holds
+    // back, which is the rest of its window.
+    timeout(DEADLINE, send_bytes(&mut victim, CONNECTION - QUEUE - WINDOW))
+        .await
+        .expect("the connection's credit beside the second stream's");
+    assert_blocked(&mut victim).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_blocked(&mut victim).await;
+    assert!(budget.free() > 0, "B still has room: {:?}", budget.usage());
+
+    // The first reader reads: its queue falls, and the second's fits.
+    let mut bytes = vec![0; 300 * KIB];
+    first.read_exact(&mut bytes).await.unwrap();
+    timeout(DEADLINE, send_bytes(&mut victim, WINDOW - (CONNECTION - QUEUE - WINDOW)))
+        .await
+        .expect("the second stream's credit goes back once its queue fits");
+    assert_blocked(&mut victim).await;
+    assert_eq!(
+        budget.in_use(),
+        (QUEUE - 300 * KIB - FLOOR) + (QUEUE - FLOOR),
         "each paused queue holds its bytes beyond the floor"
     );
     drop((first, second));

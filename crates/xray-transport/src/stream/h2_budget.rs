@@ -5,15 +5,20 @@
 //! and in a transport's own queue after it, is the memory the stream holds;
 //! credit the peer has not used holds none. A [`ReceiveGate`] takes bytes of
 //! the budget for the queue beyond the flow's floor and, as a reader takes
-//! bytes, hands their credit back at once unless the budget is spent and the
-//! queue still holds more than the floor. Then the credit waits until the
-//! reader has taken the queue down, or until bytes come back to the budget
-//! while the reader is away: a gate that holds credit back is listed with
-//! its budget, whose settler settles it again ([`SharedGate`]). No task waits
-//! on the budget. While the budget is spent, credit a paused reader took
-//! still counts in the connection's window, which h2 releases together with
-//! the stream's, so the connection's other streams can wait on it, up to the
-//! stream's window.
+//! bytes, hands their credit back at once unless the queue holds more than
+//! the floor and the gate cannot hold it. Then the credit waits until the
+//! gate can: until the windows' part of the budget, less what the other
+//! gates hold, covers the queue and the budget can hold it, at the latest
+//! until the reader has taken the queue down to the floor. A gate that holds
+//! credit back is listed with its budget, whose settler settles it again as
+//! bytes come back, while the reader is away ([`SharedGate`]); no gate and
+//! no reader waits in the budget's queue. Until then, credit a paused reader
+//! took still counts in the connection's window, which h2 releases together
+//! with the stream's, so the connection's other streams can wait on it, up
+//! to the stream's window. Room in the budget is not enough: while other
+//! paused streams' queues hold the windows' part, a paused stream's credit
+//! waits on their readers, and a queue larger than the whole part waits on
+//! its own reader.
 //!
 //! The queue is counted as h2 counts it, in payload bytes: received and not
 //! released. That is its memory once each frame is read into an allocation of

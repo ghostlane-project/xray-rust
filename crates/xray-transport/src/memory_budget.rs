@@ -24,9 +24,12 @@
 //! 15,000,000 bytes.
 //!
 //! Each flow keeps a floor outside `B` ([`DEFAULT_FLOW_FLOOR`], 4 KiB), so
-//! that a flow always moves even when `B` is spent and no flow can wait on
-//! another for good. The floor is the budget's overshoot: at hev's 256
-//! sessions, two directions each, it is 256 × 2 × 4 KiB = 2 MiB beyond `B`.
+//! that a flow always moves even when `B` is spent and no relay can wait on
+//! another for good. HTTP/2 streams are not held to that: they share their
+//! connection's window, and a stream's credit can wait on other paused
+//! streams' readers (below). The floor is the budget's overshoot: at hev's
+//! 256 sessions, two directions each, it is 256 × 2 × 4 KiB = 2 MiB beyond
+//! `B`.
 //!
 //! [`set_byte_budget`] changes both at any time. A smaller `B` takes effect as
 //! held bytes come back; nothing held is revoked.
@@ -43,9 +46,14 @@
 //!   windows' part of `B` is spent, a stream that queues more than its floor
 //!   hands credit back only once that part covers its queue again, at the
 //!   latest when its reader has taken the queue down to the floor. A gate
-//!   that holds credit back is settled again whenever bytes come back while
-//!   `B` has room, by one task per budget, so the credit goes back then
-//!   whether or not its reader reads again.
+//!   that holds credit back is settled again by one task per budget whenever
+//!   bytes come back while `B` has room, as they do when the gates' share of
+//!   the windows' part falls, whether or not its reader reads again: its
+//!   credit goes back at the first of those after that part, less what the
+//!   other gates hold, covers its queue and `B` can hold it. Room in `B` is
+//!   not enough. While other paused streams' queues hold the windows' part,
+//!   a paused stream's credit waits on their readers, and a queue larger
+//!   than the whole part waits on its own reader.
 //!
 //! The windows' part of `B` is what it leaves after a reserve for the relays
 //! (`B / 8`, [`RELAY_RESERVE_DIVISOR`]): the gates together hold no more than
@@ -177,7 +185,8 @@ pub struct ByteBudget {
     /// The gates listed in `withheld`; read before the lock is taken.
     withholding: AtomicUsize,
     /// Receive gates holding back credit their readers took, for the
-    /// settler to hand back once `B` has room.
+    /// settler to settle again as bytes come back: each hands its credit
+    /// back once it can hold its queue.
     withheld: Mutex<Withheld>,
     /// A settle round is due: set when bytes come back while gates are
     /// listed, cleared by the settler as a round begins.
@@ -511,8 +520,9 @@ impl Waiter {
 }
 
 /// A receive gate that holds back credit its reader took: settled again from
-/// outside its reader, so the credit goes back once `B` has room whether or
-/// not the reader reads again ([`ByteBudget::list_withheld`]).
+/// outside its reader as bytes come back, so the credit goes back once the
+/// gate can hold its queue whether or not the reader reads again
+/// ([`ByteBudget::list_withheld`]).
 pub(crate) trait WithheldCredit: Send + Sync {
     /// Settles the gate against what its stream holds now, and hands back
     /// the credit that grants.
@@ -705,16 +715,20 @@ impl Drop for BudgetPermits<'_> {
 /// what arrives waits in the window's queue until a reader takes it. Those
 /// bytes, beyond the floor, take bytes of the budget. As a reader takes
 /// bytes, the credit they free is owed to the peer and handed back at once,
-/// unless the budget is spent and the queue still holds more than the floor:
-/// then the credit waits until the reader has taken the queue down to the
-/// floor or the budget has room again, and a peer that outruns a pressed
-/// process pauses on its window. The reader's next read decides again, and
-/// so does the budget's settler, a task that settles every gate holding
-/// credit back whenever bytes come back while `B` has room, whether or not
-/// its reader reads; no task waits on the budget. While `B` is spent, the
-/// credit a paused reader took and its gate holds back still counts in the
-/// connection's window, so the connection's other streams can wait on it:
-/// up to the stream's window, until `B` has room.
+/// unless the queue holds more than the floor and the gate cannot hold it:
+/// then the credit waits until the windows' part of `B`, less what the
+/// other gates hold, covers the queue and `B` can hold it, at the latest
+/// until the reader has taken the queue down to the floor, and a peer that
+/// outruns a pressed process pauses on its window. The reader's next read
+/// decides again, and so does the budget's settler, a task that settles
+/// every gate holding credit back whenever bytes come back while `B` has
+/// room, whether or not its reader reads; no gate and no reader waits in
+/// the budget's queue. Until then, the credit a paused reader took and its
+/// gate holds back still counts in the connection's window, so the
+/// connection's other streams can wait on it, up to the stream's window.
+/// Room in `B` is not enough: while other paused streams' queues hold the
+/// windows' part, a paused stream's credit waits on their readers, and a
+/// queue larger than the whole part waits on its own reader.
 ///
 /// A gate holds at most the windows' part of `B`
 /// ([`ByteBudget::window_cap`]) less what the other gates hold, so the
