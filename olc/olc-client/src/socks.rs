@@ -14,6 +14,7 @@
 //! the burst, whatever the number open (plan §9: cap 3 MiB at the expected
 //! load; 16 MiB only if all 512 moved at once).
 
+use std::borrow::Cow;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::Ordering;
@@ -99,8 +100,8 @@ pub struct Request {
     /// [`cmd`].
     pub cmd: u8,
     /// The target as Go's string: dotted IPv4, `net.IP.String` IPv6, or the
-    /// name.
-    pub addr: String,
+    /// name's bytes as sent, UTF-8 or not ([`host_text`] reads it as text).
+    pub addr: Vec<u8>,
     /// The port.
     pub port: u16,
 }
@@ -177,7 +178,7 @@ where
         return Err(SocksError::Command(command));
     }
     if command == cmd::FWD_UDP && udp_disabled {
-        let _ = conn.write_all(&reply(REP_COMMAND_NOT_SUPPORTED, "")).await;
+        let _ = conn.write_all(&reply(REP_COMMAND_NOT_SUPPORTED, b"")).await;
         return Err(SocksError::UdpDisabled);
     }
     let addr = read_addr(conn, header[3]).await?;
@@ -190,17 +191,17 @@ where
     })
 }
 
-async fn read_addr<S: AsyncRead + Unpin>(conn: &mut S, kind: u8) -> Result<String, SocksError> {
+async fn read_addr<S: AsyncRead + Unpin>(conn: &mut S, kind: u8) -> Result<Vec<u8>, SocksError> {
     match kind {
         atyp::IPV4 => {
             let mut b = [0u8; 4];
             read(conn, &mut b, "read socks5 ipv4").await?;
-            Ok(Ipv4Addr::from(b).to_string())
+            Ok(Ipv4Addr::from(b).to_string().into_bytes())
         }
         atyp::IPV6 => {
             let mut b = [0u8; 16];
             read(conn, &mut b, "read socks5 ipv6").await?;
-            Ok(go_ip_string(IpAddr::V6(Ipv6Addr::from(b))))
+            Ok(go_ip_string(IpAddr::V6(Ipv6Addr::from(b))).into_bytes())
         }
         atyp::DOMAIN => {
             let mut len = [0u8; 1];
@@ -208,12 +209,41 @@ async fn read_addr<S: AsyncRead + Unpin>(conn: &mut S, kind: u8) -> Result<Strin
             if len[0] == 0 {
                 return Err(SocksError::EmptyDomain);
             }
+            // `string(domain)`: the bytes, whatever they are; the exit is
+            // asked for exactly these (connect.rs writes them as Go does).
             let mut b = vec![0u8; usize::from(len[0])];
             read(conn, &mut b, "read socks5 domain").await?;
-            Ok(String::from_utf8_lossy(&b).into_owned())
+            Ok(b)
         }
         other => Err(SocksError::AddressType(other)),
     }
+}
+
+/// A host read as Go reads a string of these bytes as text (`for range`,
+/// `strings.ToLower`): every byte that does not start a valid UTF-8
+/// sequence is one U+FFFD. For what takes a host as text, the logs, the
+/// rules and a dial from here; the wire carries the bytes.
+pub fn host_text(host: &[u8]) -> Cow<'_, str> {
+    if let Ok(text) = std::str::from_utf8(host) {
+        return Cow::Borrowed(text);
+    }
+    let mut out = String::with_capacity(host.len() + 8);
+    let mut rest = host;
+    while !rest.is_empty() {
+        match std::str::from_utf8(rest) {
+            Ok(valid) => {
+                out.push_str(valid);
+                break;
+            }
+            Err(e) => {
+                let (valid, bad) = rest.split_at(e.valid_up_to());
+                out.push_str(std::str::from_utf8(valid).unwrap_or_default());
+                out.push(char::REPLACEMENT_CHARACTER);
+                rest = &bad[1..];
+            }
+        }
+    }
+    Cow::Owned(out)
 }
 
 /// `net.IP.String`: an IPv4-mapped address is dotted, any other IPv6 is
@@ -253,7 +283,8 @@ async fn write<S: AsyncWrite + Unpin>(
 /// sent while it was sniffed, and whether the reply is on the wire.
 #[derive(Debug, Default)]
 pub(crate) struct Job {
-    pub(crate) host: String,
+    /// The target's bytes as the SOCKS client sent them (see [`Request::addr`]).
+    pub(crate) host: Vec<u8>,
     pub(crate) port: u16,
     pub(crate) head: Vec<u8>,
     pub(crate) replied: bool,
@@ -398,7 +429,7 @@ impl Inner {
             port: req.port,
             ..Job::default()
         };
-        match classify(self.rules.as_ref(), &job.host) {
+        match classify(self.rules.as_ref(), &host_text(&job.host)) {
             Route::Direct(reason) => self.dial_direct(conn, job, reason, None).await,
             Route::Sniff => self.sniff_then_route(conn, job).await,
             Route::Tunnel => self.tunnel_when_ready(conn, job).await,
@@ -415,7 +446,7 @@ impl Inner {
 
     /// `prepareTunnel`: waits for the session, opens a stream and has the
     /// exit dial; the reply code on failure.
-    pub(crate) async fn prepare_tunnel(&self, host: &str, port: u16) -> Result<Stream, u8> {
+    pub(crate) async fn prepare_tunnel(&self, host: &[u8], port: u16) -> Result<Stream, u8> {
         if is_ipv6_literal(host) && self.no_ipv6_route() {
             return Err(rep::HOST_UNREACHABLE);
         }
@@ -428,7 +459,7 @@ impl Inner {
     }
 
     /// `openTunnel`.
-    async fn open_tunnel(&self, session: &Session, host: &str, port: u16) -> Result<Stream, u8> {
+    async fn open_tunnel(&self, session: &Session, host: &[u8], port: u16) -> Result<Stream, u8> {
         let mut stream = match session.open_stream().await {
             Ok(s) => s,
             Err(e) => {
@@ -436,7 +467,7 @@ impl Inner {
                 return Err(rep::HOST_UNREACHABLE);
             }
         };
-        crate::info!("sid={} tunnel to {host}:{port}", stream.id());
+        crate::info!("sid={} tunnel to {}:{port}", stream.id(), host_text(host));
         match send_connect(&mut stream, host, port).await {
             Ok(()) => {
                 if is_ipv6_literal(host) {
@@ -448,7 +479,7 @@ impl Inner {
                 crate::info!("sid={} connect failed: {e}", stream.id());
                 if let ConnectError::Refused(r) = &e {
                     if r.code == rep::HOST_UNREACHABLE && is_ipv6_literal(host) {
-                        self.note_ipv6_unreachable(host);
+                        self.note_ipv6_unreachable(&host_text(host));
                     }
                 }
                 Err(e.reply_code())
@@ -504,7 +535,7 @@ mod tests {
             req,
             Request {
                 cmd: cmd::CONNECT,
-                addr: "example.com".into(),
+                addr: b"example.com".to_vec(),
                 port: 443
             }
         );
@@ -558,8 +589,8 @@ mod tests {
         client.write_all(&v6).await.unwrap();
         let req = read_request(&mut server, false).await.unwrap();
         assert_eq!(
-            (req.cmd, req.addr.as_str(), req.port),
-            (cmd::UDP_ASSOCIATE, "2001:db8::1", 53)
+            (req.cmd, &req.addr[..], req.port),
+            (cmd::UDP_ASSOCIATE, &b"2001:db8::1"[..], 53)
         );
         let mut mapped = vec![5, 1, 0, 4];
         mapped.extend_from_slice(&Ipv4Addr::new(1, 2, 3, 4).to_ipv6_mapped().octets());
@@ -567,7 +598,7 @@ mod tests {
         client.write_all(&mapped).await.unwrap();
         assert_eq!(
             read_request(&mut server, false).await.unwrap().addr,
-            "1.2.3.4"
+            b"1.2.3.4"
         );
         client.write_all(&[5, 2, 0, 1]).await.unwrap();
         assert_eq!(
@@ -590,6 +621,25 @@ mod tests {
         let mut r = [0u8; 10];
         client.read_exact(&mut r).await.unwrap();
         assert_eq!(r, [5, 7, 0, 1, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn a_non_utf8_name_is_read_as_its_bytes() {
+        crate::testing::bounded(a_non_utf8_name_is_read_as_its_bytes_body()).await;
+    }
+
+    async fn a_non_utf8_name_is_read_as_its_bytes_body() {
+        // Go's string(domain) keeps the bytes: a broken sequence, a lone
+        // continuation byte and an overlong form, none of them a U+FFFD.
+        let name: &[u8] = b"\xe2\x80.\x80a\xc0\xaf.example";
+        let (mut client, mut server) = duplex(256);
+        let mut req = vec![5, 1, 0, 3, u8::try_from(name.len()).unwrap()];
+        req.extend_from_slice(name);
+        req.extend_from_slice(&[1, 187]);
+        client.write_all(&req).await.unwrap();
+        let got = read_request(&mut server, false).await.unwrap();
+        let addr: &[u8] = got.addr.as_ref();
+        assert_eq!(addr, name);
     }
 
     #[test]

@@ -111,6 +111,18 @@ impl Link {
         }
     }
 
+    /// Waits until the peer has settled in the room, so the first hello
+    /// reaches a peer whose session is in place; the caller bounds it. The
+    /// pipe: [`PipeLink::wait_peer_settled`]. SaluteJazz and vp8channel
+    /// have nothing of the kind yet and return at once (Go sends the hello
+    /// at once).
+    pub async fn wait_peer_settled(&self) {
+        match self {
+            Link::Pipe(p) => p.wait_peer_settled().await,
+            Link::SaluteJazz(_) | Link::Vp8(_) => {}
+        }
+    }
+
     /// Where reliable messages go (a link without a control plane).
     pub fn set_data(&self, lane: Option<Arc<Lane>>) {
         match self {

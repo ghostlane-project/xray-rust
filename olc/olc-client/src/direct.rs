@@ -23,7 +23,7 @@ use tokio::net::TcpStream;
 
 use crate::client::Inner;
 use crate::copy::{copy_bidirectional, CopyEnd, HALF_OPEN_GRACE};
-use crate::socks::Job;
+use crate::socks::{host_text, Job};
 use crate::tunnel::rep;
 
 /// How long a client is given to send something worth reading
@@ -526,18 +526,20 @@ impl Inner {
         mut conn: TcpStream,
         job: Job,
         reason: &str,
-        fallback: Option<String>,
+        fallback: Option<Vec<u8>>,
     ) {
-        crate::info!("direct to {}:{} ({reason})", job.host, job.port);
-        let mut remote = crate::net::dial_tcp_host(&join_host_port(&job.host, job.port)).await;
+        let name = host_text(&job.host).into_owned();
+        crate::info!("direct to {name}:{} ({reason})", job.port);
+        let mut remote = crate::net::dial_tcp_host(&join_host_port(&name, job.port)).await;
         if let (Err(e), Some(fb)) = (&remote, &fallback) {
-            crate::debug!("direct to {}: {e}; dialing {fb} instead", job.host);
-            remote = crate::net::dial_tcp_host(&join_host_port(fb, job.port)).await;
+            let fb = host_text(fb);
+            crate::debug!("direct to {name}: {e}; dialing {fb} instead");
+            remote = crate::net::dial_tcp_host(&join_host_port(&fb, job.port)).await;
         }
         let mut remote = match remote {
             Ok(r) => r,
             Err(e) => {
-                crate::info!("direct to {}:{} failed: {e}", job.host, job.port);
+                crate::info!("direct to {name}:{} failed: {e}", job.port);
                 job.fail(&mut conn, rep::HOST_UNREACHABLE).await;
                 return;
             }
@@ -545,10 +547,11 @@ impl Inner {
         if !job.open(&mut conn, &mut remote).await {
             return;
         }
-        let Job { host, port, .. } = job;
+        let port = job.port;
+        drop(job);
         let (_, end) = copy_bidirectional(conn, remote, false, HALF_OPEN_GRACE, &self.run).await;
         if matches!(end, CopyEnd::HalfOpenIdle) {
-            crate::debug!("direct to {host}:{port} closed: half-open and silent for 1m0s");
+            crate::debug!("direct to {name}:{port} closed: half-open and silent for 1m0s");
         }
     }
 
@@ -575,7 +578,7 @@ impl Inner {
         if !host.is_empty() && self.rules.as_ref().is_some_and(|r| r.match_domain(&host)) {
             // The direct path won: whatever the tunnel has by now is closed.
             prep.abort();
-            let given = std::mem::replace(&mut job.host, host);
+            let given = std::mem::replace(&mut job.host, host.into_bytes());
             self.dial_direct(conn, job, "sniffed name", Some(given))
                 .await;
             return;
@@ -583,7 +586,7 @@ impl Inner {
         if !host.is_empty() {
             crate::debug!(
                 "sniffed {host} for {}:{}: not a direct name",
-                job.host,
+                host_text(&job.host),
                 job.port
             );
         }

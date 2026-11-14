@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -69,6 +70,7 @@ type Hub struct {
 	rng     *rand.Rand
 	closed  bool
 	joins   uint64
+	traces  map[string]func(string)
 	members sync.WaitGroup
 }
 
@@ -76,6 +78,7 @@ type member struct {
 	hub  *Hub
 	conn net.Conn
 	room string
+	tag  string // what the JOIN named after "@", for traces
 	out  chan frame
 	done chan struct{}
 	once sync.Once
@@ -188,6 +191,32 @@ func (h *Hub) waitHeld(m *member) {
 	}
 }
 
+// Trace hands fn what the hub does in a room, one event at a time: each
+// join and leave, and each reliable frame relayed, with the participants it
+// was handed to (a participant already cut is marked "cut"). A participant
+// that joins as "room@tag" is in room and named tag in the events. A nil fn
+// stops the trace.
+func (h *Hub) Trace(room string, fn func(event string)) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.traces == nil {
+		h.traces = map[string]func(string){}
+	}
+	if fn == nil {
+		delete(h.traces, room)
+		return
+	}
+	h.traces[room] = fn
+}
+
+func (h *Hub) tracer(room string) func(string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.traces[room]
+}
+
+func (m *member) name() string { return fmt.Sprintf("%s#%d", m.tag, m.seq) }
+
 // Cut drops every participant's connection to a room; their engines rejoin.
 func (h *Hub) Cut(room string) {
 	for _, m := range h.snapshot(room, nil) {
@@ -241,7 +270,8 @@ func (h *Hub) serve(conn net.Conn) {
 		_ = conn.Close()
 		return
 	}
-	m := &member{hub: h, conn: conn, room: string(payload), out: make(chan frame, memberQueue), done: make(chan struct{})}
+	room, tag, _ := strings.Cut(string(payload), "@")
+	m := &member{hub: h, conn: conn, room: room, tag: tag, out: make(chan frame, memberQueue), done: make(chan struct{})}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -254,7 +284,11 @@ func (h *Hub) serve(conn net.Conn) {
 	h.joins++
 	m.seq = h.joins
 	h.rooms[m.room][m] = struct{}{}
+	n := len(h.rooms[m.room])
 	h.mu.Unlock()
+	if tr := h.tracer(m.room); tr != nil {
+		tr(fmt.Sprintf("join %s (%d in the room)", m.name(), n))
+	}
 	go m.write()
 	h.announce(m.room)
 	for {
@@ -271,6 +305,9 @@ func (h *Hub) serve(conn net.Conn) {
 	h.mu.Lock()
 	delete(h.rooms[m.room], m)
 	h.mu.Unlock()
+	if tr := h.tracer(m.room); tr != nil {
+		tr("leave " + m.name())
+	}
 	h.announce(m.room)
 }
 
@@ -305,7 +342,20 @@ func (h *Hub) relay(from *member, kind byte, payload []byte) {
 		return
 	}
 	at := time.Now().Add(c.Delay + jitter)
-	for _, m := range h.snapshot(from.room, from) {
+	to := h.snapshot(from.room, from)
+	if tr := h.tracer(from.room); tr != nil && kind == KindData {
+		names := make([]string, 0, len(to))
+		for _, m := range to {
+			select {
+			case <-m.done:
+				names = append(names, m.name()+" (cut)")
+			default:
+				names = append(names, m.name())
+			}
+		}
+		tr(fmt.Sprintf("data %s -> %v, %d bytes", from.name(), names, len(payload)))
+	}
+	for _, m := range to {
 		f := frame{kind: kind, payload: payload, at: at}
 		if reorder {
 			f.kind = kindHeld
