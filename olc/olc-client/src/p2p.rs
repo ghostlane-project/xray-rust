@@ -53,7 +53,7 @@ use olc_rtc::turn::{udp_servers, TurnServer, MAX_ALLOCATIONS};
 use olc_rtc::DtlsVersion;
 use olc_vp8channel::channel::Carrier;
 use olc_vp8channel::rtp::{Packetizer, Payloader, Vp8Payloader};
-use olc_vp8channel::rtp_reader::{TrackReader, MIME_VP8};
+use olc_vp8channel::rtp_reader::{TrackReader, MIME_VP8, REORDER_HOLD, REORDER_WINDOW};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
@@ -71,6 +71,28 @@ pub const ID_LEN: usize = 16;
 /// What its channels may hold unacknowledged: the peer has none (media
 /// only), so str0m's floor.
 const SCTP_BUFFERED: usize = 64 << 10;
+
+/// How long the resend cache keeps a sent packet (str0m's `set_rtx_cache`):
+/// as long as the far end's vp8channel reader can still take it back. That
+/// reader (Go's `reorderHold`, [`REORDER_HOLD`]) gives a gap up 300 ms after
+/// the first packet behind it arrived, so a NACK reaching this end later
+/// than 300 ms after the packet went asks for what will never be read.
+pub const RESEND_AGE: Duration = REORDER_HOLD;
+
+/// The newest packets the resend cache keeps, at most: packets a second at
+/// the carriers' fastest rate times [`RESEND_AGE`], but never more than
+/// the far reader holds behind a gap. MTS Link's SFU forwarded 19 Mbit/s
+/// (vp8channel's `carrier.go`, measured 2026-10-11): 1979 packets a second
+/// of 1200 bytes, 594 in 300 ms. The reader (Go's `reorderWindow`,
+/// [`REORDER_WINDOW`]) gives a gap up once 256 packets wait behind it, so
+/// the 257th newest is the oldest a resend can still fill in. pion's
+/// responder keeps 1024 by default, the Go engine's phone profile 256
+/// (`interceptors.go:19`), str0m 1000 for 3 s.
+pub const RESEND_PACKETS: usize = REORDER_WINDOW + 1;
+
+/// The share of resends in what is sent past which str0m drops the queued
+/// ones: its default (`DEFAULT_RTX_RATIO_CAP`, not exported).
+const RESEND_RATIO_CAP: Option<f32> = Some(0.15);
 
 /// How long an offer or an answer waits for its relayed candidates before
 /// it goes with what it has (the Go side's `gatherBudget`).
@@ -679,8 +701,9 @@ impl P2pLink {
         .await;
     }
 
-    /// The line is negotiated: the VP8 payload type to write with, and the
-    /// remote's RTP into the track reader.
+    /// The line is negotiated: the VP8 payload type to write with, the send
+    /// stream's resend cache sized ([`RESEND_PACKETS`], [`RESEND_AGE`]) before
+    /// anything is written, and the remote's RTP into the track reader.
     fn media_ready(self: &Arc<Self>, peer: &Peer) {
         let pt = peer.with_rtc(|rtc| {
             rtc.codec_config()
@@ -692,6 +715,20 @@ impl P2pLink {
             crate::info!("interop-p2p: no VP8 on the line");
             return;
         };
+        let mid = locked(&self.media).mid;
+        let sized = mid.is_some_and(|mid| {
+            peer.with_rtc(|rtc| {
+                let mut api = rtc.direct_api();
+                let Some(tx) = api.stream_tx_by_mid(mid, None) else {
+                    return false;
+                };
+                tx.set_rtx_cache(RESEND_PACKETS, RESEND_AGE, RESEND_RATIO_CAP);
+                true
+            })
+        });
+        if !sized {
+            crate::info!("interop-p2p: no send stream on the line to size the resends of");
+        }
         let mut reader = TrackReader::new(Carrier::Vp8, MIME_VP8).expect("vp8channel reads VP8");
         let me = Arc::downgrade(self);
         peer.set_rtp_sink(Some(Box::new(move |p: &RtpPacket| {
@@ -1324,6 +1361,166 @@ mod tests {
             }
         });
         (addr, dropped)
+    }
+
+    /// What [`nack_hop`] did and saw, and what it is told to do next.
+    #[derive(Default)]
+    struct NackHop {
+        /// Drop the next VP8 packet (and take the flag down).
+        drop_next: AtomicBool,
+        /// The dropped packet's SSRC and sequence number.
+        dropped: Mutex<Option<(u32, u16)>>,
+        /// VP8 packets that came again with the dropped one's SSRC and number.
+        resent: AtomicU64,
+        /// How long each RTCP packet is held before it goes on, ms.
+        rtcp_delay_ms: AtomicU64,
+        /// RTCP packets passed on.
+        rtcp: AtomicU64,
+    }
+
+    /// A UDP hop in front of the TURN server that drops one VP8 packet when
+    /// told to, counts the packet coming again, and holds RTCP (the NACKs
+    /// with it) for a while when told to: the TURN ChannelData each client
+    /// sends up carries RTP and SRTCP whose headers are in the clear.
+    async fn nack_hop(server: std::net::SocketAddr) -> (std::net::SocketAddr, Arc<NackHop>) {
+        use std::collections::HashMap;
+        use tokio::net::UdpSocket;
+        let front = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let addr = front.local_addr().unwrap();
+        let hop = Arc::new(NackHop::default());
+        let st = hop.clone();
+        tokio::spawn(async move {
+            let mut ups: HashMap<std::net::SocketAddr, Arc<UdpSocket>> = HashMap::new();
+            let mut buf = vec![0u8; 1 << 16];
+            loop {
+                let Ok((n, from)) = front.recv_from(&mut buf).await else {
+                    return;
+                };
+                let up = if let Some(u) = ups.get(&from) {
+                    u.clone()
+                } else {
+                    let u = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+                    u.connect(server).await.unwrap();
+                    let (down, back) = (u.clone(), front.clone());
+                    tokio::spawn(async move {
+                        let mut b = vec![0u8; 1 << 16];
+                        while let Ok(n) = down.recv(&mut b).await {
+                            let _ = back.send_to(&b[..n], from).await;
+                        }
+                    });
+                    ups.insert(from, u.clone());
+                    u
+                };
+                let d = buf[..n].to_vec();
+                let channel =
+                    n > 16 && (0x40..=0x7f).contains(&d[0]) && (0x80..=0xbf).contains(&d[4]);
+                if channel && d[5] & 0x7f == VP8_PAYLOAD_TYPE {
+                    let id = (
+                        u32::from_be_bytes([d[12], d[13], d[14], d[15]]),
+                        u16::from_be_bytes([d[6], d[7]]),
+                    );
+                    if st.drop_next.swap(false, Ordering::AcqRel) {
+                        *st.dropped.lock().unwrap() = Some(id);
+                        continue;
+                    }
+                    if *st.dropped.lock().unwrap() == Some(id) {
+                        st.resent.fetch_add(1, Ordering::Relaxed);
+                    }
+                } else if channel && (200..=207).contains(&d[5]) {
+                    let delay = st.rtcp_delay_ms.load(Ordering::Relaxed);
+                    let counted = st.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(delay)).await;
+                        counted.rtcp.fetch_add(1, Ordering::Relaxed);
+                        let _ = up.send(&d).await;
+                    });
+                    continue;
+                }
+                let _ = up.send(&d).await;
+            }
+        });
+        (addr, hop)
+    }
+
+    /// Writes `sample` from `a` a tick apart for `run`, or until `done`.
+    async fn write_for(a: &P2pLink, sample: &[u8], run: Duration, done: impl Fn() -> bool) {
+        let until = tokio::time::Instant::now() + run;
+        while tokio::time::Instant::now() < until && !done() {
+            assert!(a.write_sample(sample));
+            tokio::time::sleep(Duration::from_millis(16)).await;
+        }
+    }
+
+    /// The resend cache keeps a packet as long as the far reader can still
+    /// take it ([`RESEND_AGE`], vp8channel's `reorderHold`) and no longer:
+    /// both ends relay-only through [`nack_hop`], a packet dropped while
+    /// RTCP goes straight through comes again, and one dropped while every
+    /// RTCP packet is held for twice that does not, though its NACKs arrive.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_nack_later_than_the_far_readers_hold_finds_nothing() {
+        crate::testing::bounded_for(Duration::from_secs(30), async {
+            let (server, turn) = turn_server().await;
+            let at: std::net::SocketAddr = turn.trim_start_matches("turn:").parse().unwrap();
+            let (via, hop) = nack_hop(at).await;
+            let query = format!(
+                "turn=turn%3A{}&turn_user={}&turn_pass={TURN_PASS}&policy=relay",
+                via.to_string().replace(':', "%3A"),
+                TURN_USER.replace(':', "%3A"),
+            );
+            let (url, hub, (read_frames, _)) = relay_hub(0).await;
+            let url = format!("{url}?{query}");
+            let lo = IpAddr::from([127, 0, 0, 1]);
+            let tick = Duration::from_millis(16);
+            let (a_tx, _a_rx) = mpsc::channel(4);
+            let (b_tx, _b_rx) = mpsc::channel(4);
+            let (got_b, mut at_b) = mpsc::unbounded_channel::<Vec<u8>>();
+            let a = P2pLink::connect(&url, lo, tick, a_tx).await.unwrap();
+            while read_frames.load(Ordering::Acquire) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let b = P2pLink::connect(&url, lo, tick, b_tx).await.unwrap();
+            b.set_frame_handler(Some(Arc::new(move |f: &[u8]| {
+                let _ = got_b.send(f.to_vec());
+            })));
+            while !a.peer_seen() || !b.peer_seen() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            let sample = vec![7u8; 3000];
+            loop {
+                assert!(a.write_sample(&sample));
+                tokio::select! {
+                    Some(_) = at_b.recv() => break,
+                    () = tokio::time::sleep(tick) => {}
+                }
+            }
+            hop.drop_next.store(true, Ordering::Release);
+            let resent = || hop.resent.load(Ordering::Relaxed) > 0;
+            write_for(&a, &sample, Duration::from_secs(3), resent).await;
+            assert!(
+                hop.dropped.lock().unwrap().is_some(),
+                "the hop dropped nothing"
+            );
+            assert!(resent(), "a packet NACKed in time was not resent");
+
+            let late = 2 * RESEND_AGE;
+            let late_ms = u64::try_from(late.as_millis()).unwrap();
+            hop.rtcp_delay_ms.store(late_ms, Ordering::Relaxed);
+            write_for(&a, &sample, Duration::from_millis(100), || false).await;
+            hop.resent.store(0, Ordering::Relaxed);
+            let rtcp_before = hop.rtcp.load(Ordering::Relaxed);
+            hop.drop_next.store(true, Ordering::Release);
+            write_for(&a, &sample, late + Duration::from_secs(1), || false).await;
+            assert!(
+                hop.rtcp.load(Ordering::Relaxed) > rtcp_before,
+                "no RTCP came through the late hop"
+            );
+            assert!(!resent(), "a packet NACKed {late:?} late was resent");
+            a.close().await;
+            b.close().await;
+            hub.abort();
+            server.close().await.unwrap();
+        })
+        .await;
     }
 
     /// A lost packet is resent: both ends relay-only through a hop that
