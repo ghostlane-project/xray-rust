@@ -22,7 +22,12 @@
 //     and that notice races shutdown's own close of the transport
 //     (server.go:231-246, link.go:366-424), so the client learns of the stop
 //     from the notice or from liveness; either way it reopens on the new
-//     server. The notice itself is held by olc-client's control tests.
+//     server. The notice itself is held by olc-client's control tests;
+//   - stalled far end: the hub stops reading the client's connection while
+//     uploads fill every buffer in front of it, so the client's write to the
+//     hub blocks for good. Liveness gives the session up and the client
+//     rejoins and reopens with that write still stuck (reconnect), and a
+//     SIGTERM ends the process within the stop budget (stop).
 
 package gate
 
@@ -30,12 +35,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -231,6 +239,103 @@ func (e *e2eEnv) pullSoon(socks string, within time.Duration) {
 	}
 }
 
+// pushes is a set of uploads through the client that write until their
+// connection fails.
+type pushes struct {
+	written atomic.Int64
+	stop    func()
+}
+
+// push opens n uploads to the origin's sink through socks, each a POST that
+// never ends: enough bytes to fill every buffer between the client and a far
+// end that stopped reading (four of the server's 4 MiB stream windows against
+// the pipe's 512 KiB send buffer and the hub's 512 KiB receive buffer).
+func (e *e2eEnv) push(socks string, n int) *pushes {
+	e.t.Helper()
+	dial, err := SocksDialer(socks)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	u, err := url.Parse(e.target.origin.URLs.Sink)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	p := &pushes{}
+	ctx, cancel := context.WithCancel(context.Background())
+	var (
+		mu    sync.Mutex
+		conns []net.Conn
+		wg    sync.WaitGroup
+		once  sync.Once
+	)
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			conn, err := dial(ctx, "tcp", u.Host)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			if ctx.Err() != nil {
+				mu.Unlock()
+				_ = conn.Close()
+				return
+			}
+			conns = append(conns, conn)
+			mu.Unlock()
+			head := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: %s\r\nContent-Length: %d\r\n\r\n", u.Path, u.Host,
+				int64(1)<<40)
+			if _, err := io.WriteString(conn, head); err != nil {
+				return
+			}
+			chunk := make([]byte, 64<<10)
+			for ctx.Err() == nil {
+				wrote, err := conn.Write(chunk)
+				p.written.Add(int64(wrote))
+				if err != nil {
+					return
+				}
+			}
+		}()
+	}
+	p.stop = func() {
+		once.Do(func() {
+			cancel()
+			mu.Lock()
+			for _, c := range conns {
+				_ = c.Close()
+			}
+			mu.Unlock()
+			wg.Wait()
+		})
+	}
+	e.t.Cleanup(p.stop)
+	return p
+}
+
+// waitStuck waits until the uploads have moved some bytes and then none for a
+// second: the path in front of them is full.
+func (e *e2eEnv) waitStuck(p *pushes, within time.Duration) {
+	e.t.Helper()
+	deadline := time.Now().Add(within)
+	last, since := p.written.Load(), time.Now()
+	for {
+		time.Sleep(100 * time.Millisecond)
+		now := p.written.Load()
+		switch {
+		case now != last:
+			last, since = now, time.Now()
+		case now > 0 && time.Since(since) >= time.Second:
+			e.t.Logf("the uploads stopped after %d bytes", now)
+			return
+		}
+		if time.Now().After(deadline) {
+			e.t.Fatalf("the uploads did not come to a stop within %s (%d bytes)", within, now)
+		}
+	}
+}
+
 // TestRustE2E runs the ported e2e scenarios.
 func TestRustE2E(t *testing.T) {
 	if *gateTargetName != targetInterop {
@@ -356,5 +461,54 @@ func TestRustE2E(t *testing.T) {
 		defer env.server(ep, []string{ep.Key}, true)()
 		waitLog(t, log, " reopened (device=", 1, 90*time.Second)
 		env.pullSoon(socks, 20*time.Second)
+	})
+
+	t.Run("stalled far end: reconnect", func(t *testing.T) {
+		env.t = t
+		name, ep := env.room(env.key())
+		defer env.server(ep, []string{ep.Key}, true)()
+		log := capture.Begin()
+		socks, _ := env.client(ep, func(c *rustConfig) {
+			c.Liveness = &rustLiveness{IntervalMS: 1000, TimeoutMS: 2000, Failures: 3}
+			c.LivenessFallbackMS = 3000
+		})
+		env.pullSoon(socks, 10*time.Second)
+		up := env.push(socks, 4)
+		release := hub.StallNewest(name)
+		defer release()
+		env.waitStuck(up, 20*time.Second)
+		waitLog(t, log, "client reconnect reason=liveness", 1, 30*time.Second)
+		// The hub still reads nothing of the old connection: the rejoin must
+		// not wait behind the write stuck on it.
+		waitLog(t, log, " reopened (device=", 1, 30*time.Second)
+		up.stop()
+		env.pullSoon(socks, 20*time.Second)
+	})
+
+	t.Run("stalled far end: stop", func(t *testing.T) {
+		env.t = t
+		name, ep := env.room(env.key())
+		defer env.server(ep, []string{ep.Key}, true)()
+		log := capture.Begin()
+		socks, child := env.client(ep, nil)
+		env.pullSoon(socks, 10*time.Second)
+		up := env.push(socks, 4)
+		release := hub.StallNewest(name)
+		defer release()
+		env.waitStuck(up, 20*time.Second)
+		started := time.Now()
+		child.cancel()
+		select {
+		case <-child.exited:
+		case <-time.After(stopBudget + 2*time.Second):
+			t.Fatalf("SIGTERM with a write stuck on the far end: still running after %s", stopBudget+2*time.Second)
+		}
+		took := time.Since(started)
+		state := child.cmd.ProcessState
+		if !state.Success() || took >= stopBudget {
+			t.Fatalf("SIGTERM with a write stuck on the far end: exit %v after %s, want a clean exit within %s; "+
+				"the client said:\n%s", state, took.Round(time.Millisecond), stopBudget, tail(log.Text(), 20))
+		}
+		t.Logf("SIGTERM with a write stuck on the far end: a clean exit after %s", took.Round(time.Millisecond))
 	})
 }
