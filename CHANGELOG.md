@@ -104,6 +104,25 @@ long-term supported release series.
   not be a `dns`, `blackhole` or `loopback` one. Xray-core has no such action
   and refuses a config that uses it. Configs without a forward rule behave as
   before.
+- iOS (Mac Catalyst too): `xray_core_new` builds the core's tokio runtime
+  with one worker, at most four blocking threads and a 2 s keep-alive for an
+  idle one, instead of `available_parallelism()` clamped to 2 to 6 workers
+  and tokio's 512 blocking threads. The packet tunnel extension is killed at
+  about 50 MB and each worker costs 32 to 64 KiB of stack, a 128 KiB relay
+  pool spare and 6 KB of runtime state, while in the lab one worker carried
+  Reality and Hysteria2 far above a phone's link. Every other platform keeps
+  its plan. On every platform `XRAY_FFI_WORKER_THREADS` and
+  `XRAY_FFI_MAX_BLOCKING_THREADS` (a number from 1 to 64, anything else is
+  ignored) set the workers and the blocking threads' cap. They are read in
+  the process that calls `xray_core_new`: on iOS the packet tunnel
+  extension, so a host sets them there, not in the containing app.
+- The SOCKS inbound's long-lived futures are smaller: a UDP flow's task
+  holds 2,288 B instead of 36,192 B and a SOCKS5 connection 5,776 B instead
+  of 9,264 B (x86_64, release); a SOCKS4 or HTTP connection now holds about
+  11.5 or 13 KB (9.3 KB before). A UDP association and a freedom UDP flow
+  read their datagrams through one 64 KiB scratch buffer per worker thread
+  instead of keeping a 64 KiB buffer each; a flow under `finalmask.udp`
+  keeps its own.
 
 - One byte budget for the payload a process holds in flight
   (`xray_transport::memory_budget`): `B = rate × RTT`, 3,000,000 bytes on a
@@ -127,6 +146,19 @@ long-term supported release series.
   and the threads keep, for a host under memory pressure.
 - Vision gives back its frame buffers once a frame is written or read,
   rather than keeping up to 64 KiB and its padding for the flow's life.
+- Vendored h2: the reader takes each frame into an allocation of its own
+  size, `9 + length`, which grows while the frame arrives from at most
+  16,393 B and so never holds more than twice what has arrived, and it holds
+  no heap between frames. Before, every frame was split off one buffer that
+  stayed at the largest frame the connection had read, and a frame waiting
+  in a stream's queue kept that buffer alive. A stream's frame queue that has
+  drained gives its slots back once they pass 4 KiB. Frame size errors, EOF
+  inside a frame and read errors are reported as before; the cost is a
+  second read per frame. XHTTP builds the static part of its request headers
+  once per transport instead of for every request (25 allocations a
+  packet-up POST instead of 123), and sends a packet-up POST over HTTP/2 or
+  HTTP/3 from the chunks its bytes were written into, not from a joined copy
+  held until its last DATA frame. The bytes on the wire are unchanged.
 - The byte budget also counts what an HTTP/2 response has received and its
   reader has not taken: XHTTP's HTTP/2 responses, the HTTP outbound's
   HTTP/2 CONNECT tunnels, DNS over HTTPS on HTTP/2, and gRPC calls'
