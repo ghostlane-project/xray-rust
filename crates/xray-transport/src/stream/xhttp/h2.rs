@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{ready, Context, Poll, Waker};
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use futures_util::FutureExt;
 use h2::client::{self, ResponseFuture, SendRequest};
 use h2::{FlowControl, Ping, PingPong, Reason, RecvStream, SendStream};
@@ -635,8 +635,13 @@ pub struct H2Upload {
 }
 
 impl H2Upload {
-    pub(crate) async fn send_owned(&mut self, mut body: Bytes) -> Result<(), H2Error> {
-        while !body.is_empty() {
+    /// Sends `body` and ends the request with it. Each DATA frame is as large
+    /// as h2 grants, at most [`MAX_UPLOAD_DATA_BYTES`], and is taken with
+    /// [`Buf::copy_to_bytes`]: a `Bytes` body is shared, never copied, and a
+    /// packet-up payload shares its chunks and copies only a frame that
+    /// crosses a chunk's end.
+    pub(crate) async fn send_owned<B: Buf>(&mut self, mut body: B) -> Result<(), H2Error> {
+        while body.has_remaining() {
             poll_fn(|cx| {
                 let mut state = match self.shared.lock() {
                     Ok(state) => state,
@@ -652,7 +657,7 @@ impl H2Upload {
                     }
                 }
 
-                let wanted = body.len().min(MAX_UPLOAD_DATA_BYTES);
+                let wanted = body.remaining().min(MAX_UPLOAD_DATA_BYTES);
                 state.stream.reserve_capacity(wanted);
                 let granted = match ready!(state.stream.poll_capacity(cx)) {
                     Some(Ok(granted)) => granted.min(wanted),
@@ -677,8 +682,8 @@ impl H2Upload {
                     return Poll::Ready(Err(H2Error::ZeroCapacityGrant));
                 }
 
-                let chunk = body.split_to(granted);
-                let end_of_stream = body.is_empty();
+                let chunk = body.copy_to_bytes(granted);
+                let end_of_stream = !body.has_remaining();
                 if let Err(source) = state.stream.send_data(chunk, end_of_stream) {
                     state.stream.reserve_capacity(0);
                     state.phase = SendPhase::Reset;

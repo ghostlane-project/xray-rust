@@ -17,7 +17,11 @@
 //!   of a larger read buffer, and peaks under a ceiling set from that.
 //! - A packet-up POST costs fewer allocations to compose and convert: the
 //!   static header block is built once per transport.
-//! - The request headers are pinned byte for byte.
+//! - A burst of 32 packet-up uploads peaks lower: a POST is sent from the
+//!   chunks its bytes were written into, each freed once it is sent, not
+//!   from a joined copy held until the POST's last DATA frame is written.
+//! - The request headers, and the DATA frames of POSTs whose chunks end
+//!   inside frames, are pinned byte for byte.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -26,7 +30,7 @@ use std::io;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicIsize, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::task::{Context, Poll};
+use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -34,7 +38,7 @@ use h2::{server, RecvStream};
 use http::{Method, Request, Response, StatusCode, Version};
 use rand::rngs::mock::StepRng;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
-use tokio::time::timeout;
+use tokio::time::{timeout, Instant, Sleep};
 
 use xray_transport::stream::xhttp_composer_test_only::{
     NormalizedRange, XhttpConfig, XhttpConfigInput, XhttpEndpoint, XhttpMetadataPlacement,
@@ -537,6 +541,16 @@ impl Server {
         }
     }
 
+    async fn wait_for_uploaded(&self, bytes: usize) {
+        timeout(DEADLINE, async {
+            while self.uploaded.load(Ordering::Acquire) < bytes {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("the server did not receive every uploaded byte");
+    }
+
     async fn wait_for_posts(&self, posts: usize) {
         timeout(DEADLINE, async {
             while self.posts.load(Ordering::Acquire) < posts {
@@ -658,6 +672,169 @@ fn transport_for(config: XhttpConfig, connections: i32, pinned_rng: bool) -> Xht
             .unwrap()
     } else {
         transport
+    }
+}
+
+// ===== a burst of packet-up uploads =====
+
+/// The lab's upload burst: 32 flows each write 1 MiB in 32 KiB writes as
+/// fast as their pipes take them, over three xmux connections whose uplink
+/// is throttled to 2 MB/s each (about the lab's 44 Mbit/s in all), to a
+/// server with Go's 1 MiB stream and connection windows.
+const UP_EACH: usize = 1 << 20;
+const UP_WRITE: usize = 32 * 1024;
+static UP_WRITE_BYTES: [u8; UP_WRITE] = [0x55; UP_WRITE];
+const UPLINK_RATE: f64 = 2_000_000.0;
+const GO_SERVER_WINDOW: u32 = 1 << 20;
+/// The ceiling on the upload burst's peak. Measured on the build box: 22.15
+/// and 22.54 MB when each POST was joined into one allocation, held whole
+/// until its last DATA frame was written; 16.88 to 17.23 MB sent from its
+/// chunks, each freed once sent. 19 MiB lies between them.
+const UPLOAD_BURST_PEAK_LIMIT: isize = 19 << 20;
+
+#[test]
+fn a_burst_of_32_packet_up_uploads_peaks_lower() {
+    measured(upload_burst());
+}
+
+async fn upload_burst() {
+    let server = Arc::new(Server::new(16, 16));
+    let dial = throttled_server_dial(Arc::clone(&server), UPLINK_RATE);
+    let transport = app_shaped_transport(None);
+
+    // As in the download burst, the peak counts from before the first
+    // connection.
+    let baseline = live_bytes();
+    let warm = open_flow(&transport, &dial, 16).await;
+    server.wait_for_posts(1).await;
+    settle().await;
+    let idle = live_bytes() - baseline;
+    let uploaded_before = server.uploaded.load(Ordering::Acquire);
+    reset_peak();
+
+    let mut uploads = tokio::task::JoinSet::new();
+    for _ in 0..BURST {
+        let transport = transport.clone();
+        let dial = Arc::clone(&dial);
+        uploads.spawn(async move {
+            let mut flow = open_flow(&transport, &dial, 16).await;
+            let mut left = UP_EACH;
+            while left > 0 {
+                let piece = UP_WRITE.min(left);
+                flow.write_all(&UP_WRITE_BYTES[..piece]).await.unwrap();
+                left -= piece;
+            }
+            flow.flush().await.unwrap();
+            flow
+        });
+    }
+    let mut flows = Vec::with_capacity(BURST);
+    while let Some(done) = timeout(DEADLINE, uploads.join_next())
+        .await
+        .expect("the upload burst stalled")
+    {
+        flows.push(done.unwrap());
+    }
+    server
+        .wait_for_uploaded(uploaded_before + BURST * (UP_EACH + REQUEST_HEADER_LEN))
+        .await;
+    let peak = peak_bytes() - baseline;
+    eprintln!(
+        "burst of {BURST} packet-up uploads of {UP_EACH} B in {UP_WRITE} B writes at \
+         {UPLINK_RATE} B/s a connection: peak heap {peak} B above the heap before the first \
+         connection ({idle} B of it kept by the idle warm-up flow), limit \
+         {UPLOAD_BURST_PEAK_LIMIT}"
+    );
+    drop(flows);
+    drop(warm);
+    assert!(
+        peak <= UPLOAD_BURST_PEAK_LIMIT,
+        "the upload burst peaked at {peak} B; the limit is {UPLOAD_BURST_PEAK_LIMIT}"
+    );
+}
+
+/// Like [`server_dial`], with Go's server windows and the client's writes
+/// limited to `rate` bytes a second.
+fn throttled_server_dial(server: Arc<Server>, rate: f64) -> XhttpDial {
+    Arc::new(move || {
+        let (client, server_io) = tokio::io::duplex(256 * 1024);
+        spawn_server(Arc::clone(&server), server_io, Some(GO_SERVER_WINDOW));
+        let client = Throttled {
+            inner: client,
+            rate,
+            next_free: Instant::now(),
+            wait: None,
+        };
+        Box::pin(async move { Ok(Box::new(client) as BoxedTransportStream) })
+    })
+}
+
+/// A client stream whose writes go out at `rate` bytes a second.
+struct Throttled {
+    inner: DuplexStream,
+    rate: f64,
+    next_free: Instant,
+    wait: Option<Pin<Box<Sleep>>>,
+}
+
+impl AsyncRead for Throttled {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, output)
+    }
+}
+
+impl AsyncWrite for Throttled {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        loop {
+            if let Some(wait) = self.wait.as_mut() {
+                ready!(wait.as_mut().poll(cx));
+                self.wait = None;
+            }
+            let now = Instant::now();
+            if self.next_free > now {
+                self.wait = Some(Box::pin(tokio::time::sleep_until(self.next_free)));
+                continue;
+            }
+            let piece = input.len().min(16 * 1024);
+            let written = ready!(Pin::new(&mut self.inner).poll_write(cx, &input[..piece]))?;
+            let spent = Duration::from_secs_f64(written as f64 / self.rate);
+            self.next_free = self.next_free.max(now) + spent;
+            return Poll::Ready(Ok(written));
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+impl TransportStream for Throttled {
+    fn poll_read_direct(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        AsyncRead::poll_read(self, cx, output)
+    }
+
+    fn poll_write_direct(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        AsyncWrite::poll_write(self, cx, input)
     }
 }
 
@@ -838,7 +1015,82 @@ async fn wire_headers(config: XhttpConfig) -> Vec<u8> {
     header_frames(&writes)
 }
 
+/// One POST's writes: a header-sized write and a large one share an 8 KiB
+/// chunk, small writes gather into another, so the POST's chunks end inside
+/// its 16 KiB DATA frames, one frame spans three chunks, and the last chunk
+/// has spare room.
+const DATA_WIRE_WRITES: [usize; 7] = [64, 40_000, 1_000, 1_000, 1_000, 33_000, 7];
+const DATA_WIRE_POSTS: usize = 3;
+/// The DATA payload lengths: the flow's request header, then each POST's
+/// 76,071 B cut at 16,384 (`MAX_UPLOAD_DATA_BYTES`, every grant whole under
+/// Go's 1 MiB windows).
+const DATA_WIRE_LENS: [usize; 16] = [
+    64, 16_384, 16_384, 16_384, 16_384, 10_535, 16_384, 16_384, 16_384, 16_384, 10_535, 16_384,
+    16_384, 16_384, 16_384, 10_535,
+];
+/// (DATA frame bytes, FNV-1a of them) recorded before the change.
+const DATA_WIRE_EXPECTED: (usize, u64) = (228_421, 0x8a0a_6b54_e278_deac);
+
+/// The DATA frames a packet-up flow writes for its POSTs, header and payload,
+/// compared byte for byte with what the code wrote when it sent a joined
+/// copy of each payload.
+#[test]
+fn packet_up_data_frames_on_the_wire_are_unchanged() {
+    measured(data_frames_on_the_wire());
+}
+
+async fn data_frames_on_the_wire() {
+    let mut input = XhttpConfigInput {
+        mode: XhttpModeSelection::PacketUp,
+        path: "/api".to_owned(),
+        ..XhttpConfigInput::default()
+    };
+    input.headers.set("User-Agent", "wire-test");
+    let mut config = XhttpConfig::normalize(input).unwrap();
+    config.min_posts_interval_ms = NormalizedRange::exact(0);
+
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let server = Arc::new(Server::new(16, 16));
+    let dial = windowed_server_dial(
+        Arc::clone(&server),
+        1 << 20,
+        Some(GO_SERVER_WINDOW),
+        Some(Arc::clone(&writes)),
+    );
+    let transport = transport_for(config, 1, true);
+    // The download is read once the server's SETTINGS and window are in.
+    let mut flow = open_flow(&transport, &dial, 16).await;
+    server.wait_for_posts(1).await;
+    for post in 0..DATA_WIRE_POSTS {
+        // Written without a pause, so the worker takes them as one POST.
+        for (index, len) in DATA_WIRE_WRITES.into_iter().enumerate() {
+            let byte = (post * DATA_WIRE_WRITES.len() + index) as u8;
+            flow.write_all(&vec![byte; len]).await.unwrap();
+        }
+        flow.flush().await.unwrap();
+        server.wait_for_posts(post + 2).await;
+    }
+    drop(flow);
+
+    let (frames, lens) = frames_of(&writes.lock().unwrap(), &[FRAME_DATA]);
+    let digest = fnv1a(&frames);
+    eprintln!(
+        "wire DATA frames: {} B, digest {digest:#018x}, payload lengths {lens:?}",
+        frames.len()
+    );
+    assert_eq!(
+        lens, DATA_WIRE_LENS,
+        "the POSTs' DATA frames were cut elsewhere"
+    );
+    assert_eq!(
+        (frames.len(), digest),
+        DATA_WIRE_EXPECTED,
+        "the POSTs' DATA frames changed on the wire"
+    );
+}
+
 const CLIENT_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+const FRAME_DATA: u8 = 0x0;
 const FRAME_HEADERS: u8 = 0x1;
 const FRAME_CONTINUATION: u8 = 0x9;
 
