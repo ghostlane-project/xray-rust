@@ -120,7 +120,7 @@ func checkPatternSlow(r io.Reader, seed uint64, slow time.Duration) (uint64, str
 			}
 		}
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			if endOfStream(err) {
 				return total, ""
 			}
 			return total, "read-error=" + strings.ReplaceAll(err.Error(), " ", "_")
@@ -128,9 +128,19 @@ func checkPatternSlow(r io.Reader, seed uint64, slow time.Duration) (uint64, str
 	}
 }
 
+// endOfStream says whether a read error ends a stream cleanly. Besides
+// io.EOF it is io.ErrClosedPipe: once both sides have sent FIN, smux v1.5.57
+// closes the stream's die channel along with its FIN event
+// (stream.go:808-833), and waitRead's select (stream.go:440-462) may pick
+// die and say io.ErrClosedPipe. The callers check the bytes they got, so a
+// lost byte still fails them.
+func endOfStream(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe)
+}
+
 func readReply(st *smux.Stream) (string, error) {
 	var out bytes.Buffer
-	if _, err := copyToEOF(&out, st); err != nil {
+	if _, err := copyToEOF(&out, st); err != nil && !endOfStream(err) {
 		return out.String(), fmt.Errorf("reply: %w", err)
 	}
 	return strings.TrimSpace(out.String()), nil

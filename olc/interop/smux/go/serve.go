@@ -102,14 +102,26 @@ func atoi(s string) uint64 {
 	return v
 }
 
+// finLinger is how long a service waits before the FIN that follows data
+// sent after the client's FIN. smux v1.5.57 drops a stream's unread data
+// once both sides have sent FIN (stream.go:808-833 with session.go:357-374:
+// tryHalfCloseCleanup, then recycleTokens), so a client that half-closed and
+// has not yet read the last data loses it when this FIN comes right after.
+// Go against Go, without the linger, 40 runs of each client script failed
+// 36 (half), 39 (many), 40 (slow), 31 (echo) and 30 (idle) times. The Rust
+// twin lingers the same.
+const finLinger = 200 * time.Millisecond
+
 // serveStream runs one service. The commands, and their twins in Rust:
 //
-//	ECHO               copy back until EOF, CloseWrite, Close
-//	SINK n seed        read until EOF, check n pattern bytes, reply "OK n" or "BAD ...", Close
+//	ECHO               copy back until EOF, linger, CloseWrite, Close
+//	SINK n seed        read until EOF, check n pattern bytes, reply "OK n" or "BAD ...", linger, Close
 //	SOURCE n seed      write n pattern bytes in 32 KiB writes, CloseWrite, read until EOF, Close
-//	SLOWSINK chunk ms  read with a chunk-sized buffer and sleep ms after each read; reply "OK n", Close
+//	SLOWSINK chunk ms  read with a chunk-sized buffer and sleep ms after each read; reply "OK n", linger, Close
 //	HOLD               never read; wait for the session to end
-//	HALF               read until EOF, reply "GOT n", CloseWrite, Close
+//	HALF               read until EOF, reply "GOT n", linger, CloseWrite, Close
+//	LATE ms            CloseWrite, sleep ms, read until EOF, print "LATE sid=<id> got=<n> err=<err>"
+//	                   (Go only: it pins the half-close drop on the server side)
 func serveStream(st *smux.Stream, sess *smux.Session) {
 	defer st.Close()
 	line, err := readLine(st)
@@ -128,6 +140,7 @@ func serveStream(st *smux.Stream, sess *smux.Session) {
 			logf("ERR sid=%d echo: %v", st.ID(), err)
 			return
 		}
+		time.Sleep(finLinger)
 		_ = st.CloseWrite()
 	case "SINK":
 		want, seed := atoi(f[1]), atoi(f[2])
@@ -138,6 +151,7 @@ func serveStream(st *smux.Stream, sess *smux.Session) {
 			logf("ERR sid=%d sink: %s", st.ID(), strings.TrimSpace(reply))
 		}
 		_, _ = st.Write([]byte(reply))
+		time.Sleep(finLinger)
 	case "SOURCE":
 		n, seed := atoi(f[1]), atoi(f[2])
 		buf := make([]byte, 32*1024)
@@ -171,6 +185,7 @@ func serveStream(st *smux.Stream, sess *smux.Session) {
 			time.Sleep(time.Duration(delay) * time.Millisecond)
 		}
 		_, _ = st.Write([]byte(fmt.Sprintf("OK %d\n", total)))
+		time.Sleep(finLinger)
 	case "HOLD":
 		select {
 		case <-st.GetDieCh():
@@ -186,7 +201,13 @@ func serveStream(st *smux.Stream, sess *smux.Session) {
 			logf("ERR sid=%d half reply: %v", st.ID(), err)
 			return
 		}
+		time.Sleep(finLinger)
 		_ = st.CloseWrite()
+	case "LATE":
+		_ = st.CloseWrite()
+		time.Sleep(time.Duration(atoi(f[1])) * time.Millisecond)
+		n, err := copyToEOF(io.Discard, st)
+		logf("LATE sid=%d got=%d err=%v", st.ID(), n, err)
 	default:
 		logf("ERR sid=%d unknown command %q", st.ID(), line)
 	}
