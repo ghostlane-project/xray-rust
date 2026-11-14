@@ -419,9 +419,11 @@ impl HysteriaOutbound {
 /// announced rate once both are nonzero, otherwise BBR. quic-go grows a
 /// connection's receive windows from the initial value to the maximum, while
 /// quinn keeps a Hysteria connection's windows fixed, so the larger of the two
-/// is the window. A window `quicParams` leaves unset follows the host's
-/// `windows` ([`HysteriaWindows::for_class`]). UDP hop travels in the Hysteria
-/// carrier instead.
+/// is the window. A window whose initial value `quicParams` leaves unset starts
+/// at the host's `windows` ([`HysteriaWindows::for_class`]), and a maximum only
+/// raises it. ChromeParrot, on unless `disableChromeParrot` is set, replaces
+/// both with Chrome's at connect. UDP hop travels in the Hysteria carrier
+/// instead.
 pub(super) fn hysteria_quic_config(
     settings: Option<&QuicParamsSettings>,
     windows: HysteriaWindows,
@@ -434,22 +436,21 @@ pub(super) fn hysteria_quic_config(
         quic.max_idle_timeout = Duration::from_secs(30);
     }
     quic.max_incoming_bidirectional_streams = defaults.max_incoming_bidirectional_streams;
+    // The host's windows replace xray-rust's defaults as the start before a
+    // maximum is applied, so a maximum below a constrained host's start
+    // leaves that start, not the larger default.
+    if settings.is_none_or(|s| s.init_stream_receive_window == 0) {
+        quic.initial_stream_receive_window = windows.stream_receive;
+    }
+    if settings.is_none_or(|s| s.init_connection_receive_window == 0) {
+        quic.initial_connection_receive_window = windows.connection_receive;
+    }
     quic.initial_stream_receive_window = quic
         .initial_stream_receive_window
         .max(quic.max_stream_receive_window.take().unwrap_or(0));
     quic.initial_connection_receive_window = quic
         .initial_connection_receive_window
         .max(quic.max_connection_receive_window.take().unwrap_or(0));
-    if settings
-        .is_none_or(|s| s.init_stream_receive_window == 0 && s.max_stream_receive_window == 0)
-    {
-        quic.initial_stream_receive_window = windows.stream_receive;
-    }
-    if settings.is_none_or(|s| {
-        s.init_connection_receive_window == 0 && s.max_connection_receive_window == 0
-    }) {
-        quic.initial_connection_receive_window = windows.connection_receive;
-    }
     quic.udp_hop = H3UdpHopConfig::default();
     if let Some(settings) = settings {
         let negotiates = matches!(

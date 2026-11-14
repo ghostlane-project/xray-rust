@@ -380,16 +380,32 @@ fn unset_hysteria_windows_follow_the_host() {
         ),
         (8 * MIB, 3 * MIB)
     );
+    // A maximum raises the host's start and never lowers it: a maximum below
+    // a constrained host's start leaves that start, not the larger default.
     assert_eq!(
         receive_windows(
             QuicParamsSettings {
                 max_connection_receive_window: 20 * MIB,
-                ..without_parrot
+                ..without_parrot.clone()
             },
             constrained(),
         ),
         (MIB, 20 * MIB)
     );
+    for windows in [standard(), constrained()] {
+        assert_eq!(
+            receive_windows(
+                QuicParamsSettings {
+                    max_stream_receive_window: MIB / 2,
+                    max_connection_receive_window: MIB / 2,
+                    ..without_parrot.clone()
+                },
+                windows,
+            ),
+            (windows.stream_receive, windows.connection_receive),
+            "{windows:?}"
+        );
+    }
 }
 
 /// What the app runs: the outbound the core builds on a constrained host,
