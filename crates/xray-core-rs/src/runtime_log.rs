@@ -406,7 +406,13 @@ struct CappedFile {
 impl CappedFile {
     fn open(path: &Path, max_bytes: u64) -> io::Result<Self> {
         let writer = open_log_file(path)?;
-        let len = writer.get_ref().metadata()?.len();
+        let mut len = writer.get_ref().metadata()?.len();
+        // A file already over the cap was written without one, by an older
+        // build: kept whole as `<name>.1` it would hold the log over its
+        // bound, so it starts anew. If it cannot, the first line rotates it.
+        if len > max_bytes && writer.get_ref().set_len(0).is_ok() {
+            len = 0;
+        }
         Ok(Self {
             path: path.to_path_buf(),
             writer: Some(writer),
@@ -964,7 +970,10 @@ mod tests {
         assert!(error_log.contains(" warning a warning line"), "{error_log}");
         assert!(error_log.contains(" error an error line"), "{error_log}");
         let access_log = std::fs::read_to_string(dir.join("xray-access.log")).unwrap();
-        assert!(access_log.contains(" access an access line"), "{access_log}");
+        assert!(
+            access_log.contains(" access an access line"),
+            "{access_log}"
+        );
 
         let dir = unique_temp_dir("xray-runtime-log-debug");
         let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_log(LogConfig {
@@ -1017,8 +1026,8 @@ mod tests {
     fn each_log_file_is_capped_with_one_rotation() {
         let dir = unique_temp_dir("xray-runtime-log-cap");
         let cap = 256;
-        let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_max_file_bytes(cap))
-            .unwrap();
+        let logger =
+            RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_max_file_bytes(cap)).unwrap();
         for index in 0..100 {
             logger.error(move || format!("line {index:03} {}", "x".repeat(40)));
             logger.access(move || format!("access {index:03} {}", "y".repeat(40)));
@@ -1033,7 +1042,10 @@ mod tests {
             assert!(!current.is_empty() && !rotated.is_empty(), "{name}");
             // The newest line is in the file, the lines just before it in .1,
             // and the oldest are gone.
-            assert!(current.lines().last().unwrap().contains(" 099 "), "{current}");
+            assert!(
+                current.lines().last().unwrap().contains(" 099 "),
+                "{current}"
+            );
             assert!(!rotated.contains(" 000 "), "{rotated}");
             assert!(!dir.join(format!("{name}.2")).exists());
             for line in current.lines().chain(rotated.lines()) {
@@ -1043,27 +1055,35 @@ mod tests {
     }
 
     #[test]
-    fn a_file_over_the_cap_from_before_is_rotated_on_the_first_line() {
+    fn a_file_over_the_cap_from_before_is_started_anew() {
         let dir = unique_temp_dir("xray-runtime-log-cap-existing");
+        // Written by a build without the cap: kept whole as `.1`, it would
+        // hold the directory over its bound until the next rotation.
         std::fs::write(dir.join("xray-error.log"), "z".repeat(1000)).unwrap();
-        let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_max_file_bytes(256))
-            .unwrap();
+        std::fs::write(dir.join("xray-access.log"), "y".repeat(100)).unwrap();
+        let logger =
+            RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_max_file_bytes(256)).unwrap();
         logger.error(|| "a new line".to_owned());
+        logger.access(|| "an access line".to_owned());
         drop(logger);
 
         let current = std::fs::read_to_string(dir.join("xray-error.log")).unwrap();
-        assert!(current.contains("a new line") && !current.contains('z'), "{current}");
-        assert_eq!(
-            std::fs::read_to_string(dir.join("xray-error.log.1")).unwrap(),
-            "z".repeat(1000)
+        assert!(
+            current.contains("a new line") && !current.contains('z'),
+            "{current}"
         );
+        assert!(!dir.join("xray-error.log.1").exists());
+        // A file within the cap is kept and appended to.
+        let access = std::fs::read_to_string(dir.join("xray-access.log")).unwrap();
+        assert!(access.starts_with(&"y".repeat(100)), "{access}");
+        assert!(access.ends_with(" access an access line\n"), "{access}");
     }
 
     #[test]
     fn a_line_longer_than_the_cap_is_cut_to_it() {
         let dir = unique_temp_dir("xray-runtime-log-cap-line");
-        let logger = RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_max_file_bytes(64))
-            .unwrap();
+        let logger =
+            RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_max_file_bytes(64)).unwrap();
         logger.error(|| "é".repeat(1000));
         drop(logger);
 
