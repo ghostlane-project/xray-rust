@@ -231,13 +231,26 @@ impl Peer {
     /// # Errors
     /// The bind, or the protector's refusal.
     pub fn start(cfg: &PeerConfig) -> Result<(Peer, mpsc::Receiver<PeerEvent>), PeerError> {
+        Peer::start_tuned(cfg, |c| c)
+    }
+
+    /// [`Peer::start`] with the str0m settings passed through `tune` before
+    /// the peer is built: a link whose SDP must say what its Go engine's says
+    /// sets its codecs there (`RtcConfig::clear_codecs`, `codec_config`).
+    ///
+    /// # Errors
+    /// The bind, or the protector's refusal.
+    pub fn start_tuned(
+        cfg: &PeerConfig,
+        tune: impl FnOnce(RtcConfig) -> RtcConfig,
+    ) -> Result<(Peer, mpsc::Receiver<PeerEvent>), PeerError> {
         let std_sock = std::net::UdpSocket::bind(SocketAddr::new(cfg.host_ip, 0))?;
         olc_net::net::protect(std_sock.as_raw_fd())?;
         std_sock.set_nonblocking(true)?;
         let local = std_sock.local_addr()?;
         let sock = UdpSocket::from_std(std_sock)?;
         let creds = crate::ice::chrome_creds();
-        let rtc = rtc_config(cfg, &creds).build(Instant::now());
+        let rtc = tune(rtc_config(cfg, &creds)).build(Instant::now());
         let sh = Arc::new(Shared {
             name: cfg.name,
             rtc: Mutex::new(rtc),
@@ -1047,6 +1060,45 @@ mod tests {
                     rest += 1;
                 }
             }
+        })
+        .await;
+    }
+
+    /// A tuned peer's settings are its own: VP8 alone, no RTX, and the offer
+    /// says so (what a Go engine that registers VP8 alone offers).
+    #[tokio::test]
+    async fn a_tuned_peer_offers_the_codecs_it_was_given() {
+        use str0m::format::{Codec, FormatParams};
+        use str0m::media::{Direction, Frequency, MediaKind};
+
+        bounded(async {
+            crate::init();
+            let (a, _rx) = Peer::start_tuned(&config("a", 1 << 20), |c| {
+                let mut c = c.clear_codecs();
+                c.codec_config().add_config(
+                    96.into(),
+                    None,
+                    Codec::Vp8,
+                    Frequency::NINETY_KHZ,
+                    None,
+                    FormatParams::default(),
+                );
+                c
+            })
+            .unwrap();
+            let offer = a.with_rtc(|rtc| {
+                let mut api = rtc.sdp_api();
+                api.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+                api.apply().unwrap().0.to_sdp_string()
+            });
+            assert!(offer.contains("a=rtpmap:96 VP8/90000"), "{offer}");
+            assert!(offer.contains("a=rtcp-fb:96 nack\r\n"), "{offer}");
+            assert!(!offer.contains("rtx/90000"), "{offer}");
+            assert!(
+                !offer.contains("VP9/90000") && !offer.contains("H264/90000"),
+                "{offer}"
+            );
+            a.close();
         })
         .await;
     }
