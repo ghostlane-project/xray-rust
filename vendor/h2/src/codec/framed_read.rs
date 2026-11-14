@@ -8,22 +8,73 @@ use crate::hpack;
 
 use futures_core::Stream;
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use std::io;
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::AsyncRead;
-use tokio_util::codec::FramedRead as InnerFramedRead;
-use tokio_util::codec::{LengthDelimitedCodec, LengthDelimitedCodecError};
+use tokio::io::{AsyncRead, ReadBuf};
+use tokio_util::io::poll_read_buf;
 
 // 16 MB "sane default" taken from golang http2
 const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: usize = 16 << 20;
 
+/// xray-rust: bytes of a frame's header that carry its payload length.
+const LENGTH_FIELD_LEN: usize = 3;
+
+/// xray-rust: the first allocation for a frame, its header included:
+/// `HEADER_LEN + DEFAULT_MAX_FRAME_SIZE` = 9 + 16,384 = 16,393 B. A frame no
+/// larger than the protocol's default maximum is read into one allocation of
+/// exactly its size. A larger one starts here and doubles each time it is
+/// full of bytes that have arrived, ending at exactly its size: while it is
+/// read it holds at most max(16,393 B, 2 × the bytes arrived), and never more
+/// than `HEADER_LEN + max_frame_size`.
+const FRAME_FIRST_ALLOCATION: usize = frame::HEADER_LEN + DEFAULT_MAX_FRAME_SIZE as usize;
+
+/// xray-rust: reads each frame into an allocation of its own size, its
+/// header first. Upstream read through tokio-util's `FramedRead` and
+/// `LengthDelimitedCodec`: one buffer that grew to the largest frame read and
+/// was never shrunk, and whose frames, split off it, each kept a share of a
+/// larger allocation alive. Here a frame's bytes are exactly its bytes, and
+/// between frames the reader holds no heap.
+///
+/// The cost is reads: the reader never reads past the frame it is reading
+/// (at most the 9-byte header, then at most the rest of the frame), so a
+/// frame with a payload takes at least two reads of `inner`, where upstream's
+/// one read into its buffer's spare room could take the end of one frame and
+/// the start of the next. Over TLS (XHTTP, and gRPC over TLS or REALITY)
+/// those reads are copies out of rustls's decrypted record; rustls reads the
+/// socket itself, so the recv(2) calls are the same as upstream's. Over
+/// cleartext HTTP/2 (gRPC with `security: none`) each read is a recv(2):
+/// about two a 16 KiB DATA frame where upstream made about one, and two a
+/// frame where one 8 KiB read used to take a run of small frames. A small
+/// inline read-ahead would help only the small frames: a bulk frame would
+/// still need its second read, since `AsyncRead` cannot read into the frame
+/// and a read-ahead at once. Ghostlane's lines do not use cleartext HTTP/2,
+/// so that cost is taken for the bound.
 #[derive(Debug)]
 pub struct FramedRead<T> {
-    inner: InnerFramedRead<T, LengthDelimitedCodec>,
+    inner: T,
+
+    /// Largest payload accepted (SETTINGS_MAX_FRAME_SIZE).
+    max_frame_size: usize,
+
+    /// The header of the frame being read.
+    head: [u8; frame::HEADER_LEN],
+
+    /// Bytes of `head` read so far.
+    head_len: usize,
+
+    /// The frame being read, header included, once its header is in: sized
+    /// from the length the header gives and handed to the decoder whole.
+    frame: Vec<u8>,
+
+    /// The size, header included, of the frame in `frame`.
+    frame_len: usize,
+
+    /// A read failed: the next poll ends the stream, as tokio-util's did.
+    errored: bool,
 
     decoder: FrameDecoder,
 }
@@ -59,23 +110,32 @@ enum Continuable {
 }
 
 impl<T> FramedRead<T> {
-    pub fn new(inner: InnerFramedRead<T, LengthDelimitedCodec>) -> FramedRead<T> {
-        let decoder = FrameDecoder::new(inner.decoder().max_frame_length());
-        FramedRead { inner, decoder }
+    pub fn new(inner: T) -> FramedRead<T> {
+        let max_frame_size = DEFAULT_MAX_FRAME_SIZE as usize;
+        FramedRead {
+            inner,
+            max_frame_size,
+            head: [0; frame::HEADER_LEN],
+            head_len: 0,
+            frame: Vec::new(),
+            frame_len: 0,
+            errored: false,
+            decoder: FrameDecoder::new(max_frame_size),
+        }
     }
 
     pub fn get_ref(&self) -> &T {
-        self.inner.get_ref()
+        &self.inner
     }
 
     pub fn get_mut(&mut self) -> &mut T {
-        self.inner.get_mut()
+        &mut self.inner
     }
 
     /// Returns the current max frame size setting
     #[inline]
     pub fn max_frame_size(&self) -> usize {
-        self.inner.decoder().max_frame_length()
+        self.max_frame_size
     }
 
     /// Updates the max frame size setting.
@@ -84,7 +144,7 @@ impl<T> FramedRead<T> {
     #[inline]
     pub fn set_max_frame_size(&mut self, val: usize) {
         assert!(DEFAULT_MAX_FRAME_SIZE as usize <= val && val <= MAX_MAX_FRAME_SIZE as usize);
-        self.inner.decoder_mut().set_max_frame_length(val);
+        self.max_frame_size = val;
         // Update max CONTINUATION frames too, since its based on this
         self.decoder.set_max_frame_size(val);
     }
@@ -101,6 +161,69 @@ impl<T> FramedRead<T> {
     pub fn set_header_table_size(&mut self, val: usize) {
         self.decoder.set_header_table_size(val);
     }
+}
+
+impl<T: AsyncRead + Unpin> FramedRead<T> {
+    /// xray-rust: reads one whole frame, header included; `None` at EOF
+    /// between frames.
+    fn poll_frame(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<BytesMut>, Error>> {
+        while self.head_len < frame::HEADER_LEN {
+            let mut buf = ReadBuf::new(&mut self.head[self.head_len..]);
+            ready!(Pin::new(&mut self.inner).poll_read(cx, &mut buf))?;
+            let read = buf.filled().len();
+            if read == 0 {
+                if self.head_len == 0 {
+                    return Poll::Ready(Ok(None));
+                }
+                return Poll::Ready(Err(bytes_remaining()));
+            }
+            self.head_len += read;
+            if self.head_len < LENGTH_FIELD_LEN {
+                continue;
+            }
+            // Checked as soon as the length is in, as tokio-util did.
+            let payload_len = usize::from(self.head[0]) << 16
+                | usize::from(self.head[1]) << 8
+                | usize::from(self.head[2]);
+            if payload_len > self.max_frame_size {
+                return Poll::Ready(Err(Error::library_go_away(Reason::FRAME_SIZE_ERROR)));
+            }
+            if self.head_len == frame::HEADER_LEN {
+                self.frame_len = frame::HEADER_LEN + payload_len;
+                self.frame = Vec::with_capacity(self.frame_len.min(FRAME_FIRST_ALLOCATION));
+                self.frame.extend_from_slice(&self.head);
+            }
+        }
+
+        while self.frame.len() < self.frame_len {
+            let left = self.frame_len - self.frame.len();
+            if self.frame.len() == self.frame.capacity() {
+                // Doubles, and ends at exactly the frame's size.
+                let more = self.frame.capacity().min(left);
+                self.frame.reserve_exact(more);
+            }
+            let read = ready!(poll_read_buf(
+                Pin::new(&mut self.inner),
+                cx,
+                &mut (&mut self.frame).limit(left),
+            ))?;
+            if read == 0 {
+                return Poll::Ready(Err(bytes_remaining()));
+            }
+        }
+
+        self.head_len = 0;
+        self.frame_len = 0;
+        let frame = std::mem::take(&mut self.frame);
+        // A `Vec` whose length is its capacity becomes `Bytes` and then
+        // `BytesMut` without a copy or another allocation.
+        Poll::Ready(Ok(Some(BytesMut::from(Bytes::from(frame)))))
+    }
+}
+
+/// The error tokio-util's reader gave for EOF inside a frame.
+fn bytes_remaining() -> Error {
+    io::Error::new(io::ErrorKind::Other, "bytes remaining on stream").into()
 }
 
 fn calc_max_continuation_frames(header_max: usize, frame_max: usize) -> usize {
@@ -419,12 +542,19 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let span = tracing::trace_span!("FramedRead::poll_next");
         let _e = span.enter();
+        if self.errored {
+            self.errored = false;
+            return Poll::Ready(None);
+        }
         loop {
             tracing::trace!("poll");
-            let bytes = match ready!(Pin::new(&mut self.inner).poll_next(cx)) {
-                Some(Ok(bytes)) => bytes,
-                Some(Err(e)) => return Poll::Ready(Some(Err(map_err(e)))),
-                None => return Poll::Ready(None),
+            let bytes = match ready!(self.poll_frame(cx)) {
+                Ok(Some(bytes)) => bytes,
+                Err(e) => {
+                    self.errored = true;
+                    return Poll::Ready(Some(Err(e)));
+                }
+                Ok(None) => return Poll::Ready(None),
             };
 
             tracing::trace!(read.bytes = bytes.len());
@@ -434,17 +564,6 @@ where
             }
         }
     }
-}
-
-fn map_err(err: io::Error) -> Error {
-    if let io::ErrorKind::InvalidData = err.kind() {
-        if let Some(custom) = err.get_ref() {
-            if custom.is::<LengthDelimitedCodecError>() {
-                return Error::library_go_away(Reason::FRAME_SIZE_ERROR);
-            }
-        }
-    }
-    err.into()
 }
 
 // ===== impl Continuable =====
@@ -487,6 +606,455 @@ impl<T> From<Continuable> for Frame<T> {
             Continuable::PushPromise(mut push) => {
                 push.set_end_headers();
                 push.into()
+            }
+        }
+    }
+}
+
+/// xray-rust: frames as the reader hands them on, however the bytes arrive.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::codec::Codec;
+    use crate::proto::Initiator;
+
+    use bytes::Bytes;
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+    use std::task::{Wake, Waker};
+    use tokio::io::{AsyncWrite, ReadBuf};
+
+    /// What the peer's side of the connection does at each read.
+    #[derive(Debug)]
+    enum Step {
+        Bytes(Vec<u8>),
+        Pending,
+        Eof,
+        Error(io::ErrorKind),
+    }
+
+    /// A connection that plays `steps`; once they are over, it is at EOF.
+    #[derive(Debug)]
+    struct Script(VecDeque<Step>);
+
+    impl AsyncRead for Script {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            match self.0.pop_front() {
+                None | Some(Step::Eof) => Poll::Ready(Ok(())),
+                Some(Step::Pending) => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+                Some(Step::Error(kind)) => Poll::Ready(Err(kind.into())),
+                Some(Step::Bytes(mut bytes)) => {
+                    let n = bytes.len().min(buf.remaining());
+                    buf.put_slice(&bytes[..n]);
+                    if n < bytes.len() {
+                        bytes.drain(..n);
+                        self.0.push_front(Step::Bytes(bytes));
+                    }
+                    Poll::Ready(Ok(()))
+                }
+            }
+        }
+    }
+
+    impl AsyncWrite for Script {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct NoWake;
+
+    impl Wake for NoWake {
+        fn wake(self: Arc<Self>) {}
+    }
+
+    fn codec_for(steps: Vec<Step>) -> Codec<Script, Bytes> {
+        Codec::new(Script(steps.into()))
+    }
+
+    /// Polls until the codec is ready: a `Pending` step wakes at once.
+    fn next(codec: &mut Codec<Script, Bytes>) -> Option<Result<Frame, Error>> {
+        let waker = Waker::from(Arc::new(NoWake));
+        let mut cx = Context::from_waker(&waker);
+        for _ in 0..1_000_000 {
+            if let Poll::Ready(item) = Pin::new(&mut *codec).poll_next(&mut cx) {
+                return item;
+            }
+        }
+        panic!("the codec never became ready");
+    }
+
+    fn raw_frame(kind: u8, flags: u8, stream: u32, payload: &[u8]) -> Vec<u8> {
+        let len = payload.len() as u32;
+        let mut frame = vec![(len >> 16) as u8, (len >> 8) as u8, len as u8, kind, flags];
+        frame.extend_from_slice(&stream.to_be_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    fn data(stream: u32, payload: &[u8]) -> Vec<u8> {
+        raw_frame(0x0, 0, stream, payload)
+    }
+
+    fn ping(payload: [u8; 8]) -> Vec<u8> {
+        raw_frame(0x6, 0, 0, &payload)
+    }
+
+    fn data_payload(item: Option<Result<Frame, Error>>) -> Bytes {
+        match item {
+            Some(Ok(Frame::Data(data))) => data.into_payload(),
+            other => panic!("expected a DATA frame, got {:?}", other),
+        }
+    }
+
+    fn pattern(len: usize, seed: u8) -> Vec<u8> {
+        (0..len).map(|i| (i as u8).wrapping_mul(31) ^ seed).collect()
+    }
+
+    /// Two DATA frames that arrive in one read: each frame's payload is an
+    /// allocation of its own from the moment it is decoded, not a share of a
+    /// read buffer that the next frame's bytes keep alive while the payload
+    /// waits in a stream's queue.
+    #[test]
+    fn a_data_frame_owns_its_bytes() {
+        let first = pattern(8 * 1024, 1);
+        let second = pattern(8 * 1024, 2);
+        let mut wire = data(1, &first);
+        wire.extend(data(1, &second));
+        let mut codec = codec_for(vec![Step::Bytes(wire)]);
+
+        let first_payload = data_payload(next(&mut codec));
+        assert_eq!(first_payload, first);
+        assert!(
+            first_payload.is_unique(),
+            "the first frame's payload shares its allocation with the read buffer"
+        );
+        let second_payload = data_payload(next(&mut codec));
+        assert_eq!(second_payload, second);
+        assert!(
+            second_payload.is_unique(),
+            "the second frame's payload shares its allocation with the read buffer"
+        );
+    }
+
+    /// The same frames, cut at every size and with the peer pausing between
+    /// pieces, decode to the same frames; a frame larger than the default
+    /// maximum is read whole once the maximum allows it.
+    #[test]
+    fn frames_arrive_whole_however_the_bytes_are_cut() {
+        let small = pattern(1, 3);
+        let empty = Vec::new();
+        let large = pattern(300 * 1024 + 7, 4);
+        let mut wire = ping(*b"xray-h2r");
+        wire.extend(data(1, &small));
+        wire.extend(data(3, &empty));
+        wire.extend(data(1, &large));
+        wire.extend(raw_frame(0x8, 0, 0, &1000_u32.to_be_bytes()));
+
+        for cut in [1, 7, 9, 10, 4096, 16_393, wire.len()] {
+            let mut steps = Vec::new();
+            for piece in wire.chunks(cut) {
+                steps.push(Step::Bytes(piece.to_vec()));
+                steps.push(Step::Pending);
+            }
+            let mut codec = codec_for(steps);
+            codec.set_max_recv_frame_size(1 << 20);
+
+            match next(&mut codec) {
+                Some(Ok(Frame::Ping(ping))) => assert_eq!(ping.payload(), b"xray-h2r"),
+                other => panic!("cut {}: expected PING, got {:?}", cut, other),
+            }
+            assert_eq!(data_payload(next(&mut codec)), small, "cut {}", cut);
+            assert_eq!(data_payload(next(&mut codec)), empty, "cut {}", cut);
+            assert_eq!(data_payload(next(&mut codec)), large, "cut {}", cut);
+            match next(&mut codec) {
+                Some(Ok(Frame::WindowUpdate(update))) => {
+                    assert_eq!(update.size_increment(), 1000)
+                }
+                other => panic!("cut {}: expected WINDOW_UPDATE, got {:?}", cut, other),
+            }
+            assert!(next(&mut codec).is_none(), "cut {}: EOF ends the stream", cut);
+        }
+    }
+
+    /// A frame larger than SETTINGS_MAX_FRAME_SIZE is a connection error of
+    /// type FRAME_SIZE_ERROR, read from its header alone; then the stream ends.
+    #[test]
+    fn a_frame_above_the_maximum_is_a_frame_size_error() {
+        let oversize = data(1, &vec![0; DEFAULT_MAX_FRAME_SIZE as usize + 1]);
+        let header = oversize[..frame::HEADER_LEN].to_vec();
+        let mut codec = codec_for(vec![Step::Bytes(header), Step::Pending]);
+        match next(&mut codec) {
+            Some(Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, Initiator::Library))) => {}
+            other => panic!("expected FRAME_SIZE_ERROR, got {:?}", other),
+        }
+        assert!(next(&mut codec).is_none(), "the stream ends after the error");
+
+        // The largest frame the maximum allows is read.
+        let largest = pattern(DEFAULT_MAX_FRAME_SIZE as usize, 5);
+        let mut codec = codec_for(vec![Step::Bytes(data(1, &largest))]);
+        assert_eq!(data_payload(next(&mut codec)), largest);
+    }
+
+    /// EOF between frames ends the stream; EOF inside a frame's header or
+    /// payload is the error tokio-util's reader gave, and then the stream ends.
+    #[test]
+    fn eof_inside_a_frame_is_an_error() {
+        let whole = data(1, &pattern(100, 6));
+        let mut codec = codec_for(vec![Step::Bytes(whole.clone()), Step::Eof]);
+        assert_eq!(data_payload(next(&mut codec)).len(), 100);
+        assert!(next(&mut codec).is_none(), "EOF between frames");
+
+        for cut in [1, frame::HEADER_LEN - 1, frame::HEADER_LEN, whole.len() - 1] {
+            let mut codec = codec_for(vec![Step::Bytes(whole[..cut].to_vec()), Step::Eof]);
+            match next(&mut codec) {
+                Some(Err(Error::Io(io::ErrorKind::Other, Some(message)))) => {
+                    assert_eq!(message, "bytes remaining on stream", "cut {}", cut)
+                }
+                other => panic!("cut {}: expected an I/O error, got {:?}", cut, other),
+            }
+            assert!(next(&mut codec).is_none(), "cut {}: the stream ends", cut);
+        }
+    }
+
+    /// A padded DATA frame, then a header block split between a HEADERS
+    /// frame and a CONTINUATION, cut at every byte and fed a byte at a time:
+    /// the padding is stripped and the block decoded as when the frames
+    /// arrive in one read.
+    #[test]
+    fn padded_data_and_continued_headers_arrive_whole_cut_at_every_byte() {
+        let body = pattern(40, 9);
+        let mut padded = vec![7_u8];
+        padded.extend_from_slice(&body);
+        padded.extend_from_slice(&[0; 7]);
+        // PADDED.
+        let mut wire = raw_frame(0x0, 0x8, 1, &padded);
+        // `:status: 200` (static index 8), then `content-length: 0` as a
+        // literal with incremental indexing (static name 28); the block is
+        // split inside its second field.
+        let block = [0x88_u8, 0x5c, 0x01, b'0'];
+        // HEADERS with END_STREAM and without END_HEADERS, then CONTINUATION
+        // with END_HEADERS.
+        wire.extend(raw_frame(0x1, 0x1, 3, &block[..2]));
+        wire.extend(raw_frame(0x9, 0x4, 3, &block[2..]));
+
+        let mut cases: Vec<Vec<Step>> = (1..wire.len())
+            .map(|at| {
+                vec![
+                    Step::Bytes(wire[..at].to_vec()),
+                    Step::Pending,
+                    Step::Bytes(wire[at..].to_vec()),
+                ]
+            })
+            .collect();
+        cases.push(in_pieces(&wire, 1));
+        for (case, steps) in cases.into_iter().enumerate() {
+            let mut codec = codec_for(steps);
+            assert_eq!(data_payload(next(&mut codec)), body, "case {}", case);
+            match next(&mut codec) {
+                Some(Ok(Frame::Headers(headers))) => {
+                    assert_eq!(u32::from(headers.stream_id()), 3, "case {}", case);
+                    assert!(headers.is_end_stream(), "case {}", case);
+                    let (pseudo, fields) = headers.into_parts();
+                    assert_eq!(pseudo.status, Some(http::StatusCode::OK), "case {}", case);
+                    assert_eq!(fields["content-length"], "0", "case {}", case);
+                }
+                other => panic!("case {}: expected HEADERS, got {:?}", case, other),
+            }
+            assert!(next(&mut codec).is_none(), "case {}: EOF ends the stream", case);
+        }
+    }
+
+    /// The largest frame the protocol allows, 16,777,215 B of payload with
+    /// SETTINGS_MAX_FRAME_SIZE at its maximum, is read whole into an
+    /// allocation that ends at exactly its size and never holds more than
+    /// max(16,393 B, twice what has arrived).
+    #[test]
+    fn the_largest_frame_the_protocol_allows_is_read_whole() {
+        let payload = pattern(MAX_MAX_FRAME_SIZE as usize, 10);
+        let frame_len = frame::HEADER_LEN + payload.len();
+        let steps = in_pieces(&data(1, &payload), 1 << 20);
+        let mut reader = FramedRead::new(Script(steps.into()));
+        reader.set_max_frame_size(MAX_MAX_FRAME_SIZE as usize);
+        let mut largest = 0;
+        let delivered = loop {
+            match poll_once(&mut reader) {
+                Poll::Pending => {
+                    let (len, capacity) = (reader.frame.len(), reader.frame.capacity());
+                    assert!(capacity <= frame_len, "capacity {} past the frame", capacity);
+                    assert!(
+                        capacity <= FRAME_FIRST_ALLOCATION.max(2 * len),
+                        "capacity {} for {} B arrived",
+                        capacity,
+                        len
+                    );
+                    largest = largest.max(capacity);
+                }
+                Poll::Ready(Some(Ok(Frame::Data(data)))) => break data.into_payload(),
+                Poll::Ready(other) => panic!("expected DATA, got {:?}", other.map(|_| ())),
+            }
+        };
+        assert_eq!(largest, frame_len, "ends at exactly the frame's size");
+        assert_eq!(delivered.len(), payload.len());
+        assert!(delivered == payload[..], "the payload arrived changed");
+        assert_eq!(reader.frame.capacity(), 0, "nothing kept after it");
+    }
+
+    /// A read error between frames or inside a frame's header or payload is
+    /// that error, and then the stream ends.
+    #[test]
+    fn a_read_error_inside_a_frame_is_that_error() {
+        let whole = data(1, &pattern(100, 11));
+        for cut in [0, 1, frame::HEADER_LEN - 1, frame::HEADER_LEN, whole.len() - 1] {
+            let mut steps = vec![];
+            if cut > 0 {
+                steps.push(Step::Bytes(whole[..cut].to_vec()));
+                steps.push(Step::Pending);
+            }
+            steps.push(Step::Error(io::ErrorKind::ConnectionReset));
+            steps.push(Step::Bytes(whole.clone()));
+            let mut codec = codec_for(steps);
+            match next(&mut codec) {
+                Some(Err(Error::Io(io::ErrorKind::ConnectionReset, None))) => {}
+                other => panic!("cut {}: expected the read error, got {:?}", cut, other),
+            }
+            assert!(next(&mut codec).is_none(), "cut {}: the stream ends", cut);
+        }
+    }
+
+    /// SETTINGS_MAX_FRAME_SIZE changed between two frames applies from the
+    /// next frame: a frame above the old maximum is read once the maximum is
+    /// raised, and is a FRAME_SIZE_ERROR once it is lowered again.
+    #[test]
+    fn a_max_frame_size_change_applies_from_the_next_frame() {
+        let at_default = pattern(DEFAULT_MAX_FRAME_SIZE as usize, 12);
+        let above = pattern(DEFAULT_MAX_FRAME_SIZE as usize + 1000, 13);
+        let mut wire = data(1, &at_default);
+        wire.extend(data(1, &above));
+        wire.extend(data(1, &above));
+        let mut codec = codec_for(in_pieces(&wire, 4096));
+
+        assert_eq!(data_payload(next(&mut codec)), at_default);
+        codec.set_max_recv_frame_size(1 << 20);
+        assert_eq!(data_payload(next(&mut codec)), above);
+        codec.set_max_recv_frame_size(DEFAULT_MAX_FRAME_SIZE as usize);
+        match next(&mut codec) {
+            Some(Err(Error::GoAway(_, Reason::FRAME_SIZE_ERROR, Initiator::Library))) => {}
+            other => panic!("expected FRAME_SIZE_ERROR, got {:?}", other),
+        }
+        assert!(next(&mut codec).is_none(), "the stream ends after the error");
+    }
+
+    fn poll_once(reader: &mut FramedRead<Script>) -> Poll<Option<Result<Frame, Error>>> {
+        let waker = Waker::from(Arc::new(NoWake));
+        let mut cx = Context::from_waker(&waker);
+        Pin::new(reader).poll_next(&mut cx)
+    }
+
+    /// Steps that deliver `wire` `piece` bytes at a time, pausing after each.
+    fn in_pieces(wire: &[u8], piece: usize) -> Vec<Step> {
+        let mut steps = Vec::new();
+        for bytes in wire.chunks(piece) {
+            steps.push(Step::Bytes(bytes.to_vec()));
+            steps.push(Step::Pending);
+        }
+        steps
+    }
+
+    /// Once a frame is handed on, nothing of it stays with the reader, the
+    /// largest frame the connection allows included.
+    #[test]
+    fn between_frames_the_reader_holds_no_heap() {
+        let large = pattern(1 << 20, 7);
+        let mut wire = data(1, &large);
+        wire.extend(ping(*b"between!"));
+        let mut reader = FramedRead::new(Script(vec![Step::Bytes(wire)].into()));
+        reader.set_max_frame_size(1 << 20);
+        assert_eq!(reader.frame.capacity(), 0, "a new reader");
+
+        match poll_once(&mut reader) {
+            Poll::Ready(Some(Ok(Frame::Data(data)))) => assert_eq!(data.payload(), &large[..]),
+            other => panic!("expected the 1 MiB DATA frame, got {:?}", other),
+        }
+        assert_eq!(reader.frame.capacity(), 0, "after a 1 MiB frame");
+        match poll_once(&mut reader) {
+            Poll::Ready(Some(Ok(Frame::Ping(_)))) => {}
+            other => panic!("expected PING, got {:?}", other),
+        }
+        assert_eq!(reader.frame.capacity(), 0, "after a PING");
+    }
+
+    /// A frame up to the default maximum is read into one allocation of
+    /// exactly its size; a larger one doubles from there to exactly its size,
+    /// never holding more than max(16,393 B, twice what has arrived).
+    #[test]
+    fn a_frame_is_read_into_an_allocation_of_its_size() {
+        for (payload_len, piece) in [(8 * 1024, 1000), (16 * 1024, 4096), (1 << 20, 4096)] {
+            let payload = pattern(payload_len, 8);
+            let frame_len = frame::HEADER_LEN + payload_len;
+            let steps = in_pieces(&data(1, &payload), piece);
+            let mut reader = FramedRead::new(Script(steps.into()));
+            reader.set_max_frame_size(1 << 20);
+            let mut allocations = vec![];
+            let delivered = loop {
+                match poll_once(&mut reader) {
+                    Poll::Pending => {
+                        let (len, capacity) = (reader.frame.len(), reader.frame.capacity());
+                        if allocations.last() != Some(&capacity) && capacity > 0 {
+                            allocations.push(capacity);
+                        }
+                        assert!(
+                            capacity <= frame_len,
+                            "{}: capacity {} past the frame",
+                            payload_len,
+                            capacity
+                        );
+                        assert!(
+                            capacity <= FRAME_FIRST_ALLOCATION.max(2 * len),
+                            "{}: capacity {} for {} B arrived",
+                            payload_len,
+                            capacity,
+                            len
+                        );
+                    }
+                    Poll::Ready(Some(Ok(Frame::Data(data)))) => break data.into_payload(),
+                    Poll::Ready(other) => panic!("expected DATA, got {:?}", other),
+                }
+            };
+            assert_eq!(delivered, payload);
+            assert_eq!(
+                allocations.last(),
+                Some(&frame_len),
+                "{}: ends at exactly the frame's size",
+                payload_len
+            );
+            if frame_len <= FRAME_FIRST_ALLOCATION {
+                assert_eq!(allocations, [frame_len], "{}: one allocation", payload_len);
+            } else {
+                assert_eq!(
+                    allocations[0], FRAME_FIRST_ALLOCATION,
+                    "{}: the first allocation",
+                    payload_len
+                );
             }
         }
     }

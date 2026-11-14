@@ -1,0 +1,714 @@
+//! Heap that HTTP/2 frame reading keeps.
+//!
+//! A counting global allocator (live bytes, a resettable peak, and the number
+//! of allocation calls) measures this test binary. dhat-rs has no peak reset,
+//! and only one global allocator may exist per test binary, so this file is a
+//! binary of its own and every test takes [`MEASURING`] before it builds its
+//! runtime: the counters are process-wide, and libtest runs the tests on
+//! threads of their own. The clients run on the test's current-thread
+//! runtime; the HTTP/2 servers run on a thread of their own whose heap is not
+//! counted (on a phone the server is elsewhere, and the pipe between them
+//! stands for kernel socket buffers), so what is measured is the client's.
+//!
+//! - An idle HTTP/2 connection keeps no read buffer once a download is over:
+//!   h2 used to keep a buffer as large as the largest frame it had read.
+//! - A burst of 32 packet-up downloads whose readers lag keeps every frame
+//!   waiting for its reader in an allocation of its own size, not a share
+//!   of a larger read buffer, and peaks under a ceiling set from that.
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+use std::future::Future;
+use std::io;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicIsize, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::task::{Context, Poll};
+use std::time::Duration;
+
+use bytes::Bytes;
+use h2::{server, RecvStream};
+use http::{Method, Request, Response, StatusCode, Version};
+use rand::rngs::mock::StepRng;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf};
+use tokio::time::timeout;
+
+use xray_transport::stream::xhttp_composer_test_only::{
+    XhttpConfig, XhttpConfigInput, XhttpEndpoint, XhttpModeSelection, XhttpRange, XhttpScheme,
+};
+use xray_transport::stream::xhttp_h2_test_only::{connect_h2_with_window, H2ReceiveWindow};
+use xray_transport::stream::xhttp_transport_test_only::{
+    XhttpDial, XhttpHttpVersion, XhttpTransport, XhttpXmuxPolicy,
+};
+use xray_transport::stream::HeaderMap;
+use xray_transport::{BoxedTransportStream, TransportStream};
+
+/// Counts live heap bytes, their peak, allocation calls, and live bytes by
+/// size class, on every thread but the servers'.
+struct CountingAllocator;
+
+static LIVE_BYTES: AtomicIsize = AtomicIsize::new(0);
+static PEAK_BYTES: AtomicIsize = AtomicIsize::new(0);
+static ALLOCATION_CALLS: AtomicU64 = AtomicU64::new(0);
+/// Size classes: class `c` holds blocks of `2^(c-1) < size <= 2^c` bytes.
+const SIZE_CLASSES: usize = 48;
+static LIVE_BY_CLASS: [AtomicIsize; SIZE_CLASSES] = [const { AtomicIsize::new(0) }; SIZE_CLASSES];
+/// Two allocation sizes watched exactly (0: none), and the live bytes in
+/// allocations of each.
+static WATCHED_SIZES: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
+static LIVE_WATCHED: [AtomicIsize; 2] = [const { AtomicIsize::new(0) }; 2];
+
+thread_local! {
+    /// Set on the servers' thread: its heap is not the client's. Memory that
+    /// thread frees for the client (the pipes, at the end) is not subtracted,
+    /// which moves later baselines only.
+    static UNCOUNTED: Cell<bool> = const { Cell::new(false) };
+}
+
+fn counted() -> bool {
+    !UNCOUNTED.try_with(Cell::get).unwrap_or(false)
+}
+
+fn size_class(size: usize) -> usize {
+    ((usize::BITS - size.saturating_sub(1).leading_zeros()) as usize).min(SIZE_CLASSES - 1)
+}
+
+fn add_live(size: usize, sign: isize) {
+    let delta = size as isize * sign;
+    LIVE_BY_CLASS[size_class(size)].fetch_add(delta, Ordering::Relaxed);
+    for (watched, live) in WATCHED_SIZES.iter().zip(&LIVE_WATCHED) {
+        if size == watched.load(Ordering::Relaxed) {
+            live.fetch_add(delta, Ordering::Relaxed);
+        }
+    }
+    let live = LIVE_BYTES.fetch_add(delta, Ordering::Relaxed) + delta;
+    if delta > 0 {
+        PEAK_BYTES.fetch_max(live, Ordering::Relaxed);
+    }
+}
+
+// SAFETY: every method forwards to `System` unchanged and only counts.
+unsafe impl GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc(layout) };
+        if !ptr.is_null() && counted() {
+            ALLOCATION_CALLS.fetch_add(1, Ordering::Relaxed);
+            add_live(layout.size(), 1);
+        }
+        ptr
+    }
+
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let ptr = unsafe { System.alloc_zeroed(layout) };
+        if !ptr.is_null() && counted() {
+            ALLOCATION_CALLS.fetch_add(1, Ordering::Relaxed);
+            add_live(layout.size(), 1);
+        }
+        ptr
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        unsafe { System.dealloc(ptr, layout) };
+        if counted() {
+            add_live(layout.size(), -1);
+        }
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        let moved = unsafe { System.realloc(ptr, layout, new_size) };
+        if !moved.is_null() && counted() {
+            ALLOCATION_CALLS.fetch_add(1, Ordering::Relaxed);
+            add_live(layout.size(), -1);
+            add_live(new_size, 1);
+        }
+        moved
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: CountingAllocator = CountingAllocator;
+
+/// One measurement at a time: the counters are process-wide.
+static MEASURING: Mutex<()> = Mutex::new(());
+
+/// Runs one measurement as `#[tokio::test]` would, on a current-thread
+/// runtime, but takes [`MEASURING`] before that runtime is built, and starts
+/// the servers' runtime first: a runtime built on another test's thread
+/// while a measurement runs would be counted in it.
+fn measured(test: impl Future<Output = ()>) {
+    let _measuring = MEASURING.lock().unwrap_or_else(PoisonError::into_inner);
+    server_runtime();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(test);
+}
+
+fn live_bytes() -> isize {
+    LIVE_BYTES.load(Ordering::SeqCst)
+}
+
+/// Watches allocations of exactly these sizes from now on (0: none).
+fn watch_sizes(sizes: [usize; 2]) {
+    for (watched, (live, size)) in WATCHED_SIZES.iter().zip(LIVE_WATCHED.iter().zip(sizes)) {
+        live.store(0, Ordering::SeqCst);
+        watched.store(size, Ordering::SeqCst);
+    }
+}
+
+/// Live bytes in allocations of each watched size.
+fn live_watched() -> [isize; 2] {
+    std::array::from_fn(|i| LIVE_WATCHED[i].load(Ordering::SeqCst))
+}
+
+fn reset_peak() {
+    PEAK_BYTES.store(live_bytes(), Ordering::SeqCst);
+}
+
+fn peak_bytes() -> isize {
+    PEAK_BYTES.load(Ordering::SeqCst)
+}
+
+fn live_by_class() -> [isize; SIZE_CLASSES] {
+    std::array::from_fn(|class| LIVE_BY_CLASS[class].load(Ordering::SeqCst))
+}
+
+/// The size classes whose live bytes moved by 1 KiB or more, e.g.
+/// `<=16 KiB: +16384`.
+fn class_changes(before: &[isize; SIZE_CLASSES], after: &[isize; SIZE_CLASSES]) -> String {
+    let mut changes = Vec::new();
+    for class in 0..SIZE_CLASSES {
+        let moved = after[class] - before[class];
+        if moved.abs() >= 1024 {
+            let bound = 1_u64 << class;
+            let bound = match bound {
+                b if b >= 1 << 20 => format!("{} MiB", b >> 20),
+                b if b >= 1 << 10 => format!("{} KiB", b >> 10),
+                b => format!("{b} B"),
+            };
+            changes.push(format!("<={bound}: {moved:+}"));
+        }
+    }
+    changes.join(", ")
+}
+
+/// The servers' runtime: one worker thread whose heap is not counted.
+fn server_runtime() -> &'static tokio::runtime::Runtime {
+    static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .on_thread_start(|| UNCOUNTED.with(|uncounted| uncounted.set(true)))
+            .enable_all()
+            .build()
+            .unwrap()
+    })
+}
+
+const DEADLINE: Duration = Duration::from_secs(60);
+
+/// Lets every driver, response task and server task finish what the last
+/// exchange left it.
+async fn settle() {
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+// ===== an idle connection after a download =====
+
+/// The download: 4 MiB, from a zeroed static so the server holds no heap copy.
+const DOWNLOAD_LEN: usize = 4 << 20;
+static DOWNLOAD: [u8; DOWNLOAD_LEN] = [0; DOWNLOAD_LEN];
+/// What the read side of an idle connection may keep once a download is
+/// over: a frame header's worth of state, nothing sized by the frames read.
+const IDLE_READ_LIMIT: isize = 16 * 1024;
+/// The frame sizes a server sends the download in: the largest the XHTTP H2
+/// client allows (its SETTINGS_MAX_FRAME_SIZE, Go's 1 MiB), and Xray's Go
+/// server's own (one DATA frame per 8 KiB `buf.Buffer` it writes).
+const DOWNLOAD_FRAMES: [usize; 2] = [1 << 20, 8 * 1024];
+
+#[test]
+fn an_idle_h2_connection_keeps_no_read_buffer_after_a_4_mib_download() {
+    measured(idle_connection());
+}
+
+async fn idle_connection() {
+    let mut failures = Vec::new();
+    for frame in DOWNLOAD_FRAMES {
+        let (retained, classes) = retained_after_download(frame).await;
+        eprintln!(
+            "idle H2 connection after a {DOWNLOAD_LEN} B download in {frame} B frames: \
+             {retained} B kept (limit {IDLE_READ_LIMIT}); by size class: [{classes}]"
+        );
+        if retained > IDLE_READ_LIMIT {
+            failures.push(format!("{frame} B frames: {retained} B"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "an idle H2 connection keeps more than {IDLE_READ_LIMIT} B after a {DOWNLOAD_LEN} B \
+         download: {failures:?}"
+    );
+}
+
+/// Heap one idle H2 connection keeps after a 4 MiB download, beyond what it
+/// kept after a small one, and the size classes it is in.
+async fn retained_after_download(frame: usize) -> (isize, String) {
+    let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+    let server = server_runtime().spawn(serve_downloads(server_io, frame));
+    let client = connect_h2_with_window(
+        Box::new(client_io),
+        None,
+        H2ReceiveWindow::Fixed(DOWNLOAD_LEN as u32),
+    )
+    .await
+    .unwrap();
+
+    // The small download opens the connection's tables, encoders and slabs:
+    // they belong to the baseline, not to the 4 MiB.
+    download(&client, 16 * 1024).await;
+    settle().await;
+    let baseline = live_bytes();
+    let baseline_classes = live_by_class();
+
+    download(&client, DOWNLOAD_LEN).await;
+    settle().await;
+    let retained = live_bytes() - baseline;
+    let classes = class_changes(&baseline_classes, &live_by_class());
+    drop(client);
+    server.abort();
+    (retained, classes)
+}
+
+async fn download(client: &xray_transport::stream::xhttp_h2_test_only::H2Client, len: usize) {
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri(format!("https://example.com/{len}"))
+        .version(Version::HTTP_2)
+        .body(())
+        .unwrap();
+    let mut body = timeout(DEADLINE, client.send_fixed(request, Bytes::new()))
+        .await
+        .expect("the download did not start")
+        .unwrap();
+    let mut sink = [0_u8; 4096];
+    let mut got = 0;
+    loop {
+        let read = timeout(DEADLINE, body.read(&mut sink))
+            .await
+            .expect("the download stalled")
+            .unwrap();
+        if read == 0 {
+            break;
+        }
+        got += read;
+    }
+    assert_eq!(got, len, "the download ended short");
+}
+
+/// An H2 server answering `GET /<len>` with `len` bytes, `frame` at a time.
+async fn serve_downloads(io: DuplexStream, frame: usize) {
+    let Ok(mut connection) = server::handshake::<_>(io).await else {
+        return;
+    };
+    while let Some(Ok((request, mut respond))) = connection.accept().await {
+        let len: usize = request.uri().path()[1..].parse().unwrap();
+        tokio::spawn(async move {
+            let Ok(mut body) = respond.send_response(ok_response(), false) else {
+                return;
+            };
+            let mut pieces = DOWNLOAD[..len].chunks(frame).peekable();
+            while let Some(piece) = pieces.next() {
+                let last = pieces.peek().is_none();
+                if body.send_data(Bytes::from_static(piece), last).is_err() {
+                    return;
+                }
+            }
+        });
+    }
+}
+
+fn ok_response() -> Response<()> {
+    Response::builder().status(StatusCode::OK).body(()).unwrap()
+}
+
+// ===== a burst of packet-up downloads =====
+
+/// The lab's burst (32 downloads at once over three xmux connections), with
+/// Xray's Go server's 8 KiB DATA frames. No reader runs until every download
+/// has arrived (the clients have read every DATA frame's bytes from their
+/// pipes, and then the heap has settled), as on a phone whose readers lag
+/// the network: the 32 MiB wait in h2's queues (the stream windows, 4 MiB,
+/// and the connection windows, 16 MiB for about 11 flows, let all of it
+/// in), so the peak is what a queued byte costs, and it does not depend on
+/// how the readers are timed.
+/// With every download queued, every frame is checked to be in an
+/// allocation of exactly its own size: the reader's, 8,201 B with its
+/// header, for the frame a response passes straight to its queue, or the
+/// 8,192 B copy the XHTTP body makes of a frame that waits behind another
+/// (`drain_response`). A frame cut from a shared read buffer is neither.
+const BURST: usize = 32;
+const BURST_DOWN_EACH: usize = 1 << 20;
+const GO_SERVER_FRAME: usize = 8 * 1024;
+/// Bytes the server may have in flight on one connection's pipe.
+const BURST_PIPE: usize = 8 << 20;
+/// The DATA frames the burst queues: 32 × 1 MiB / 8 KiB = 4,096.
+const BURST_FRAMES: usize = BURST * BURST_DOWN_EACH / GO_SERVER_FRAME;
+/// A frame read into an allocation of its own size: its 9-byte header and
+/// its payload, 8,201 B.
+const FRAME_ALLOCATION: usize = 9 + GO_SERVER_FRAME;
+/// The structural part of the peak, at most: every queued frame in an
+/// allocation of its own size, 4,096 × 8,201 = 33,591,296 B.
+const BURST_FRAME_BYTES: isize = (BURST_FRAMES * FRAME_ALLOCATION) as isize;
+/// Everything else the peak may hold, with its margin: the `Bytes` handle
+/// each queued frame is held by, the bytes share that splits a frame's
+/// header off, 33 flows and three connections (about 50 to 80 KB measured
+/// for the warm-up flow and its connection). Measured on the build box:
+/// 0.70 to 0.74 MB; 2 MiB is 2.8 times the larger. A reader whose frames share
+/// larger buffers fails the exact check on the frames' allocations, not
+/// this one.
+const BURST_OTHER_LIMIT: isize = 2 << 20;
+/// The ceiling on the burst's peak.
+const BURST_PEAK_LIMIT: isize = BURST_FRAME_BYTES + BURST_OTHER_LIMIT;
+
+#[test]
+fn a_burst_of_32_queued_downloads_keeps_each_frame_in_its_own_allocation() {
+    measured(download_burst());
+}
+
+async fn download_burst() {
+    let server = Arc::new(Server::new(BURST_DOWN_EACH, GO_SERVER_FRAME));
+    let dial = server_dial(Arc::clone(&server), BURST_PIPE, None);
+    let transport = app_shaped_transport(None);
+
+    // The peak counts from before the first connection: what the warm-up
+    // left behind (h2's tables, a queue's slots, a read buffer) is heap the
+    // burst runs on top of, kept or not.
+    let baseline = live_bytes();
+    let warm = open_flow(&transport, &dial, BURST_DOWN_EACH).await;
+    settle().await;
+    let idle = live_bytes() - baseline;
+    reset_peak();
+    watch_sizes([FRAME_ALLOCATION, GO_SERVER_FRAME]);
+
+    let read_before = client_read();
+    let mut flows = Vec::with_capacity(BURST);
+    for _ in 0..BURST {
+        flows.push(open_unread_flow(&transport, &dial).await);
+    }
+    // Arrival is told by the pipes, not by the code under test: once the
+    // clients have read every DATA frame's bytes, at most the last frame's
+    // tail (the pipes also carry the responses' HEADERS and the new
+    // connections' SETTINGS) is still on its way when the heap settles.
+    wait_for_client_read(read_before + BURST_FRAME_BYTES as usize).await;
+    let queued = settled_heap().await - baseline;
+    let read = client_read() - read_before;
+    let [in_read_allocations, in_copies] = live_watched();
+    for flow in &mut flows {
+        read_download(flow, BURST_DOWN_EACH).await;
+    }
+    let peak = peak_bytes() - baseline;
+    watch_sizes([0, 0]);
+    let frames_in_own_allocations =
+        in_read_allocations / FRAME_ALLOCATION as isize + in_copies / GO_SERVER_FRAME as isize;
+    eprintln!(
+        "burst of {BURST} packet-up downloads of {BURST_DOWN_EACH} B in {GO_SERVER_FRAME} B \
+         frames, read once all had arrived ({read} B read from the pipes): peak heap {peak} B \
+         above the heap before the first connection ({queued} B with every download queued: \
+         {in_read_allocations} B in allocations of {FRAME_ALLOCATION} B and {in_copies} B in \
+         allocations of {GO_SERVER_FRAME} B, {frames_in_own_allocations} of the {BURST_FRAMES} \
+         frames; {idle} B kept by the idle warm-up flow), limit {BURST_PEAK_LIMIT} ({BURST_FRAME_BYTES} B of \
+         frames and {BURST_OTHER_LIMIT} B else)"
+    );
+    drop(flows);
+    drop(warm);
+    assert_eq!(
+        frames_in_own_allocations, BURST_FRAMES as isize,
+        "with every download queued, its {BURST_FRAMES} frames are not each in an allocation \
+         of their own size ({FRAME_ALLOCATION} B as read, {GO_SERVER_FRAME} B as copied)"
+    );
+    assert!(
+        peak <= BURST_PEAK_LIMIT,
+        "the burst peaked at {peak} B; the limit is {BURST_PEAK_LIMIT}"
+    );
+}
+
+/// The VLESS request header [`open_flow`] sends.
+const REQUEST_HEADER_LEN: usize = 64;
+
+/// A packet-up flow that has read its whole download. The VLESS request
+/// header goes up first, as a proxied connection's does.
+async fn open_flow(
+    transport: &XhttpTransport,
+    dial: &XhttpDial,
+    download_len: usize,
+) -> BoxedTransportStream {
+    let mut flow = open_unread_flow(transport, dial).await;
+    read_download(&mut flow, download_len).await;
+    flow
+}
+
+/// A packet-up flow that has sent its request header and read nothing.
+async fn open_unread_flow(transport: &XhttpTransport, dial: &XhttpDial) -> BoxedTransportStream {
+    let mut flow = transport
+        .open_stream_with_dial(Arc::clone(dial))
+        .await
+        .unwrap();
+    flow.write_all(&[0x42; REQUEST_HEADER_LEN]).await.unwrap();
+    flow.flush().await.unwrap();
+    flow
+}
+
+/// Waits until the clients have read `bytes` from their pipes in all.
+async fn wait_for_client_read(bytes: usize) {
+    timeout(DEADLINE, async {
+        while client_read() < bytes {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .expect("the clients did not read every download's bytes");
+}
+
+/// The live heap once it has stopped moving: five 20 ms rounds in a row
+/// within 1 KiB of each other.
+async fn settled_heap() -> isize {
+    timeout(DEADLINE, async {
+        let mut last = live_bytes();
+        let mut still = 0;
+        while still < 5 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let now = live_bytes();
+            still = if (now - last).abs() < 1024 {
+                still + 1
+            } else {
+                0
+            };
+            last = now;
+        }
+        last
+    })
+    .await
+    .expect("the heap never settled")
+}
+
+/// Reads `download_len` bytes of `flow`'s download.
+async fn read_download(flow: &mut BoxedTransportStream, download_len: usize) {
+    let mut sink = vec![0; 32 * 1024];
+    let mut left = download_len;
+    while left > 0 {
+        let read = timeout(DEADLINE, flow.read(&mut sink))
+            .await
+            .expect("the packet-up download stalled")
+            .unwrap();
+        assert!(read > 0, "the packet-up download ended early");
+        left -= read.min(left);
+    }
+}
+
+/// The packet-up server: every GET is a downlink of `download` bytes sent
+/// `frame` at a time and then kept open; every POST is read and answered.
+struct Server {
+    download: usize,
+    frame: usize,
+    posts: AtomicUsize,
+    uploaded: AtomicUsize,
+    downlinks: Mutex<Vec<h2::SendStream<Bytes>>>,
+}
+
+impl Server {
+    fn new(download: usize, frame: usize) -> Self {
+        Self {
+            download,
+            frame,
+            posts: AtomicUsize::new(0),
+            uploaded: AtomicUsize::new(0),
+            downlinks: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+/// Dials an in-process H2 server over a pipe of `pipe` bytes; with
+/// `record`, every byte the client writes is appended to it.
+fn server_dial(server: Arc<Server>, pipe: usize, record: Option<Arc<Mutex<Vec<u8>>>>) -> XhttpDial {
+    windowed_server_dial(server, pipe, None, record)
+}
+
+/// [`server_dial`] with the server's stream and connection windows set to
+/// `windows` (h2's 65,535 B when `None`).
+fn windowed_server_dial(
+    server: Arc<Server>,
+    pipe: usize,
+    windows: Option<u32>,
+    record: Option<Arc<Mutex<Vec<u8>>>>,
+) -> XhttpDial {
+    Arc::new(move || {
+        let server = Arc::clone(&server);
+        let (client, server_io) = tokio::io::duplex(pipe);
+        spawn_server(Arc::clone(&server), server_io, windows);
+        let client: BoxedTransportStream = Box::new(ClientIo {
+            io: client,
+            writes: record.clone(),
+        });
+        Box::pin(async move { Ok(client) })
+    })
+}
+
+/// Serves one connection on the servers' thread, with the server's stream
+/// and connection windows set to `windows` (h2's 65,535 B when `None`).
+fn spawn_server(server: Arc<Server>, io: DuplexStream, windows: Option<u32>) {
+    server_runtime().spawn(async move {
+        let mut builder = server::Builder::new();
+        if let Some(windows) = windows {
+            builder
+                .initial_window_size(windows)
+                .initial_connection_window_size(windows);
+        }
+        let Ok(mut connection) = builder.handshake::<_, Bytes>(io).await else {
+            return;
+        };
+        while let Some(Ok((request, respond))) = connection.accept().await {
+            tokio::spawn(serve(Arc::clone(&server), request, respond));
+        }
+    });
+}
+
+async fn serve(
+    server: Arc<Server>,
+    request: http::Request<RecvStream>,
+    mut respond: server::SendResponse<Bytes>,
+) {
+    if request.method() == Method::GET {
+        let Ok(mut downlink) = respond.send_response(ok_response(), false) else {
+            return;
+        };
+        for piece in DOWNLOAD[..server.download].chunks(server.frame) {
+            if downlink
+                .send_data(Bytes::from_static(piece), false)
+                .is_err()
+            {
+                return;
+            }
+        }
+        server.downlinks.lock().unwrap().push(downlink);
+        return;
+    }
+    let mut body = request.into_body();
+    while let Some(Ok(chunk)) = body.data().await {
+        server.uploaded.fetch_add(chunk.len(), Ordering::AcqRel);
+        let _ = body.flow_control().release_capacity(chunk.len());
+    }
+    let _ = respond.send_response(ok_response(), true);
+    server.posts.fetch_add(1, Ordering::AcqRel);
+}
+
+/// The app's packet-up shape: Xray's defaults (padding 100-1000,
+/// `scMaxBufferedPosts` 30, `scMinPostsIntervalMs` 30, the Chrome
+/// masquerade) at the app's `scMaxEachPostBytes` 200000 and three xmux
+/// connections. `headers` replaces the configured headers, and pins the RNG.
+fn app_shaped_transport(headers: Option<HeaderMap>) -> XhttpTransport {
+    let mut input = XhttpConfigInput {
+        mode: XhttpModeSelection::PacketUp,
+        path: "/api".to_owned(),
+        sc_max_each_post_bytes: XhttpRange::exact(200_000),
+        ..XhttpConfigInput::default()
+    };
+    let pinned = headers.is_some();
+    if let Some(headers) = headers {
+        input.headers = headers;
+    }
+    let config = XhttpConfig::normalize(input).unwrap();
+    transport_for(config, 3, pinned)
+}
+
+fn transport_for(config: XhttpConfig, connections: i32, pinned_rng: bool) -> XhttpTransport {
+    let endpoint = XhttpEndpoint::new(XhttpScheme::Https, "example.com").unwrap();
+    let xmux = XhttpXmuxPolicy {
+        max_concurrency: XhttpRange::exact(0),
+        max_connections: XhttpRange::exact(connections),
+        c_max_reuse_times: XhttpRange::exact(0),
+        h_max_request_times: XhttpRange::exact(0),
+        h_max_reusable_secs: XhttpRange::exact(0),
+        h_keep_alive_period_secs: 0,
+    };
+    let transport = XhttpTransport::new(config, endpoint, XhttpHttpVersion::Http2, xmux).unwrap();
+    if pinned_rng {
+        transport
+            .with_rng(Box::new(StepRng::new(0x0102_0304_0506_0708, 0x1111_1111)))
+            .unwrap()
+    } else {
+        transport
+    }
+}
+
+/// Bytes every client stream has read from its pipe.
+static CLIENT_READ: AtomicUsize = AtomicUsize::new(0);
+
+fn client_read() -> usize {
+    CLIENT_READ.load(Ordering::Acquire)
+}
+
+/// A client stream that counts the bytes read from it in [`CLIENT_READ`]
+/// and, with `writes`, keeps a copy of everything written to it.
+struct ClientIo {
+    io: DuplexStream,
+    writes: Option<Arc<Mutex<Vec<u8>>>>,
+}
+
+impl AsyncRead for ClientIo {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = output.filled().len();
+        let read = Pin::new(&mut self.io).poll_read(cx, output);
+        CLIENT_READ.fetch_add(output.filled().len() - before, Ordering::AcqRel);
+        read
+    }
+}
+
+impl AsyncWrite for ClientIo {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let written = match Pin::new(&mut self.io).poll_write(cx, input) {
+            Poll::Ready(Ok(written)) => written,
+            other => return other,
+        };
+        if let Some(writes) = &self.writes {
+            writes.lock().unwrap().extend_from_slice(&input[..written]);
+        }
+        Poll::Ready(Ok(written))
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+}
+
+impl TransportStream for ClientIo {
+    fn poll_read_direct(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        AsyncRead::poll_read(self, cx, output)
+    }
+
+    fn poll_write_direct(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        input: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        AsyncWrite::poll_write(self, cx, input)
+    }
+}
