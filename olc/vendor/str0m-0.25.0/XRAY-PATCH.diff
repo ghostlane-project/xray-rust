@@ -1,0 +1,281 @@
+--- a/src/change/sdp.rs
++++ b/src/change/sdp.rs
+@@ -1362,8 +1362,10 @@
+             .map(|r| r.ssrc);
+ 
+         // If remote communicated a main a=ssrc, but no RTX, we will not send nacks.
++        // XRAY-PATCH: unless its payloads take NACKs (a=rtcp-fb nack): it then
++        // resends on the main SSRC, as libwebrtc and pion do without RTX.
+         let midrid = MidRid(media.mid(), None);
+-        let suppress_nack = repair_ssrc.is_none();
++        let suppress_nack = repair_ssrc.is_none() && !m.rtp_params().iter().any(|p| p.fb_nack);
+         streams.expect_stream_rx(i.ssrc, repair_ssrc, midrid, suppress_nack);
+     }
+ }
+--- a/src/session.rs
++++ b/src/session.rs
+@@ -1276,7 +1276,9 @@
+ 
+         let protected = srtp_tx.protect_rtp(buf, &header, *seq_no);
+ 
+-        if twcc_enabled {
++        // XRAY-PATCH: a plain resend goes with the TWCC number it had (streams/send.rs,
++        // ResendPlain), so only a packet that took a new one is registered.
++        if twcc_enabled && self.twcc != twcc_seq {
+             let packet_id = if let Some(cluster) = cluster_id {
+                 TwccPacketId::with_cluster(twcc_seq, cluster)
+             } else {
+--- a/src/streams/mod.rs
++++ b/src/streams/mod.rs
+@@ -293,7 +293,9 @@
+         }
+ 
+         // If we don't have an RTX PT configured, we don't want NACK.
+-        let suppress_nack = payload.resend.is_none();
++        // XRAY-PATCH: unless the PT takes NACKs: the sender then resends on the
++        // main SSRC, as libwebrtc and pion do without RTX.
++        let suppress_nack = payload.resend.is_none() && !payload.fb_nack;
+ 
+         // If stream already exists, this might only "fill in" the RTX.
+         self.expect_stream_rx(ssrc_main, rtx, midrid, suppress_nack);
+--- a/src/streams/send.rs
++++ b/src/streams/send.rs
+@@ -577,12 +577,12 @@
+         let remote_acked_ssrc = self.remote_acked_ssrc;
+         let remote_acked_rtx_ssrc = self.remote_acked_rtx_ssrc;
+ 
+-        let (next, is_padding) = if let Some(next) = self.poll_packet_resend(now) {
++        let (next, is_padding) = if let Some(next) = self.poll_packet_resend(now, params) {
+             (next, false)
+         } else if let Some(next) = self.poll_packet_regular(now) {
+             (next, false)
+         } else {
+-            let next = self.poll_packet_padding(now)?;
++            let next = self.poll_packet_padding(now, params)?;
+             (next, true)
+         };
+ 
+@@ -637,6 +637,13 @@
+                 // it does not need RTX anyway. Plain packets on this PT stay nackable.
+                 let is_red_packet = param.red() == Some(pt_main);
+                 let rtx_possible = param.resend().is_some() && !is_red_packet;
++                // XRAY-PATCH: with no RTX PT, or no RTX SSRC, a packet on a PT that
++                // takes NACKs stays nackable: a NACK sends it again as it went, on its
++                // own SSRC (NextPacketKind::ResendPlain), as libwebrtc and pion do
++                // without RTX.
++                let plain_possible = !is_red_packet
++                    && param.fb_nack()
++                    && (param.resend().is_none() || ssrc_rtx.is_none());
+ 
+                 if rtx_possible {
+                     // Remember PT We want to set these directly on `self` here, but can't
+@@ -644,7 +651,7 @@
+                     // since the above loop figuring out param needs to be correct also
+                     // for the NextPacketKind::Blank case.
+                     set_pt_for_padding = Some(pt_main);
+-                } else {
++                } else if !plain_possible {
+                     // If the PT we're sending on doesn't have a corresponding RTX PT,
+                     // the packet is de-facto not nackable.
+                     //
+@@ -675,6 +682,13 @@
+                 header.sequence_number = *next.seq_no as u16;
+                 header
+             }
++            NextPacketKind::ResendPlain => {
++                // XRAY-PATCH: the cached header as the packet went the first time: its
++                // PT, SSRC and sequence number, and (kept below) the extension values
++                // it carried. The same bytes again, as pion's NACK responder resends
++                // them, so the SRTP index is never reused for different bytes.
++                header_ref.clone()
++            }
+             NextPacketKind::Resend(_) | NextPacketKind::Blank(_) => {
+                 // * For the Resend case, we will not have accepted/cached the packet unless
+                 //   we have a RTX PT (see logic setting next.pkt.nackable above).
+@@ -706,17 +720,28 @@
+         // These need to match `Extension::is_supported()` so we are sending what we are
+         // declaring we support.
+ 
++        // XRAY-PATCH: a ResendPlain keeps the values its packet went with, the TWCC
++        // number included: the session registers no new TWCC number for it.
++        let plain = next.kind == NextPacketKind::ResendPlain;
++
+         // Absolute Send Time might not be enabled for this m-line.
+-        if exts.id_of(Extension::AbsoluteSendTime).is_some() {
++        if !plain && exts.id_of(Extension::AbsoluteSendTime).is_some() {
+             header.ext_vals.abs_send_time = Some(now);
+         }
+ 
+         // TWCC might not be enabled for this m-line.
+-        if let Some(twcc) = twcc {
++        if let Some(twcc) = twcc.filter(|_| !plain) {
+             header.ext_vals.transport_cc = Some(*twcc as u16);
+             *twcc += 1;
+         }
+ 
++        // XRAY-PATCH: the cached header of a regular packet keeps the values it went
++        // with, for a ResendPlain to send the same bytes again.
++        if next.kind == NextPacketKind::Regular {
++            next.pkt.header.ext_vals.abs_send_time = header.ext_vals.abs_send_time;
++            next.pkt.header.ext_vals.transport_cc = header.ext_vals.transport_cc;
++        }
++
+         buf.resize(DATAGRAM_MAX_PACKET_SIZE, 0);
+ 
+         let header_len = header.write_to(buf, exts);
+@@ -735,7 +760,7 @@
+         let pkt = &next.pkt;
+ 
+         let body_len = match next.kind {
+-            NextPacketKind::Regular | NextPacketKind::Resend(_) => {
++            NextPacketKind::Regular | NextPacketKind::Resend(_) | NextPacketKind::ResendPlain => {
+                 let body_len = pkt.payload.len();
+                 if let Some(patch) = pkt.vp8_patch.as_ref() {
+                     patch.copy_to(pkt.payload.as_ref(), &mut body_out[..body_len]);
+@@ -860,7 +885,11 @@
+         ratio
+     }
+ 
+-    fn poll_packet_resend(&mut self, now: Instant) -> Option<NextPacket<'_>> {
++    fn poll_packet_resend(
++        &mut self,
++        now: Instant,
++        params: &[PayloadParams],
++    ) -> Option<NextPacket<'_>> {
+         if let Some(ratio_cap) = self.rtx_ratio_cap {
+             let ratio = self.rtx_ratio_downsampled(now);
+ 
+@@ -898,6 +927,22 @@
+             h.push(now, len);
+         }
+ 
++        // XRAY-PATCH: with no RTX SSRC, or no RTX PT for the packet's PT, the packet
++        // goes again as it went: its own SSRC and sequence number, no RTX header.
++        let pt = pkt.header.payload_type;
++        let plain = self.rtx.is_none()
++            || params
++                .iter()
++                .find(|p| p.pt() == pt)
++                .is_none_or(|p| p.resend().is_none());
++        if plain {
++            return Some(NextPacket {
++                kind: NextPacketKind::ResendPlain,
++                seq_no,
++                pkt,
++            });
++        }
++
+         let seq_no = self.seq_no_rtx.inc();
+ 
+         let orig_seq_no = pkt.seq_no;
+@@ -930,7 +975,11 @@
+         })
+     }
+ 
+-    fn poll_packet_padding(&mut self, _now: Instant) -> Option<NextPacket> {
++    fn poll_packet_padding(
++        &mut self,
++        _now: Instant,
++        params: &[PayloadParams],
++    ) -> Option<NextPacket<'_>> {
+         if !self.padding_enabled() {
+             self.padding = 0;
+             return None;
+@@ -952,6 +1001,17 @@
+                     break 'outer;
+                 };
+ 
++                // XRAY-PATCH: a packet cached for a ResendPlain (its PT has no RTX)
++                // cannot go as RTX padding; pad with a blank packet instead.
++                let pt = pkt.header.payload_type;
++                if params
++                    .iter()
++                    .find(|p| p.pt() == pt)
++                    .is_none_or(|p| p.resend().is_none())
++                {
++                    break 'outer;
++                }
++
+                 let orig_seq_no = pkt.seq_no;
+                 let seq_no = self.seq_no_rtx.inc();
+ 
+@@ -1377,6 +1437,9 @@
+ enum NextPacketKind {
+     Regular,
+     Resend(SeqNo),
++    /// XRAY-PATCH: a resend of a packet that has no RTX to go on: the packet
++    /// again as it went (see `poll_packet_resend`).
++    ResendPlain,
+     Blank(u8),
+ }
+ 
+--- a/tests/nack.rs
++++ b/tests/nack.rs
+@@ -676,3 +676,67 @@
+ 
+     Ok(())
+ }
++
++/// XRAY-PATCH: a stream without RTX answers a NACK as pion and libwebrtc do
++/// without RTX: the lost packet goes again on its own SSRC, with its own
++/// sequence number, byte for byte as it went the first time.
++#[test]
++fn nack_without_rtx_resends_the_packet_on_its_own_ssrc() -> Result<(), RtcError> {
++    init_crypto_default();
++    let (mut l, mut r) = connect_l_r();
++    let mid = "vid".into();
++    let ssrc: Ssrc = 42.into();
++    l.direct_api().declare_media(mid, MediaKind::Video);
++    l.direct_api().declare_stream_tx(ssrc, None, mid, None);
++    r.direct_api().declare_media(mid, MediaKind::Video);
++    r.direct_api().expect_stream_rx(ssrc, None, mid, None);
++    let pt = l.params_vp8().pt();
++    let now = l.last.max(r.last);
++    l.last = now;
++    r.last = now;
++
++    let write = |l: &mut common::TestRtc, seq: u64| {
++        let now = l.last;
++        l.direct_api().stream_tx(&ssrc).unwrap().write_rtp(
++            RtpWrite::new(pt, seq.into(), seq as u32 * 3000, now, [1, 2, 3, 4]).nackable(true),
++        );
++    };
++    for seq in 47_000..47_020 {
++        write(&mut l, seq);
++        progress(&mut l, &mut r)?;
++    }
++    // 47_020 is lost on its way.
++    for seq in 47_020..47_025 {
++        let loss = if seq == 47_020 { 1.0 } else { 0.0 };
++        r.set_netem(NetemConfig::new().loss(RandomLoss::new(Probability::new(loss))));
++        write(&mut l, seq);
++        progress(&mut l, &mut r)?;
++    }
++    r.set_netem(NetemConfig::new());
++
++    let lost = SeqNo::from(47_020_u64);
++    let deadline = l.duration() + Duration::from_secs(3);
++    while !r
++        .events
++        .iter()
++        .any(|(_, e)| matches!(e, Event::RtpPacket(p) if p.header.ssrc == ssrc && p.seq_no == lost))
++    {
++        assert!(l.duration() < deadline, "the lost packet must arrive again");
++        progress(&mut l, &mut r)?;
++    }
++
++    let sent: Vec<&Vec<u8>> = l
++        .events
++        .iter()
++        .filter_map(|(_, e)| match e.as_raw_packet() {
++            Some(RawPacket::RtpTx(h, buf)) => {
++                assert_eq!(h.ssrc, ssrc, "no packet goes out on another SSRC");
++                (h.sequence_number == 47_020).then_some(buf)
++            }
++            _ => None,
++        })
++        .collect();
++    assert_eq!(sent.len(), 2, "sent once, then once on the NACK");
++    assert_eq!(sent[0], sent[1], "the resend is the packet as it went");
++    Ok(())
++}

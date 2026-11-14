@@ -106,7 +106,7 @@ panic = "unwind"
 # str0m's ICE crate with Chrome's STUN attribute order (olc/vendor/is-0.12.0/src/stun.rs, `StunProfile`):
 # the olcRTC engine's connectivity checks must read as a browser's (port plan section 8).
 is = { path = "olc/vendor/is-0.12.0" }
-# str0m 0.25.0, unchanged for now (olc/vendor/str0m-0.25.0/XRAY-PATCH.md).
+# str0m answering NACKs where no RTX is negotiated, as libwebrtc and pion do (olc/vendor/str0m-0.25.0/XRAY-PATCH.md).
 str0m = { path = "olc/vendor/str0m-0.25.0" }
 quinn = { path = "vendor/quinn" }
 smoltcp = { path = "vendor/smoltcp" }

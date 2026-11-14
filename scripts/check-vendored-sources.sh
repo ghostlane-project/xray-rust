@@ -125,8 +125,16 @@ cargo test --locked --manifest-path "$temporary/h2-0.4.20/Cargo.toml" \
 download_and_verify \
   str0m 0.25.0 \
   357c7e453c033c8bb59e912312f9f9ff07c2a9ce7268bcb94f0c828a5b47e58f
-diff -ruN --exclude XRAY-PATCH.md \
+patch --batch --fuzz=0 -p1 \
+  -d "$temporary/str0m-0.25.0" \
+  <"$ROOT/olc/vendor/str0m-0.25.0/XRAY-PATCH.diff"
+diff -ruN --exclude XRAY-PATCH.diff --exclude XRAY-PATCH.md \
   "$temporary/str0m-0.25.0" "$ROOT/olc/vendor/str0m-0.25.0"
+# The library and the integration tests that cover NACK, RTX and padding.
+# Upstream's tests reach internals through `_internal_test_exports`, which
+# its workspace turns on with a dev-dependency the published crate drops.
+cargo test --locked --manifest-path "$temporary/str0m-0.25.0/Cargo.toml" \
+  --features _internal_test_exports --lib --test nack --test rtx-cache-0 --test early-rtx-padding --test sdp-rtx-apt
 
 bash "$ROOT/scripts/check-wireguard-adapter-prototype.sh" --verify-vendor-only
 

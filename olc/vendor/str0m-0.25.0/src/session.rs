@@ -1276,7 +1276,9 @@ impl Session {
 
         let protected = srtp_tx.protect_rtp(buf, &header, *seq_no);
 
-        if twcc_enabled {
+        // XRAY-PATCH: a plain resend goes with the TWCC number it had (streams/send.rs,
+        // ResendPlain), so only a packet that took a new one is registered.
+        if twcc_enabled && self.twcc != twcc_seq {
             let packet_id = if let Some(cluster) = cluster_id {
                 TwccPacketId::with_cluster(twcc_seq, cluster)
             } else {

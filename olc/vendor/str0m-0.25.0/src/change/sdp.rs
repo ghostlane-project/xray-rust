@@ -1362,8 +1362,10 @@ fn update_media(
             .map(|r| r.ssrc);
 
         // If remote communicated a main a=ssrc, but no RTX, we will not send nacks.
+        // XRAY-PATCH: unless its payloads take NACKs (a=rtcp-fb nack): it then
+        // resends on the main SSRC, as libwebrtc and pion do without RTX.
         let midrid = MidRid(media.mid(), None);
-        let suppress_nack = repair_ssrc.is_none();
+        let suppress_nack = repair_ssrc.is_none() && !m.rtp_params().iter().any(|p| p.fb_nack);
         streams.expect_stream_rx(i.ssrc, repair_ssrc, midrid, suppress_nack);
     }
 }

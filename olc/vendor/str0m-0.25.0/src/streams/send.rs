@@ -577,12 +577,12 @@ impl StreamTx {
         let remote_acked_ssrc = self.remote_acked_ssrc;
         let remote_acked_rtx_ssrc = self.remote_acked_rtx_ssrc;
 
-        let (next, is_padding) = if let Some(next) = self.poll_packet_resend(now) {
+        let (next, is_padding) = if let Some(next) = self.poll_packet_resend(now, params) {
             (next, false)
         } else if let Some(next) = self.poll_packet_regular(now) {
             (next, false)
         } else {
-            let next = self.poll_packet_padding(now)?;
+            let next = self.poll_packet_padding(now, params)?;
             (next, true)
         };
 
@@ -637,6 +637,13 @@ impl StreamTx {
                 // it does not need RTX anyway. Plain packets on this PT stay nackable.
                 let is_red_packet = param.red() == Some(pt_main);
                 let rtx_possible = param.resend().is_some() && !is_red_packet;
+                // XRAY-PATCH: with no RTX PT, or no RTX SSRC, a packet on a PT that
+                // takes NACKs stays nackable: a NACK sends it again as it went, on its
+                // own SSRC (NextPacketKind::ResendPlain), as libwebrtc and pion do
+                // without RTX.
+                let plain_possible = !is_red_packet
+                    && param.fb_nack()
+                    && (param.resend().is_none() || ssrc_rtx.is_none());
 
                 if rtx_possible {
                     // Remember PT We want to set these directly on `self` here, but can't
@@ -644,7 +651,7 @@ impl StreamTx {
                     // since the above loop figuring out param needs to be correct also
                     // for the NextPacketKind::Blank case.
                     set_pt_for_padding = Some(pt_main);
-                } else {
+                } else if !plain_possible {
                     // If the PT we're sending on doesn't have a corresponding RTX PT,
                     // the packet is de-facto not nackable.
                     //
@@ -674,6 +681,13 @@ impl StreamTx {
                 header.ssrc = 0.into();
                 header.sequence_number = *next.seq_no as u16;
                 header
+            }
+            NextPacketKind::ResendPlain => {
+                // XRAY-PATCH: the cached header as the packet went the first time: its
+                // PT, SSRC and sequence number, and (kept below) the extension values
+                // it carried. The same bytes again, as pion's NACK responder resends
+                // them, so the SRTP index is never reused for different bytes.
+                header_ref.clone()
             }
             NextPacketKind::Resend(_) | NextPacketKind::Blank(_) => {
                 // * For the Resend case, we will not have accepted/cached the packet unless
@@ -706,15 +720,26 @@ impl StreamTx {
         // These need to match `Extension::is_supported()` so we are sending what we are
         // declaring we support.
 
+        // XRAY-PATCH: a ResendPlain keeps the values its packet went with, the TWCC
+        // number included: the session registers no new TWCC number for it.
+        let plain = next.kind == NextPacketKind::ResendPlain;
+
         // Absolute Send Time might not be enabled for this m-line.
-        if exts.id_of(Extension::AbsoluteSendTime).is_some() {
+        if !plain && exts.id_of(Extension::AbsoluteSendTime).is_some() {
             header.ext_vals.abs_send_time = Some(now);
         }
 
         // TWCC might not be enabled for this m-line.
-        if let Some(twcc) = twcc {
+        if let Some(twcc) = twcc.filter(|_| !plain) {
             header.ext_vals.transport_cc = Some(*twcc as u16);
             *twcc += 1;
+        }
+
+        // XRAY-PATCH: the cached header of a regular packet keeps the values it went
+        // with, for a ResendPlain to send the same bytes again.
+        if next.kind == NextPacketKind::Regular {
+            next.pkt.header.ext_vals.abs_send_time = header.ext_vals.abs_send_time;
+            next.pkt.header.ext_vals.transport_cc = header.ext_vals.transport_cc;
         }
 
         buf.resize(DATAGRAM_MAX_PACKET_SIZE, 0);
@@ -735,7 +760,7 @@ impl StreamTx {
         let pkt = &next.pkt;
 
         let body_len = match next.kind {
-            NextPacketKind::Regular | NextPacketKind::Resend(_) => {
+            NextPacketKind::Regular | NextPacketKind::Resend(_) | NextPacketKind::ResendPlain => {
                 let body_len = pkt.payload.len();
                 if let Some(patch) = pkt.vp8_patch.as_ref() {
                     patch.copy_to(pkt.payload.as_ref(), &mut body_out[..body_len]);
@@ -860,7 +885,11 @@ impl StreamTx {
         ratio
     }
 
-    fn poll_packet_resend(&mut self, now: Instant) -> Option<NextPacket<'_>> {
+    fn poll_packet_resend(
+        &mut self,
+        now: Instant,
+        params: &[PayloadParams],
+    ) -> Option<NextPacket<'_>> {
         if let Some(ratio_cap) = self.rtx_ratio_cap {
             let ratio = self.rtx_ratio_downsampled(now);
 
@@ -898,6 +927,22 @@ impl StreamTx {
             h.push(now, len);
         }
 
+        // XRAY-PATCH: with no RTX SSRC, or no RTX PT for the packet's PT, the packet
+        // goes again as it went: its own SSRC and sequence number, no RTX header.
+        let pt = pkt.header.payload_type;
+        let plain = self.rtx.is_none()
+            || params
+                .iter()
+                .find(|p| p.pt() == pt)
+                .is_none_or(|p| p.resend().is_none());
+        if plain {
+            return Some(NextPacket {
+                kind: NextPacketKind::ResendPlain,
+                seq_no,
+                pkt,
+            });
+        }
+
         let seq_no = self.seq_no_rtx.inc();
 
         let orig_seq_no = pkt.seq_no;
@@ -930,7 +975,11 @@ impl StreamTx {
         })
     }
 
-    fn poll_packet_padding(&mut self, _now: Instant) -> Option<NextPacket> {
+    fn poll_packet_padding(
+        &mut self,
+        _now: Instant,
+        params: &[PayloadParams],
+    ) -> Option<NextPacket<'_>> {
         if !self.padding_enabled() {
             self.padding = 0;
             return None;
@@ -951,6 +1000,17 @@ impl StreamTx {
                     // Couldn't find spurious packet, try a blank packet instead.
                     break 'outer;
                 };
+
+                // XRAY-PATCH: a packet cached for a ResendPlain (its PT has no RTX)
+                // cannot go as RTX padding; pad with a blank packet instead.
+                let pt = pkt.header.payload_type;
+                if params
+                    .iter()
+                    .find(|p| p.pt() == pt)
+                    .is_none_or(|p| p.resend().is_none())
+                {
+                    break 'outer;
+                }
 
                 let orig_seq_no = pkt.seq_no;
                 let seq_no = self.seq_no_rtx.inc();
@@ -1377,6 +1437,9 @@ struct NextPacket<'a> {
 enum NextPacketKind {
     Regular,
     Resend(SeqNo),
+    /// XRAY-PATCH: a resend of a packet that has no RTX to go on: the packet
+    /// again as it went (see `poll_packet_resend`).
+    ResendPlain,
     Blank(u8),
 }
 

@@ -676,3 +676,67 @@ pub fn nack_timer_finishes_pending_retries_after_pause() -> Result<(), RtcError>
 
     Ok(())
 }
+
+/// XRAY-PATCH: a stream without RTX answers a NACK as pion and libwebrtc do
+/// without RTX: the lost packet goes again on its own SSRC, with its own
+/// sequence number, byte for byte as it went the first time.
+#[test]
+fn nack_without_rtx_resends_the_packet_on_its_own_ssrc() -> Result<(), RtcError> {
+    init_crypto_default();
+    let (mut l, mut r) = connect_l_r();
+    let mid = "vid".into();
+    let ssrc: Ssrc = 42.into();
+    l.direct_api().declare_media(mid, MediaKind::Video);
+    l.direct_api().declare_stream_tx(ssrc, None, mid, None);
+    r.direct_api().declare_media(mid, MediaKind::Video);
+    r.direct_api().expect_stream_rx(ssrc, None, mid, None);
+    let pt = l.params_vp8().pt();
+    let now = l.last.max(r.last);
+    l.last = now;
+    r.last = now;
+
+    let write = |l: &mut common::TestRtc, seq: u64| {
+        let now = l.last;
+        l.direct_api().stream_tx(&ssrc).unwrap().write_rtp(
+            RtpWrite::new(pt, seq.into(), seq as u32 * 3000, now, [1, 2, 3, 4]).nackable(true),
+        );
+    };
+    for seq in 47_000..47_020 {
+        write(&mut l, seq);
+        progress(&mut l, &mut r)?;
+    }
+    // 47_020 is lost on its way.
+    for seq in 47_020..47_025 {
+        let loss = if seq == 47_020 { 1.0 } else { 0.0 };
+        r.set_netem(NetemConfig::new().loss(RandomLoss::new(Probability::new(loss))));
+        write(&mut l, seq);
+        progress(&mut l, &mut r)?;
+    }
+    r.set_netem(NetemConfig::new());
+
+    let lost = SeqNo::from(47_020_u64);
+    let deadline = l.duration() + Duration::from_secs(3);
+    while !r
+        .events
+        .iter()
+        .any(|(_, e)| matches!(e, Event::RtpPacket(p) if p.header.ssrc == ssrc && p.seq_no == lost))
+    {
+        assert!(l.duration() < deadline, "the lost packet must arrive again");
+        progress(&mut l, &mut r)?;
+    }
+
+    let sent: Vec<&Vec<u8>> = l
+        .events
+        .iter()
+        .filter_map(|(_, e)| match e.as_raw_packet() {
+            Some(RawPacket::RtpTx(h, buf)) => {
+                assert_eq!(h.ssrc, ssrc, "no packet goes out on another SSRC");
+                (h.sequence_number == 47_020).then_some(buf)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(sent.len(), 2, "sent once, then once on the NACK");
+    assert_eq!(sent[0], sent[1], "the resend is the packet as it went");
+    Ok(())
+}

@@ -293,7 +293,9 @@ impl Streams {
         }
 
         // If we don't have an RTX PT configured, we don't want NACK.
-        let suppress_nack = payload.resend.is_none();
+        // XRAY-PATCH: unless the PT takes NACKs: the sender then resends on the
+        // main SSRC, as libwebrtc and pion do without RTX.
+        let suppress_nack = payload.resend.is_none() && !payload.fb_nack;
 
         // If stream already exists, this might only "fill in" the RTX.
         self.expect_stream_rx(ssrc_main, rtx, midrid, suppress_nack);

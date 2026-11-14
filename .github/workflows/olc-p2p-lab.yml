@@ -10,7 +10,8 @@ name: olc-p2p-lab
 # A gl/olc-p2p-lab-* commit may carry olc/interop/lab.env (NAME=value
 # lines): OLC_LAB_TEST replaces the cargo test arguments and skips clippy,
 # the build and the gate (the RED runs); OLC_LAB_GATE=no skips the gate;
-# OLC_LAB_GO_RUN narrows the engine's Go tests (go test -run).
+# OLC_LAB_GO_RUN narrows the engine's Go tests (go test -run);
+# OLC_LAB_STR0M replaces the vendored str0m's cargo test arguments.
 
 on:
   push:
@@ -65,6 +66,14 @@ jobs:
           set -o pipefail
           # shellcheck disable=SC2086
           cargo test --locked ${OLC_LAB_TEST:-$CRATES} 2>&1 | tee test.log
+      - name: str0m's tests (the vendored, patched crate)
+        if: always()
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2086
+          cargo test --locked --manifest-path olc/vendor/str0m-0.25.0/Cargo.toml --target-dir target/str0m --features _internal_test_exports \
+            ${OLC_LAB_STR0M:---lib --test nack --test rtx-cache-0 --test early-rtx-padding --test sdp-rtx-apt} 2>&1 |
+            tee str0m-test.log
       - name: fmt
         if: always() && steps.lab.outputs.lint == 'yes'
         run: |
