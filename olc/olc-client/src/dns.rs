@@ -72,41 +72,49 @@ where
 
 /// The name in a query's first question, without the trailing dot
 /// (`dnsQuestionName`); `None` for a response or a message that does not
-/// parse.
+/// parse. As strict as `dnsmessage` (x/net v0.55.0, `Name.unpack` and
+/// `Parser.Question`): no dot inside a label, at most 10 pointers, a name
+/// under 254 bytes with its dots, and the type and class after it.
 pub fn question_name(msg: &[u8]) -> Option<String> {
     if msg.len() < 12 || msg[2] & 0x80 != 0 || u16::from_be_bytes([msg[4], msg[5]]) == 0 {
         return None;
     }
-    let mut name = String::new();
+    // A dot after every label, as dnsmessage holds it.
+    let mut name: Vec<u8> = Vec::new();
     let mut at = 12;
-    let mut hops = 0;
+    let mut after = None;
+    let mut pointers = 0;
     loop {
-        let len = *msg.get(at)?;
-        if len & 0xc0 == 0xc0 {
-            hops += 1;
-            if hops > 16 {
-                return None;
+        let c = *msg.get(at)?;
+        at += 1;
+        match c & 0xc0 {
+            0x00 if c == 0 => break,
+            0x00 => {
+                let label = msg.get(at..at + usize::from(c))?;
+                if label.contains(&b'.') || name.len() + label.len() >= 254 {
+                    return None;
+                }
+                name.extend_from_slice(label);
+                name.push(b'.');
+                at += usize::from(c);
             }
-            at = usize::from(len & 0x3f) << 8 | usize::from(*msg.get(at + 1)?);
-            continue;
-        }
-        if len & 0xc0 != 0 {
-            return None;
-        }
-        if len == 0 {
-            break;
-        }
-        let label = msg.get(at + 1..at + 1 + usize::from(len))?;
-        if !name.is_empty() {
-            name.push('.');
-        }
-        name.push_str(&String::from_utf8_lossy(label));
-        at += 1 + usize::from(len);
-        if name.len() > 255 {
-            return None;
+            0xc0 => {
+                let low = *msg.get(at)?;
+                at += 1;
+                after.get_or_insert(at);
+                pointers += 1;
+                if pointers > 10 {
+                    return None;
+                }
+                at = usize::from(c & 0x3f) << 8 | usize::from(low);
+            }
+            _ => return None,
         }
     }
-    Some(name)
+    let after = after.unwrap_or(at);
+    msg.get(after..after + 4)?;
+    name.pop();
+    Some(String::from_utf8_lossy(&name).into_owned())
 }
 
 /// Truncates a response a `FWD_UDP` client cannot read whole to its header
@@ -307,6 +315,40 @@ mod tests {
         resp[2] |= 0x80;
         assert_eq!(question_name(&resp), None, "a response is not a query");
         assert_eq!(question_name(&[0; 5]), None);
+    }
+
+    #[test]
+    fn a_question_parses_only_as_dnsmessage_parses_it() {
+        let head = |rest: &[u8]| {
+            let mut m = vec![0, 7, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+            m.extend_from_slice(rest);
+            m
+        };
+        assert_eq!(question_name(&head(b"\x03a.b\x00\x00\x01\x00\x01")), None, "a dot in a label");
+        let mut cut = query("a.b");
+        cut.pop();
+        assert_eq!(question_name(&cut), None, "no class after the name");
+        assert_eq!(question_name(&head(b"\x00\x00\x01\x00\x01")).as_deref(), Some(""));
+        // Labels of 63, 63, 63 and 61 make 253 bytes: the last that parses.
+        let long = |last: usize| {
+            let l = |c: char, n: usize| c.to_string().repeat(n);
+            format!("{}.{}.{}.{}", l('a', 63), l('b', 63), l('c', 63), l('d', last))
+        };
+        assert_eq!(question_name(&query(&long(61))).map(|n| n.len()), Some(253));
+        assert_eq!(question_name(&query(&long(62))), None);
+        // A chain of pointers ending at "a": ten are followed, not eleven.
+        let chain = |n: usize| {
+            let mut rest = Vec::new();
+            for k in 0..n {
+                let to = u8::try_from(12 + 2 * (k + 1)).unwrap();
+                rest.extend_from_slice(&[0xc0, to]);
+            }
+            rest.extend_from_slice(b"\x01a\x00\x00\x01\x00\x01");
+            head(&rest)
+        };
+        assert_eq!(question_name(&chain(10)).as_deref(), Some("a"));
+        assert_eq!(question_name(&chain(11)), None);
+        assert_eq!(question_name(&head(b"\x40a\x00\x00\x01\x00\x01")), None, "a reserved prefix");
     }
 
     #[test]

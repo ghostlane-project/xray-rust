@@ -17,12 +17,14 @@
 //!   datagrams waiting (Go holds one per association for its life: 117
 //!   associations held 7.5 MB on iOS, olcbox 1.0.428);
 //! - `FWD_UDP` replies: a queue of [`FWD_REPLY_QUEUE`] frames per
-//!   connection, written in batches of at most [`FWD_WRITE_BATCH`]; a full
-//!   queue drops the datagram (the lane is lossy by contract).
+//!   connection and [`FWD_QUEUE_BUDGET`] bytes for all of them, counted
+//!   until written (gathered writes of up to [`FWD_WRITE_BATCH`], no buffer
+//!   of their own); a full queue or budget drops the datagram (the lane is
+//!   lossy by contract); a quiet connection holds no read buffer.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -56,8 +58,75 @@ pub const DATAGRAM_POLL_DELAY: Duration = Duration::from_millis(2);
 pub const FWD_CLIENT_BUFFER: usize = 1500;
 /// Reply frames queued per `FWD_UDP` connection (xray-rust's 32).
 pub const FWD_REPLY_QUEUE: usize = 32;
-/// One write to the `FWD_UDP` connection gathers at most this much.
+/// One write to the `FWD_UDP` connection gathers frames up to this much.
 pub const FWD_WRITE_BATCH: usize = 16 * 1024;
+/// Frames in one gathered write at most.
+const FWD_GATHER: usize = FWD_REPLY_QUEUE + 1;
+/// The replies all `FWD_UDP` connections may hold queued, in bytes (plan
+/// §9: UDP 0.5 MiB); past it a reply is dropped, as a full queue drops it.
+pub const FWD_QUEUE_BUDGET: usize = 512 * 1024;
+
+/// Reply bytes queued on every `FWD_UDP` connection now.
+static FWD_QUEUED: AtomicUsize = AtomicUsize::new(0);
+
+/// One reply frame in a `FWD_UDP` queue, counted in [`FWD_QUEUED`] until it
+/// is written or dropped.
+#[derive(Debug)]
+pub(crate) struct Queued(Vec<u8>);
+
+impl Queued {
+    /// The frame, if the budget has room for it.
+    fn new(frame: Vec<u8>) -> Option<Self> {
+        let len = frame.len();
+        if FWD_QUEUED.fetch_add(len, Ordering::Relaxed) + len > FWD_QUEUE_BUDGET {
+            FWD_QUEUED.fetch_sub(len, Ordering::Relaxed);
+            return None;
+        }
+        Some(Self(frame))
+    }
+}
+
+impl Drop for Queued {
+    fn drop(&mut self) {
+        FWD_QUEUED.fetch_sub(self.0.len(), Ordering::Relaxed);
+    }
+}
+
+/// Reply bytes queued on every `FWD_UDP` connection.
+pub fn fwd_queued() -> usize {
+    FWD_QUEUED.load(Ordering::Relaxed)
+}
+
+/// Writes `frames` whole, gathered: one vectored write after another.
+async fn write_frames<W: tokio::io::AsyncWrite + Unpin>(
+    wr: &mut W,
+    frames: &[Queued],
+) -> std::io::Result<()> {
+    let (mut i, mut off) = (0, 0);
+    while i < frames.len() {
+        let mut slices = [std::io::IoSlice::new(&[]); FWD_GATHER];
+        let mut n = 0;
+        for (k, f) in frames[i..].iter().take(FWD_GATHER).enumerate() {
+            slices[n] = std::io::IoSlice::new(&f.0[if k == 0 { off } else { 0 }..]);
+            n += 1;
+        }
+        let mut wrote = wr.write_vectored(&slices[..n]).await?;
+        if wrote == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        while wrote > 0 {
+            let left = frames[i].0.len() - off;
+            if wrote >= left {
+                wrote -= left;
+                (i, off) = (i + 1, 0);
+            } else {
+                off += wrote;
+                wrote = 0;
+            }
+        }
+    }
+    Ok(())
+}
 /// `DATLEN | HDRLEN`.
 const FWD_LENGTHS: usize = 3;
 
@@ -323,7 +392,7 @@ pub(crate) enum Reply {
     },
     /// A `FWD_UDP` connection's writer, and the target the client sent to.
     Fwd {
-        tx: mpsc::Sender<Vec<u8>>,
+        tx: mpsc::Sender<Queued>,
         to: Addr,
         to_port: u16,
     },
@@ -358,6 +427,10 @@ impl Reply {
                     return;
                 }
                 if let Some(frame) = encode_fwd_frame(addr, port, payload) {
+                    let Some(frame) = Queued::new(frame) else {
+                        crate::debug!("drop udp reply: the FWD_UDP replies hold their budget");
+                        return;
+                    };
                     if tx.try_send(frame).is_err() {
                         crate::debug!("drop udp reply: the FWD_UDP queue is full");
                     }
@@ -504,6 +577,11 @@ impl Flows {
 }
 
 /// `udpAssociationSource`: the TCP peer's address, narrowed by the request.
+/// A request that named no port is pinned to the port of the first
+/// datagram it takes, as hev's server connects its socket to the first
+/// sender (hev-socks5-udp.c:260-279): another process at the client's
+/// address cannot use an association it did not open, login or not. Go
+/// takes any port at the peer's address (udp.go:256).
 #[derive(Debug, Clone, Copy)]
 struct Source {
     peer: IpAddr,
@@ -512,11 +590,29 @@ struct Source {
 }
 
 impl Source {
-    fn allows(&self, src: SocketAddr) -> bool {
+    fn allows(&mut self, src: SocketAddr) -> bool {
         let ip = unmap(src.ip());
-        ip == self.peer
-            && self.request.is_none_or(|r| r == ip)
-            && (self.port == 0 || src.port() == self.port)
+        if ip != self.peer || self.request.is_some_and(|r| r != ip) {
+            return false;
+        }
+        if self.port == 0 {
+            self.port = src.port();
+        }
+        src.port() == self.port
+    }
+}
+
+/// The flows of one association or `FWD_UDP` connection, removed when it
+/// ends however it ends (its task aborted included).
+struct OwnedFlows<'a> {
+    inner: &'a Arc<Inner>,
+    owner: u64,
+}
+
+impl Drop for OwnedFlows<'_> {
+    fn drop(&mut self) {
+        let owner = self.owner;
+        self.inner.remove_flows(|k, _| k.owner == owner);
     }
 }
 
@@ -545,7 +641,7 @@ impl Inner {
                 .await;
             return;
         };
-        let allowed = Source {
+        let mut allowed = Source {
             peer,
             request: req
                 .addr
@@ -581,6 +677,7 @@ impl Inner {
         }
         crate::info!("SOCKS5 UDP associate listening on {addr}");
         let owner = self.flows.owner();
+        let _flows = OwnedFlows { inner: self, owner };
         let assoc = self.run.child_token();
         let (mut rd, _wr) = conn.into_split();
         let watch = {
@@ -635,7 +732,6 @@ impl Inner {
         }
         assoc.cancel();
         watch.abort();
-        self.remove_flows(|k, _| k.owner == owner);
     }
 
     /// hev's `FWD_UDP`: datagrams framed on this connection both ways.
@@ -654,31 +750,41 @@ impl Inner {
         crate::debug!("SOCKS5 FWD_UDP from {peer}");
         self.ensure_sweeper();
         let owner = self.flows.owner();
+        let _flows = OwnedFlows { inner: self, owner };
         let assoc = self.run.child_token();
         let (mut rd, mut wr) = conn.into_split();
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(FWD_REPLY_QUEUE);
+        let (tx, mut rx) = mpsc::channel::<Queued>(FWD_REPLY_QUEUE);
         let writer = {
             let assoc = assoc.clone();
             tokio::spawn(async move {
-                let mut out = Vec::new();
+                let mut gather: Vec<Queued> = Vec::with_capacity(FWD_GATHER);
                 loop {
                     let first = tokio::select! {
                         () = assoc.cancelled() => break,
                         f = rx.recv() => match f { Some(f) => f, None => break },
                     };
-                    out.extend_from_slice(&first);
-                    while out.len() < FWD_WRITE_BATCH {
+                    // The frames go out gathered in one vectored write, and
+                    // stay counted in the budget until written: no buffer
+                    // of their own. The write ends with the association,
+                    // however slow the client reads.
+                    let mut bytes = first.0.len();
+                    gather.push(first);
+                    while bytes < FWD_WRITE_BATCH && gather.len() < FWD_GATHER {
                         match rx.try_recv() {
-                            Ok(f) => out.extend_from_slice(&f),
+                            Ok(f) => {
+                                bytes += f.0.len();
+                                gather.push(f);
+                            }
                             Err(_) => break,
                         }
                     }
-                    if wr.write_all(&out).await.is_err() {
+                    let wrote = tokio::select! {
+                        () = assoc.cancelled() => break,
+                        r = write_frames(&mut wr, &gather) => r,
+                    };
+                    gather.clear();
+                    if wrote.is_err() {
                         break;
-                    }
-                    out.clear();
-                    if out.capacity() > FWD_WRITE_BATCH * 2 {
-                        out = Vec::new();
                     }
                 }
                 assoc.cancel();
@@ -695,14 +801,22 @@ impl Inner {
                     };
                     self.forward(owner, peer, &reply, &dg, &assoc).await;
                     buf.drain(..used);
-                    if buf.is_empty() && buf.capacity() > READ_BUFFER {
-                        buf = Vec::new();
-                    }
                     continue;
                 }
                 Ok(None) => {}
                 Err(e) => {
                     crate::debug!("drop FWD_UDP connection: {e}");
+                    break;
+                }
+            }
+            if buf.is_empty() {
+                // A quiet connection holds no buffer.
+                buf = Vec::new();
+                let ready = tokio::select! {
+                    () = assoc.cancelled() => break,
+                    r = rd.readable() => r,
+                };
+                if ready.is_err() {
                     break;
                 }
             }
@@ -719,8 +833,8 @@ impl Inner {
         }
         assoc.cancel();
         drop(tx);
+        // Its write ends with the association: this cannot hang.
         let _ = writer.await;
-        self.remove_flows(|k, _| k.owner == owner);
     }
 
     /// `forwardLocalUDP`: direct DNS, DNS over a stream, a direct flow, or
@@ -939,6 +1053,7 @@ impl Inner {
         tokio::spawn(async move {
             let mut tick =
                 tokio::time::interval_at(Instant::now() + FLOW_SWEEP_INTERVAL, FLOW_SWEEP_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
                     () = run.cancelled() => return,
@@ -958,8 +1073,13 @@ impl Inner {
         if gone.is_empty() || self.cfg.udp_disabled || !self.link.can_send() {
             return;
         }
+        // From a drop guard the runtime may be going away: then the server
+        // learns of the flows' end from their idle timeout.
+        let Ok(rt) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let me = self.clone();
-        tokio::spawn(async move {
+        rt.spawn(async move {
             let mut record = [0u8; UDP_MAX_RECORD];
             for id in gone {
                 let len = {
@@ -1083,6 +1203,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gathered_frames_are_written_whole_through_short_writes() {
+        crate::testing::bounded(async {
+            let (mut a, mut b) = tokio::io::duplex(7);
+            let frames: Vec<Queued> = (1..=5u8)
+                .map(|i| Queued::new(vec![i; usize::from(i) * 3]).unwrap())
+                .collect();
+            let want: Vec<u8> = frames.iter().flat_map(|f| f.0.clone()).collect();
+            let read = tokio::spawn(async move {
+                let mut got = vec![0; 45];
+                b.read_exact(&mut got).await.unwrap();
+                got
+            });
+            write_frames(&mut a, &frames).await.unwrap();
+            assert_eq!(read.await.unwrap(), want);
+        })
+        .await;
+    }
+
+    #[tokio::test]
     async fn fwd_replies_name_the_target_family_and_drop_what_hev_cannot_read() {
         crate::testing::bounded(fwd_replies()).await;
     }
@@ -1098,20 +1237,48 @@ mod tests {
         reply.deliver(&Addr::V6("2001:db8::35".parse().unwrap()), 9, b"a");
         let f = rx.recv().await.unwrap();
         assert_eq!(
-            &f[3..10],
+            &f.0[3..10],
             &[1, 198, 18, 0, 7, 1, 187],
             "the other family is answered as the target"
         );
         reply.deliver(&Addr::V4(Ipv4Addr::new(192, 0, 2, 9)), 4433, b"b");
         let f = rx.recv().await.unwrap();
-        assert_eq!(&f[3..10], &[1, 192, 0, 2, 9, 0x11, 0x51]);
+        assert_eq!(&f.0[3..10], &[1, 192, 0, 2, 9, 0x11, 0x51]);
         reply.deliver(&Addr::V4(Ipv4Addr::LOCALHOST), 1, &[0; 1494]);
         reply.deliver(&Addr::V4(Ipv4Addr::LOCALHOST), 1, &[0; 1493]);
         assert_eq!(
-            rx.recv().await.unwrap().len(),
+            rx.recv().await.unwrap().0.len(),
             10 + 1493,
             "the oversize one alone is dropped"
         );
+    }
+
+    #[test]
+    fn fwd_replies_share_one_byte_budget() {
+        // A client that stops reading holds at most the budget, whatever
+        // its queue's length.
+        let (tx, mut rx) = mpsc::channel(1000);
+        let reply = Reply::Fwd {
+            tx,
+            to: Addr::V4(Ipv4Addr::LOCALHOST),
+            to_port: 1,
+        };
+        for _ in 0..1000 {
+            reply.deliver(&Addr::V4(Ipv4Addr::LOCALHOST), 1, &[0; 1493]);
+        }
+        let mut frames = Vec::new();
+        while let Ok(f) = rx.try_recv() {
+            frames.push(f);
+        }
+        let held: usize = frames.iter().map(|f| f.0.len()).sum();
+        let frame = 10 + 1493;
+        // Other tests may hold a few frames of the same budget meanwhile.
+        assert!(held <= FWD_QUEUE_BUDGET, "{held}");
+        assert!(held + 8 * frame > FWD_QUEUE_BUDGET, "{held}");
+        assert!(frames.len() < 1000, "the budget, not the queue, stopped it");
+        let before = fwd_queued();
+        drop(frames);
+        assert!(fwd_queued() + held <= before, "every frame gives its bytes back");
     }
 
     #[test]
@@ -1151,11 +1318,26 @@ mod tests {
             request: None,
             port: 0,
         };
-        assert!(any.allows("127.0.0.1:5000".parse().unwrap()));
-        assert!(any.allows("[::ffff:127.0.0.1]:5000".parse().unwrap()));
-        assert!(!any.allows("127.0.0.2:5000".parse().unwrap()));
-        let pinned = Source { port: 7, ..any };
+        let mut first = any;
+        assert!(!first.allows("127.0.0.2:5000".parse().unwrap()));
+        assert!(first.allows("[::ffff:127.0.0.1]:5000".parse().unwrap()));
+        let mut pinned = Source { port: 7, ..any };
         assert!(!pinned.allows("127.0.0.1:5000".parse().unwrap()));
         assert!(pinned.allows("127.0.0.1:7".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_request_that_named_no_port_is_pinned_to_its_first_sender() {
+        // hev's UDP-in-UDP connects its socket to the first datagram's
+        // sender (hev-socks5-udp.c:260-279): another process at the same
+        // address cannot use the association after it.
+        let mut any = Source {
+            peer: "127.0.0.1".parse().unwrap(),
+            request: None,
+            port: 0,
+        };
+        assert!(any.allows("127.0.0.1:5000".parse().unwrap()));
+        assert!(!any.allows("127.0.0.1:5001".parse().unwrap()));
+        assert!(any.allows("127.0.0.1:5000".parse().unwrap()));
     }
 }

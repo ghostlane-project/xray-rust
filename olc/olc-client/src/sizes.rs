@@ -8,12 +8,12 @@
 //! The rows are the client's own (the SOCKS front, UDP, DNS, the lane, the
 //! link); smux's rows are `olc_smux`'s and are added from its config.
 
-use crate::copy::COPY_BUFFER;
+use crate::copy::{COPY_BUFFER, POOL_KEEP};
 use crate::dns::{MAX_IN_FLIGHT, MAX_MESSAGE};
 use crate::lane::DATACHANNEL;
 use crate::pipe::{FRAME_HEADER, MAX_PAYLOAD};
 use crate::socks::MAX_SOCKS_CONNS;
-use crate::udp::{DEFAULT_MAX_FLOWS, FWD_REPLY_QUEUE, FWD_WRITE_BATCH, READ_BUFFER};
+use crate::udp::{DEFAULT_MAX_FLOWS, FWD_QUEUE_BUDGET, FWD_REPLY_QUEUE, READ_BUFFER};
 
 /// One row of the budget.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,10 +39,11 @@ pub fn budget() -> Vec<Row> {
     let inbound = olc_muxconn::conn::inbound_capacity(DATACHANNEL.max_record_plaintext());
     vec![
         Row {
-            layer: "SOCKS front copy buffers",
-            cap: MAX_SOCKS_CONNS * 2 * COPY_BUFFER,
-            burst: BURST_CONNECTIONS * 2 * COPY_BUFFER,
-            formula: "MAX_SOCKS_CONNS (512) x 2 directions x COPY_BUFFER (16 KiB)",
+            layer: "SOCKS front copy buffers (only while bytes move)",
+            cap: (MAX_SOCKS_CONNS * 2 + POOL_KEEP) * COPY_BUFFER,
+            burst: (BURST_CONNECTIONS * 2 + POOL_KEEP) * COPY_BUFFER,
+            formula: "2 directions x COPY_BUFFER (16 KiB) per connection moving bytes, \
+                      + POOL_KEEP (8) kept; an idle connection holds none",
         },
         Row {
             layer: "UDP flow table",
@@ -58,10 +59,10 @@ pub fn budget() -> Vec<Row> {
         },
         Row {
             layer: "FWD_UDP reply queues",
-            cap: MAX_SOCKS_CONNS
-                * (FWD_REPLY_QUEUE * crate::udp::FWD_CLIENT_BUFFER + FWD_WRITE_BATCH),
-            burst: 4 * (FWD_REPLY_QUEUE * crate::udp::FWD_CLIENT_BUFFER + FWD_WRITE_BATCH),
-            formula: "per connection FWD_REPLY_QUEUE (32) x 1500 + one FWD_WRITE_BATCH (16 KiB)",
+            cap: FWD_QUEUE_BUDGET,
+            burst: FWD_QUEUE_BUDGET.min(4 * FWD_REPLY_QUEUE * crate::udp::FWD_CLIENT_BUFFER),
+            formula: "FWD_QUEUE_BUDGET (512 KiB) for every connection's queued and \
+                      in-flight frames (queues of FWD_REPLY_QUEUE (32) x <= 1500)",
         },
         Row {
             layer: "DNS queries in flight",
@@ -163,5 +164,15 @@ mod tests {
         for r in &rows {
             assert!(r.burst <= r.cap, "{}", r.layer);
         }
+    }
+
+    #[test]
+    fn two_hundred_fifty_six_connections_fit_while_the_burst_moves() {
+        // Plan §9 at 256 connections: the idle ones hold no copy buffer, so
+        // the SOCKS front is the burst's, whatever the connection count.
+        let held = |moving: usize| (moving * 2 + POOL_KEEP) * COPY_BUFFER;
+        assert!(held(BURST_CONNECTIONS / 2) <= 3 << 20);
+        assert!(held(0) <= 128 << 10, "256 idle connections");
+        assert!(FWD_QUEUE_BUDGET <= 512 << 10, "UDP 0.5 MiB");
     }
 }
