@@ -751,9 +751,8 @@ Null reads as absent, a `log` that is not an object or null is refused, and
 unknown fields are refused, where Xray-core ignores them. Without `log`, as
 with `{}`, warnings and errors are written and no access line.
 
-What the lines say: access lines and the destinations in debug lines show the
-port only (`<redacted-domain>:443`, `<redacted-ip>:443`), and no line at
-`warning` or above names a destination. Each file is capped at 1 MiB: the line
+What the lines say: every line shows a destination by its port only
+(`<redacted-domain>:443`, `<redacted-ip>:443`); no line names a host. Each file is capped at 1 MiB: the line
 that would pass the cap first moves the file to `<name>.1`, replacing the
 previous one.
 

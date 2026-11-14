@@ -476,8 +476,8 @@ XrayStatus xray_core_set_file_logging(
  * log thread, one line at a time and in order, never on a data-path thread;
  * a log 4096 lines behind drops new lines rather than wait. line is UTF-8 on
  * one line, control characters escaped, NUL-terminated and borrowed for the
- * call; line_len excludes the NUL. No line at warning or above names a
- * destination. On success ownership transfers: release runs exactly once
+ * call; line_len excludes the NUL. A line shows a destination by its port
+ * only, as <redacted-ip>:443 or <redacted-domain>:443. On success ownership transfers: release runs exactly once
  * after the last line, possibly after core_free and on any thread, and
  * replacing or clearing a registration releases the previous one. On failure
  * ownership stays with the caller. release is mandatory for a non-null

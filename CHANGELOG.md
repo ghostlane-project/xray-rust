@@ -17,8 +17,9 @@ long-term supported release series.
   `none` for nothing; access lines are written only when `access` names a
   log; `error: "none"` turns the error log off. `dnsLog` and `maskAddress` are
   checked and ignored, unknown fields are refused, and an unknown level reads
-  as `warning` with a warning. The paths are not opened. No line at `warning`
-  or above names a destination. A host that relied on file logging for debug
+  as `warning` with a warning. The paths are not opened. Every line shows a
+  destination by its port only, as `<redacted-ip>:443` or
+  `<redacted-domain>:443`. A host that relied on file logging for debug
   or access lines sets `"log": {"loglevel": "debug", "access": "on"}`.
 - Each runtime log file is capped at 1 MiB: the line that would pass the cap
   moves the file to `<name>.1`, replacing the previous one. A file the config

@@ -1400,9 +1400,8 @@ lines are written, and differs in where they go and in what they say:
   a path other than `none` only turns its log on.
 - `dnsLog` and `maskAddress` are checked and ignored. Xray-core writes DNS
   queries to its access log when `dnsLog` is true and masks addresses in its
-  lines as `maskAddress` asks; here no line holds a DNS name, access and debug
-  lines show a destination's port only, and no line at `warning` or above
-  names a destination at all.
+  lines as `maskAddress` asks; here no line holds a DNS name, and every line
+  shows a destination by its port only (`<redacted-ip>:443`).
 - Unknown fields are refused, and so is a `log` that gives both `loglevel` and
   `logLevel`. Xray-core ignores unknown fields and, matching keys ignoring
   case, keeps the later of the two.

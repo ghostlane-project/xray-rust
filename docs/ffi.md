@@ -698,8 +698,8 @@ which lines are written, as Xray-core reads it (see
   names a log other than `none`. Without `log` there are none, where Xray-core
   writes them to standard output. The path is not opened.
 
-No line at `warning` or above names a destination; access and debug lines show
-destinations as `<redacted-domain>:443` or `<redacted-ip>:443`. Logging never
+Every line shows a destination by its port only, as `<redacted-domain>:443` or
+`<redacted-ip>:443`; no line names a host. Logging never
 blocks a data-path thread: lines go through a queue of 4096 to one log thread
 and are dropped when it is full.
 
