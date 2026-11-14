@@ -163,6 +163,14 @@ type rustConfig struct {
 	DeviceID  string `json:"device_id"`
 	SocksUser string `json:"socks_user,omitempty"`
 	SocksPass string `json:"socks_pass,omitempty"`
+	// Engine, Token and RoomID join a SaluteJazz room (the fakeroom target,
+	// zz_rust_fakeroom_test.go): the engine, the room's password and code.
+	Engine string `json:"engine,omitempty"`
+	Token  string `json:"token,omitempty"`
+	RoomID string `json:"room_id,omitempty"`
+	// Provider is the auth provider: salutejazz reads URL as the room
+	// reference "<code>:<password>" (zz_rust_live_test.go).
+	Provider string `json:"provider,omitempty"`
 	// Liveness and LivenessFallbackMS shorten the client's liveness for the
 	// e2e scenarios (zz_rust_e2e_test.go).
 	Liveness           *rustLiveness `json:"liveness,omitempty"`
