@@ -1276,6 +1276,252 @@ fn ffi_connection_snapshot_close_and_accounting_control_live_socks_flow() {
 }
 
 #[test]
+fn ffi_reset_network_validates_outputs_and_needs_a_loaded_core() {
+    use xray_ffi::xray_core_reset_network;
+    unsafe {
+        let mut error = std::ptr::null_mut();
+        let mut closed = 99;
+        assert_eq!(
+            xray_core_reset_network(std::ptr::null_mut(), &mut closed, &mut error),
+            XrayStatus::NullArgument
+        );
+        assert_eq!(closed, 0);
+        assert_error(&mut error, XrayStatus::NullArgument, "core handle is null");
+        let handle = xray_core_new(&mut error);
+        assert_eq!(
+            xray_core_reset_network(handle, std::ptr::null_mut(), &mut error),
+            XrayStatus::NullArgument
+        );
+        assert_error(&mut error, XrayStatus::NullArgument, "closed count is null");
+        closed = 99;
+        assert_eq!(
+            xray_core_reset_network(handle, &mut closed, &mut error),
+            XrayStatus::CoreNotLoaded
+        );
+        assert_eq!(closed, 0);
+        assert_error(&mut error, XrayStatus::CoreNotLoaded, "not loaded");
+        xray_core_free(handle);
+    }
+}
+
+/// A network reset closes every live flow, as a host close does, and keeps
+/// the listener for the flows that follow. With nothing to close, before
+/// start, without traffic, repeated or after stop, it closes nothing.
+#[test]
+fn ffi_reset_network_closes_live_flows_and_keeps_the_listener() {
+    use xray_ffi::xray_core_reset_network;
+    let inbound_port = reserve_loopback_port();
+    let echo_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let echo_addr = echo_listener.local_addr().unwrap();
+    let echo_thread = thread::spawn(move || {
+        let echoes = (0..3)
+            .map(|_| {
+                let (mut stream, _) = echo_listener.accept().unwrap();
+                thread::spawn(move || {
+                    let mut buffer = [0_u8; 1024];
+                    while let Ok(read @ 1..) = stream.read(&mut buffer) {
+                        if stream.write_all(&buffer[..read]).is_err() {
+                            break;
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for echo in echoes {
+            echo.join().unwrap();
+        }
+    });
+
+    let mut err = std::ptr::null_mut();
+    let core = unsafe { xray_core_new(&mut err) };
+    let raw = CString::new(format!(
+        r#"{{
+          "inbounds": [{{
+            "tag": "socks-in",
+            "protocol": "socks",
+            "listen": "127.0.0.1",
+            "port": {inbound_port},
+            "settings": {{ "udp": false }}
+          }}],
+          "outbounds": [{{ "tag": "direct", "protocol": "freedom" }}]
+        }}"#
+    ))
+    .unwrap();
+    assert_eq!(
+        unsafe { xray_core_load_config_json(core, raw.as_ptr(), &mut err) },
+        XrayStatus::Ok
+    );
+    let reset = |err: &mut *mut xray_ffi::XrayError| {
+        let mut closed = u64::MAX;
+        assert_eq!(
+            unsafe { xray_core_reset_network(core, &mut closed, err) },
+            XrayStatus::Ok,
+            "reset error: {}",
+            error_message(*err)
+        );
+        closed
+    };
+    assert_eq!(reset(&mut err), 0);
+    assert_eq!(
+        unsafe { xray_core_start(core, &mut err) },
+        XrayStatus::Ok,
+        "start error: {}",
+        error_message(err)
+    );
+    assert_eq!(reset(&mut err), 0);
+
+    let mut before = vec![
+        socks_echo_flow(inbound_port, echo_addr),
+        socks_echo_flow(inbound_port, echo_addr),
+    ];
+    let snapshot = read_snapshot_json(core, xray_core_connection_snapshot_json, &mut err);
+    assert_eq!(snapshot["connections"].as_array().unwrap().len(), 2);
+    assert_eq!(reset(&mut err), 2);
+    for flow in &mut before {
+        let mut byte = [0_u8; 1];
+        assert_eq!(flow.read(&mut byte).unwrap(), 0);
+    }
+    let deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let snapshot = read_snapshot_json(core, xray_core_connection_snapshot_json, &mut err);
+        if snapshot["connections"].as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "reset flows stayed registered");
+        thread::yield_now();
+    }
+    assert_eq!(reset(&mut err), 0);
+
+    let after = socks_echo_flow(inbound_port, echo_addr);
+    let accounting =
+        read_snapshot_json(core, xray_core_outbound_accounting_snapshot_json, &mut err);
+    let direct = &accounting["outbounds"][0];
+    assert_eq!(direct["outboundTag"], "direct");
+    assert_eq!(direct["openedConnections"], 3);
+    assert_eq!(direct["hostClosedConnections"], 2);
+
+    assert_eq!(unsafe { xray_core_stop(core, &mut err) }, XrayStatus::Ok);
+    assert_eq!(reset(&mut err), 0);
+    unsafe { xray_core_free(core) };
+    drop(after);
+    echo_thread.join().unwrap();
+}
+
+/// The header asks a host to keep lifecycle calls apart from shared ones.
+/// Under such a gate, network resets from several threads interleave with
+/// load, start, stop and free without a deadlock, and every one succeeds.
+#[test]
+fn ffi_reset_network_interleaves_with_start_and_stop_under_a_host_gate() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Arc, RwLock};
+    use xray_ffi::xray_core_reset_network;
+
+    // Shared calls hold the gate for reading, lifecycle calls for writing;
+    // it holds the live handle's address, zero while there is none.
+    let gate = Arc::new(RwLock::new(0_usize));
+    let done = Arc::new(AtomicBool::new(false));
+    let resets = Arc::new(AtomicU64::new(0));
+    let (resetter_done, resetters_done) = mpsc::channel();
+    let resetters = (0..4)
+        .map(|_| {
+            let (gate, done, resets) = (gate.clone(), done.clone(), resets.clone());
+            let resetter_done = resetter_done.clone();
+            thread::spawn(move || {
+                let mut error = std::ptr::null_mut();
+                while !done.load(Ordering::Acquire) {
+                    let handle = gate.read().unwrap();
+                    if *handle != 0 {
+                        let mut closed = u64::MAX;
+                        let status = unsafe {
+                            xray_core_reset_network(*handle as *mut _, &mut closed, &mut error)
+                        };
+                        assert_eq!(status, XrayStatus::Ok, "{}", error_message(error));
+                        assert_eq!(closed, 0);
+                        resets.fetch_add(1, Ordering::AcqRel);
+                    }
+                    drop(handle);
+                    thread::yield_now();
+                }
+                resetter_done.send(()).unwrap();
+            })
+        })
+        .collect::<Vec<_>>();
+    drop(resetter_done);
+
+    let (lifecycle_done, lifecycle_finished) = mpsc::channel();
+    let lifecycle = thread::spawn({
+        let (gate, resets) = (gate.clone(), resets.clone());
+        move || {
+            // Lets a few resets run in the state the last step left.
+            let resets_run = || {
+                let seen = resets.load(Ordering::Acquire);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while resets.load(Ordering::Acquire) < seen + 4 {
+                    assert!(Instant::now() < deadline, "no reset ran");
+                    thread::sleep(Duration::from_millis(1));
+                }
+            };
+            let mut err = std::ptr::null_mut();
+            for _ in 0..3 {
+                {
+                    let mut handle = gate.write().unwrap();
+                    let core = unsafe { xray_core_new(&mut err) };
+                    let raw = CString::new(client_config_with_freedom_outbound()).unwrap();
+                    assert_eq!(
+                        unsafe { xray_core_load_config_json(core, raw.as_ptr(), &mut err) },
+                        XrayStatus::Ok
+                    );
+                    *handle = core as usize;
+                }
+                resets_run();
+                {
+                    let handle = gate.write().unwrap();
+                    assert_eq!(
+                        unsafe { xray_core_start(*handle as *mut _, &mut err) },
+                        XrayStatus::Ok,
+                        "start error: {}",
+                        error_message(err)
+                    );
+                }
+                resets_run();
+                {
+                    let handle = gate.write().unwrap();
+                    assert_eq!(
+                        unsafe { xray_core_stop(*handle as *mut _, &mut err) },
+                        XrayStatus::Ok
+                    );
+                }
+                resets_run();
+                {
+                    let mut handle = gate.write().unwrap();
+                    unsafe { xray_core_free(*handle as *mut _) };
+                    *handle = 0;
+                }
+            }
+            lifecycle_done.send(()).unwrap();
+        }
+    });
+
+    match lifecycle_finished.recv_timeout(Duration::from_secs(60)) {
+        Ok(()) => lifecycle.join().unwrap(),
+        Err(mpsc::RecvTimeoutError::Timeout) => panic!("lifecycle calls and resets deadlocked"),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            panic!("lifecycle thread failed: {:?}", lifecycle.join().err())
+        }
+    }
+    done.store(true, Ordering::Release);
+    for _ in 0..resetters.len() {
+        resetters_done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("every resetter finishes");
+    }
+    for resetter in resetters {
+        resetter.join().unwrap();
+    }
+    assert!(resets.load(Ordering::Acquire) >= 3 * 3 * 4);
+}
+
+#[test]
 fn ffi_close_connection_rejects_zero_and_unknown_ids() {
     let mut err = std::ptr::null_mut();
     let core = loaded_core(&mut err);
@@ -3791,6 +4037,35 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     ));
     std::fs::create_dir_all(&dir).expect("temp dir should be created");
     dir
+}
+
+/// A SOCKS5 CONNECT to IPv4 `target` through the inbound on `inbound_port`,
+/// checked with one echo.
+fn socks_echo_flow(inbound_port: u16, target: SocketAddr) -> TcpStream {
+    let SocketAddr::V4(target) = target else {
+        panic!("echo target must be IPv4");
+    };
+    let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, inbound_port)).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client.write_all(&[5, 1, 0]).unwrap();
+    let mut method = [0_u8; 2];
+    client.read_exact(&mut method).unwrap();
+    assert_eq!(method, [5, 0]);
+    let mut connect = vec![5, 1, 0, 1];
+    connect.extend_from_slice(&target.ip().octets());
+    connect.extend_from_slice(&target.port().to_be_bytes());
+    client.write_all(&connect).unwrap();
+    let mut response = [0_u8; 10];
+    client.read_exact(&mut response).unwrap();
+    assert_eq!(&response[..2], &[5, 0]);
+    let payload = b"ffi network reset";
+    client.write_all(payload).unwrap();
+    let mut echoed = vec![0_u8; payload.len()];
+    client.read_exact(&mut echoed).unwrap();
+    assert_eq!(echoed, payload);
+    client
 }
 
 fn reserve_loopback_port() -> u16 {

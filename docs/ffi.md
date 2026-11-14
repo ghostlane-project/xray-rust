@@ -8,7 +8,7 @@ source of truth for declarations and enum values.
 ## ABI version
 
 Call `xray_ffi_version_major()` and `xray_ffi_version_minor()` before creating a
-handle. The current ABI version is `1.17`. The checked-in Swift and JNI adapters
+handle. The current ABI version is `1.18`. The checked-in Swift and JNI adapters
 reject any major other than `1` and require minor `1` or newer. Their selector
 and health methods require the corresponding ABI 1.2 capability bits; their
 connection-management methods require the ABI 1.3 capability bit, and routing
@@ -30,6 +30,8 @@ Startup-probe preflight requires minor >=12 and `STARTUP_PROBE_PREFLIGHT` (bit 2
 A TUN MTU other than 1500 requires minor >=16 and `TUN_MTU` (bit 29).
 VLESS link import requires minor >=17, `PROFILE_IMPORT` and
 `VLESS_PROFILE_IMPORT` (bit 30); see the [format contract](vless-profile-import.md).
+The network reset requires minor >=18 and `CONNECTION_MANAGEMENT` (bit 14);
+no new bit marks it, as bit 31 does not fit the header's `int` enum.
 
 An incompatible function signature, enum representation, ownership rule, or
 required struct layout requires a major version change. Consumers should
@@ -119,6 +121,35 @@ The development 0.8 Kotlin adapter now exposes both `rebindHysteria()` and
 lifecycle protection as Swift. Android hosts own `ConnectivityManager` registration,
 usable-network selection, event coalescing and callback teardown; see the
 [Android integration notes](../platform/android/README.md#network-changes-and-hysteria-limits).
+
+### Network reset
+
+ABI 1.18 adds `xray_core_reset_network(handle, closed, error)` for a host whose
+device moved to another network, the case sing-box's `resetNetwork` serves. Without
+stopping the core or its listeners, it:
+
+- lets go of the connections kept for later flows: the HTTP/2 connections of
+  gRPC and XHTTP over HTTP/1.1 and HTTP/2, an HTTP proxy's shared HTTP/2
+  connection, Mux.Cool parents and VLESS `testpre` connections. A pooled
+  connection belongs to the reset generation its dial started in, so no flow
+  after the call is handed one dialed before it, even if the dial was still
+  under way;
+- makes the core's own DNS caches forget their answers, so the next lookup
+  asks on the new network; FakeDNS mappings are kept;
+- moves QUIC carriers and WireGuard to fresh sockets, as
+  `xray_core_rebind_hysteria` and `xray_core_rebind_wireguard` do. XHTTP over
+  HTTP/3 is moved this way, not let go;
+- asks every relayed flow to close, as `xray_core_close_connection` asks one,
+  after the pools are reset, so an application that dials again at once gets
+  the new network.
+
+The required `closed` count is the number of flows asked to close. The call
+is nonblocking, needs no Tokio context and is harmless when repeated, without
+traffic, before start or after stop (count 0). It is a shared call with the
+rebind calls' rules: it may overlap data-path and snapshot calls, but not
+load/start/stop/free. Not reset: the DNS outbound's pooled TCP sessions to
+its servers, which retry a stale session once and expire after 15 to 60 s idle
+by runtime profile, and MASQUE and XDRIVE storages over HTTP/2.
 
 ### Hysteria concurrency limits
 
@@ -529,11 +560,12 @@ Serialize all configuration and lifecycle calls for a handle:
 - every pre-load `xray_core_set_*` call;
 - `xray_core_free`.
 
-Routing-policy replacement, selector override/clear, connection close, and the
-on-demand outbound probe are the exceptions: they use the shared runtime gate
-and may overlap packet/statistics calls, snapshot reads, and each other. All
-five snapshot calls have the same shared-call behavior. None of these shared
-calls may overlap load/start/stop/free.
+Routing-policy replacement, selector override/clear, connection close, the
+carrier rebinds, the network reset and the on-demand outbound probe are the
+exceptions: they use the shared runtime gate and may overlap packet/statistics
+calls, snapshot reads, and each other. All five snapshot calls have the same
+shared-call behavior. None of these shared calls may overlap
+load/start/stop/free.
 
 The header explicitly permits `xray_tun_poll_packets` to run concurrently with
 `xray_tun_push_packet`, `xray_tun_poll_packet`, and `xray_tun_stats` on the same
