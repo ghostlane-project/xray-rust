@@ -1589,6 +1589,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "olc-smux"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "olc-wire"
 version = "0.10.0"
 dependencies = [

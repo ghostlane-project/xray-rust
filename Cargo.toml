@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "olc/olc-smux",
     "crates/xray-config",
     "crates/xray-utls",
     "crates/xray-routing",
