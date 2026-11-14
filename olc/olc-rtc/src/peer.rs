@@ -1,0 +1,648 @@
+// Copyright 2026 The Ghostlane Project contributors.
+// SPDX-License-Identifier: Apache-2.0
+
+//! One peer connection: a str0m `Rtc` on one protected UDP socket, driven by
+//! a task of its own (pion's `PeerConnection` with its agent and SCTP
+//! goroutines, in one place).
+//!
+//! The owner talks to it through [`Peer`] (SDP, candidates, channel writes;
+//! each call takes the `Rtc` under a short lock and kicks the driver) and
+//! hears from it through the [`PeerEvent`] queue the driver fills.
+//!
+//! # Backpressure
+//!
+//! - out: a channel write str0m cannot buffer returns `false`
+//!   ([`Peer::write`]); [`Peer::wait_buffered`] waits until a channel's
+//!   unacknowledged bytes fall under a mark, as the carriers wait on
+//!   `BufferedAmount` (salutejazz/data.go `awaitSendWindow`);
+//! - in: a data event holds permits of [`INBOUND_BYTES`] until the owner
+//!   drops it. With none left the driver stops reading its socket, so a
+//!   slow owner slows the sender through SCTP's own flow control, as a
+//!   blocking `OnMessage` does under pion.
+
+use std::io;
+use std::net::{IpAddr, SocketAddr};
+use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::{Duration, Instant};
+
+use str0m::channel::ChannelId;
+use str0m::net::{Protocol, Receive};
+use str0m::{Candidate, Event, IceCreds, Input, Output, Rtc, RtcConfig};
+use tokio::net::UdpSocket;
+use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
+
+pub use str0m::IceConnectionState;
+
+use crate::{CryptoProvider, DtlsVersion};
+
+/// The driver's one receive buffer: the largest datagram it reads. An SFU
+/// sends at most an Ethernet MTU (1500); DTLS records here are at most the
+/// 1200-byte MTU str0m and Chrome use; 2048 leaves room for an IPv6 path's
+/// larger packets without a second size class.
+pub const RECV_BUF: usize = 2048;
+
+/// What the data events waiting for the owner may hold at once, in bytes:
+/// one message at str0m's largest receivable size (`max-message-size`
+/// 262144, Chrome's value, which str0m advertises unchanged), so any
+/// message SCTP accepted can pass, and no more. A message larger than this
+/// takes all of it.
+pub const INBOUND_BYTES: usize = 256 * 1024;
+
+/// The event queue's length. Only the non-data events need it (data events
+/// are bounded by [`INBOUND_BYTES`]); a peer's life has a handful of those.
+pub const EVENT_QUEUE: usize = 64;
+
+/// How long a closing peer drains its goodbyes (SCTP shutdown, DTLS
+/// close_notify) before the socket goes: Go's `pcCloseTimeout`.
+pub const CLOSE_DRAIN: Duration = Duration::from_secs(2);
+
+/// A peer connection's settings.
+#[derive(Clone)]
+pub struct PeerConfig {
+    /// Its name in the logs (`subscriber`, `publisher`).
+    pub name: &'static str,
+    /// DTLS, SRTP and the hashes ([`crate::crypto`]).
+    pub crypto: Arc<CryptoProvider>,
+    /// The DTLS versions offered.
+    pub dtls_version: DtlsVersion,
+    /// The address the socket binds and the host candidate names
+    /// ([`crate::ice::default_ipv4`]).
+    pub host_ip: IpAddr,
+    /// What its channels may hold unacknowledged, in bytes, all channels
+    /// together (str0m's `sctp_max_buffered_amount`; 128 KiB by default).
+    pub sctp_max_buffered: usize,
+}
+
+impl std::fmt::Debug for PeerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerConfig")
+            .field("name", &self.name)
+            .field("dtls_version", &self.dtls_version)
+            .field("host_ip", &self.host_ip)
+            .field("sctp_max_buffered", &self.sctp_max_buffered)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the driver tells the owner.
+#[derive(Debug)]
+pub enum PeerEvent {
+    /// ICE moved to this state.
+    IceState(IceConnectionState),
+    /// ICE and DTLS are up.
+    Connected,
+    /// A data channel opened, with its label.
+    ChannelOpen(ChannelId, String),
+    /// A message arrived.
+    Data(Inbound),
+    /// A data channel closed.
+    ChannelClose(ChannelId),
+    /// The driver ended (the remote closed, the owner closed, an error):
+    /// the last event.
+    Closed(String),
+}
+
+/// One message from a data channel. Its bytes count against
+/// [`INBOUND_BYTES`] until it is dropped.
+#[derive(Debug)]
+pub struct Inbound {
+    /// The channel it came on.
+    pub channel: ChannelId,
+    /// Binary or text.
+    pub binary: bool,
+    /// The message.
+    pub data: Vec<u8>,
+    _held: OwnedSemaphorePermit,
+}
+
+/// A peer connection that cannot do what it was asked.
+#[derive(Debug, thiserror::Error)]
+pub enum PeerError {
+    /// The socket.
+    #[error("{0}")]
+    Io(#[from] io::Error),
+    /// str0m refused.
+    #[error("{0}")]
+    Rtc(String),
+    /// No such channel (yet, or any more).
+    #[error("data channel not open")]
+    NoChannel,
+    /// The driver has ended.
+    #[error("peer connection closed")]
+    Closed,
+}
+
+/// A handle on one peer connection; clones share it.
+#[derive(Clone)]
+pub struct Peer {
+    sh: Arc<Shared>,
+}
+
+impl std::fmt::Debug for Peer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Peer")
+            .field("name", &self.sh.name)
+            .field("local", &self.sh.local)
+            .finish_non_exhaustive()
+    }
+}
+
+struct Shared {
+    name: &'static str,
+    rtc: Mutex<Rtc>,
+    /// Something changed under the lock: the driver polls str0m again.
+    kick: Notify,
+    /// The driver took input: acknowledgements may have lowered a channel's
+    /// buffered amount ([`Peer::wait_buffered`]).
+    progressed: Notify,
+    closing: AtomicBool,
+    ended: AtomicBool,
+    local: SocketAddr,
+    creds: IceCreds,
+    /// Datagrams the host refused to send (a path the firewall drops):
+    /// counted, as ICE fails such a pair on its own.
+    send_refused: AtomicU64,
+}
+
+/// The str0m settings every peer uses: RTP mode (media would pass through
+/// untouched, as the carriers' video lanes will need), the given ICE
+/// credentials, DTLS and SCTP send buffer.
+#[must_use]
+pub fn rtc_config(cfg: &PeerConfig, creds: &IceCreds) -> RtcConfig {
+    RtcConfig::new()
+        .set_crypto_provider(cfg.crypto.clone())
+        .set_dtls_version(cfg.dtls_version)
+        .set_rtp_mode(true)
+        .set_local_ice_credentials(creds.clone())
+        .set_sctp_max_buffered_amount(cfg.sctp_max_buffered)
+}
+
+impl Peer {
+    /// A peer on a fresh protected socket at `cfg.host_ip`, with fresh
+    /// Chrome-sized credentials, and its event queue. The driver starts now
+    /// (on the current tokio runtime) and ends with [`Peer::close`], the
+    /// remote's close, or the queue's receiver dropped.
+    ///
+    /// # Errors
+    /// The bind, or the protector's refusal.
+    pub fn start(cfg: &PeerConfig) -> Result<(Peer, mpsc::Receiver<PeerEvent>), PeerError> {
+        let std_sock = std::net::UdpSocket::bind(SocketAddr::new(cfg.host_ip, 0))?;
+        olc_net::net::protect(std_sock.as_raw_fd())?;
+        std_sock.set_nonblocking(true)?;
+        let local = std_sock.local_addr()?;
+        let sock = UdpSocket::from_std(std_sock)?;
+        let creds = crate::ice::chrome_creds();
+        let rtc = rtc_config(cfg, &creds).build(Instant::now());
+        let sh = Arc::new(Shared {
+            name: cfg.name,
+            rtc: Mutex::new(rtc),
+            kick: Notify::new(),
+            progressed: Notify::new(),
+            closing: AtomicBool::new(false),
+            ended: AtomicBool::new(false),
+            local,
+            creds,
+            send_refused: AtomicU64::new(0),
+        });
+        let (tx, rx) = mpsc::channel(EVENT_QUEUE);
+        tokio::spawn(drive(sh.clone(), sock, tx));
+        Ok((Peer { sh }, rx))
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Rtc> {
+        self.sh.rtc.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Runs `f` on the `Rtc` (the SDP API, the direct API) and has the
+    /// driver poll after it.
+    pub fn with_rtc<R>(&self, f: impl FnOnce(&mut Rtc) -> R) -> R {
+        let out = f(&mut self.lock());
+        self.sh.kick.notify_one();
+        out
+    }
+
+    /// The local ICE credentials.
+    #[must_use]
+    pub fn creds(&self) -> &IceCreds {
+        &self.sh.creds
+    }
+
+    /// The socket's address.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.sh.local
+    }
+
+    /// Adds the socket's host candidate and returns its SDP attribute
+    /// (`candidate:...`), for trickling.
+    ///
+    /// # Errors
+    /// str0m refused the candidate.
+    pub fn add_host_candidate(&self) -> Result<String, PeerError> {
+        let c = Candidate::host(self.sh.local, "udp").map_err(|e| PeerError::Rtc(e.to_string()))?;
+        self.with_rtc(|rtc| {
+            rtc.add_local_candidate(c)
+                .map(Candidate::to_sdp_string)
+                .ok_or_else(|| PeerError::Rtc("str0m refused the host candidate".into()))
+        })
+    }
+
+    /// Adds a candidate the remote trickled.
+    pub fn add_remote_candidate(&self, c: Candidate) {
+        self.with_rtc(|rtc| rtc.add_remote_candidate(c));
+    }
+
+    /// Writes one message on `channel`: `Ok(false)` when str0m's send buffer
+    /// cannot take it now.
+    ///
+    /// # Errors
+    /// No such channel, a closed peer, or str0m's refusal.
+    pub fn write(&self, channel: ChannelId, binary: bool, data: &[u8]) -> Result<bool, PeerError> {
+        if self.is_ended() {
+            return Err(PeerError::Closed);
+        }
+        self.with_rtc(|rtc| {
+            let mut ch = rtc.channel(channel).ok_or(PeerError::NoChannel)?;
+            ch.write(binary, data)
+                .map_err(|e| PeerError::Rtc(e.to_string()))
+        })
+    }
+
+    /// What `channel` holds unacknowledged; `None` without the channel.
+    #[must_use]
+    pub fn buffered_amount(&self, channel: ChannelId) -> Option<usize> {
+        self.lock()
+            .channel(channel)
+            .map(|mut ch| ch.buffered_amount())
+    }
+
+    /// Waits until `channel` holds at most `at_most` bytes unacknowledged.
+    ///
+    /// # Errors
+    /// The channel went or the peer closed.
+    pub async fn wait_buffered(&self, channel: ChannelId, at_most: usize) -> Result<(), PeerError> {
+        loop {
+            let progressed = self.sh.progressed.notified();
+            tokio::pin!(progressed);
+            progressed.as_mut().enable();
+            if self.is_ended() {
+                return Err(PeerError::Closed);
+            }
+            match self.buffered_amount(channel) {
+                None => return Err(PeerError::NoChannel),
+                Some(n) if n <= at_most => return Ok(()),
+                Some(_) => {}
+            }
+            progressed.await;
+        }
+    }
+
+    /// Waits for the driver's next input (a datagram, a timer): what an
+    /// acknowledgement that frees send buffer comes with.
+    pub async fn progressed(&self) {
+        let next = self.sh.progressed.notified();
+        if self.is_ended() {
+            return;
+        }
+        next.await;
+    }
+
+    /// Whether ICE and DTLS are up.
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.lock().is_connected()
+    }
+
+    /// Whether the driver has ended.
+    #[must_use]
+    pub fn is_ended(&self) -> bool {
+        self.sh.ended.load(Ordering::Acquire)
+    }
+
+    /// Datagrams the host refused to send so far.
+    #[must_use]
+    pub fn send_refused(&self) -> u64 {
+        self.sh.send_refused.load(Ordering::Relaxed)
+    }
+
+    /// Starts closing: the goodbyes go out for at most [`CLOSE_DRAIN`], then
+    /// the driver ends with [`PeerEvent::Closed`].
+    pub fn close(&self) {
+        self.sh.closing.store(true, Ordering::Release);
+        self.sh.kick.notify_one();
+    }
+}
+
+/// Polls str0m until it asks to be woken: sends what it transmits, keeps
+/// its events. Returns when to wake it.
+fn pump(sh: &Shared, sock: &UdpSocket, events: &mut Vec<Event>) -> Result<Instant, String> {
+    let mut rtc = sh.rtc.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        match rtc.poll_output().map_err(|e| format!("poll: {e}"))? {
+            Output::Timeout(t) => return Ok(t),
+            Output::Transmit(t) => {
+                if sock.try_send_to(&t.contents, t.destination).is_err() {
+                    sh.send_refused.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            Output::Event(e) => events.push(e),
+        }
+    }
+}
+
+async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
+    let inbound = Arc::new(Semaphore::new(INBOUND_BYTES));
+    let mut buf = vec![0u8; RECV_BUF];
+    let mut events = Vec::new();
+    let mut drain_until: Option<Instant> = None;
+    let reason: String = 'run: loop {
+        let wake = match pump(&sh, &sock, &mut events) {
+            Ok(t) => t,
+            Err(e) => break 'run e,
+        };
+        sh.progressed.notify_waiters();
+        let mut remote_closed = false;
+        for e in events.drain(..) {
+            let ev = match e {
+                Event::IceConnectionStateChange(s) => PeerEvent::IceState(s),
+                Event::Connected => PeerEvent::Connected,
+                Event::ChannelOpen(id, label) => PeerEvent::ChannelOpen(id, label),
+                Event::ChannelClose(id) => PeerEvent::ChannelClose(id),
+                Event::ChannelData(d) => {
+                    let want = d.data.len().clamp(1, INBOUND_BYTES);
+                    let want = u32::try_from(want).unwrap_or(u32::MAX);
+                    let Ok(held) = inbound.clone().acquire_many_owned(want).await else {
+                        break 'run "inbound closed".into();
+                    };
+                    PeerEvent::Data(Inbound {
+                        channel: d.id,
+                        binary: d.binary,
+                        data: d.data,
+                        _held: held,
+                    })
+                }
+                Event::Closed => {
+                    remote_closed = true;
+                    continue;
+                }
+                _ => continue,
+            };
+            if tx.send(ev).await.is_err() {
+                break 'run "the owner went".into();
+            }
+        }
+        if remote_closed {
+            break 'run "the remote closed the connection".into();
+        }
+        let now = Instant::now();
+        if sh.closing.load(Ordering::Acquire) && drain_until.is_none() {
+            let mut rtc = sh.rtc.lock().unwrap_or_else(PoisonError::into_inner);
+            let _ = rtc.close();
+            drain_until = Some(now + CLOSE_DRAIN);
+            continue;
+        }
+        if let Some(until) = drain_until {
+            let alive = sh
+                .rtc
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .is_alive();
+            if !alive || now >= until {
+                break 'run "closed".into();
+            }
+        }
+        let wake = drain_until.map_or(wake, |u| u.min(wake));
+        tokio::select! {
+            got = sock.recv_from(&mut buf) => match got {
+                Ok((n, src)) => {
+                    if let Ok(r) = Receive::new(Protocol::Udp, src, sh.local, &buf[..n]) {
+                        let mut rtc = sh.rtc.lock().unwrap_or_else(PoisonError::into_inner);
+                        if let Err(e) = rtc.handle_input(Input::Receive(Instant::now(), r)) {
+                            break 'run format!("input: {e}");
+                        }
+                    }
+                }
+                Err(e) if matches!(e.kind(),
+                    io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) => {}
+                Err(e) => break 'run format!("recv: {e}"),
+            },
+            () = tokio::time::sleep_until(wake.into()) => {
+                let mut rtc = sh.rtc.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Err(e) = rtc.handle_input(Input::Timeout(Instant::now())) {
+                    break 'run format!("timeout: {e}");
+                }
+            }
+            () = sh.kick.notified() => {}
+        }
+    };
+    sh.ended.store(true, Ordering::Release);
+    sh.progressed.notify_waiters();
+    olc_net::debug!("webrtc: {} peer connection ended: {reason}", sh.name);
+    let _ = tx.send(PeerEvent::Closed(reason)).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use str0m::change::SdpOffer;
+    use str0m::channel::{ChannelConfig, Reliability};
+
+    use super::*;
+    use crate::testing::bounded;
+
+    /// The event queue holds [`EVENT_QUEUE`] of these per peer connection,
+    /// so its bound in bytes is the slot's size times the queue.
+    #[test]
+    fn an_event_slot_stays_small() {
+        assert!(
+            size_of::<Inbound>() <= 56,
+            "Inbound is {} bytes",
+            size_of::<Inbound>()
+        );
+        assert!(
+            size_of::<PeerEvent>() <= 64,
+            "PeerEvent is {} bytes",
+            size_of::<PeerEvent>()
+        );
+    }
+
+    fn config(name: &'static str, buffered: usize) -> PeerConfig {
+        PeerConfig {
+            name,
+            crypto: crate::crypto(),
+            dtls_version: DtlsVersion::Dtls12,
+            host_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            sctp_max_buffered: buffered,
+        }
+    }
+
+    /// Two peers on loopback, `a` offering one reliable channel; returns
+    /// both with their queues once the channel is open at both ends.
+    async fn pair(
+        buffered: usize,
+    ) -> (
+        Peer,
+        mpsc::Receiver<PeerEvent>,
+        Peer,
+        mpsc::Receiver<PeerEvent>,
+        ChannelId,
+    ) {
+        crate::init();
+        let (a, mut a_rx) = Peer::start(&config("a", buffered)).unwrap();
+        let (b, mut b_rx) = Peer::start(&config("b", buffered)).unwrap();
+        let (offer, pending, id) = a.with_rtc(|rtc| {
+            let mut api = rtc.sdp_api();
+            let id = api.add_channel_with_config(ChannelConfig {
+                label: "_reliable".into(),
+                ordered: true,
+                reliability: Reliability::Reliable,
+                negotiated: None,
+                protocol: String::new(),
+            });
+            let (offer, pending) = api.apply().unwrap();
+            (offer, pending, id)
+        });
+        let offer = SdpOffer::from_sdp_string(&offer.to_sdp_string()).unwrap();
+        let answer = b.with_rtc(|rtc| rtc.sdp_api().accept_offer(offer)).unwrap();
+        a.with_rtc(|rtc| rtc.sdp_api().accept_answer(pending, answer))
+            .unwrap();
+        let ca = Candidate::from_sdp_string(&a.add_host_candidate().unwrap()).unwrap();
+        let cb = Candidate::from_sdp_string(&b.add_host_candidate().unwrap()).unwrap();
+        a.add_remote_candidate(cb);
+        b.add_remote_candidate(ca);
+        let mut open = (false, false);
+        while !(open.0 && open.1) {
+            tokio::select! {
+                Some(e) = a_rx.recv() => if let PeerEvent::ChannelOpen(..) = e { open.0 = true },
+                Some(e) = b_rx.recv() => if let PeerEvent::ChannelOpen(..) = e { open.1 = true },
+            }
+        }
+        (a, a_rx, b, b_rx, id)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_peers_move_ordered_messages_whole() {
+        bounded(async {
+            let (a, _a_rx, b, mut b_rx, id) = pair(1 << 20).await;
+            assert!(a.is_connected() && b.is_connected());
+            let total = 200usize;
+            let sender = tokio::spawn(async move {
+                for i in 0..total {
+                    let msg = vec![u8::try_from(i % 251).unwrap(); 12_000];
+                    loop {
+                        if a.write(id, true, &msg).unwrap() {
+                            break;
+                        }
+                        a.wait_buffered(id, 256 << 10).await.unwrap();
+                    }
+                }
+                a
+            });
+            let mut got = 0usize;
+            while got < total {
+                match b_rx.recv().await.unwrap() {
+                    PeerEvent::Data(m) => {
+                        assert_eq!(m.data.len(), 12_000);
+                        assert!(m.data.iter().all(|&x| usize::from(x) == got % 251));
+                        got += 1;
+                    }
+                    PeerEvent::Closed(r) => panic!("closed: {r}"),
+                    _ => {}
+                }
+            }
+            let a = sender.await.unwrap();
+            a.close();
+            b.close();
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_full_send_buffer_refuses_and_drains() {
+        bounded(async {
+            let (a, _a_rx, _b, mut b_rx, id) = pair(64 << 10).await;
+            let msg = vec![7u8; 16 << 10];
+            let mut accepted = 0usize;
+            while a.write(id, true, &msg).unwrap() {
+                accepted += 1;
+                assert!(accepted <= 8, "str0m took more than its 64 KiB buffer");
+            }
+            assert!(accepted >= 3, "only {accepted} messages fit in 64 KiB");
+            // The peer reads them; the buffer empties as they are acked.
+            let reader = tokio::spawn(async move {
+                let mut n = 0;
+                while n < accepted {
+                    if let Some(PeerEvent::Data(_)) = b_rx.recv().await {
+                        n += 1;
+                    }
+                }
+                b_rx
+            });
+            a.wait_buffered(id, 0).await.unwrap();
+            assert_eq!(a.buffered_amount(id), Some(0));
+            drop(reader.await.unwrap());
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unread_queue_holds_its_byte_bound_and_no_more() {
+        bounded(async {
+            let (a, _a_rx, _b, mut b_rx, id) = pair(1 << 20).await;
+            let msg = vec![1u8; 12_000];
+            for _ in 0..60 {
+                while !a.write(id, true, &msg).unwrap() {
+                    a.wait_buffered(id, 512 << 10).await.unwrap();
+                }
+            }
+            // Nobody reads: the driver stops once the events hold
+            // INBOUND_BYTES; let it get there.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let mut held = Vec::new();
+            while let Ok(PeerEvent::Data(m)) = b_rx.try_recv() {
+                held.push(m);
+            }
+            let bytes: usize = held.iter().map(|m| m.data.len()).sum();
+            assert!(bytes <= INBOUND_BYTES, "{bytes} bytes queued");
+            assert!(bytes + 12_000 > INBOUND_BYTES, "only {bytes} bytes queued");
+            // Dropping them lets the rest through.
+            let before = held.len();
+            drop(held);
+            let mut rest = 0;
+            while before + rest < 60 {
+                if let Some(PeerEvent::Data(_)) = b_rx.recv().await {
+                    rest += 1;
+                }
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_ends_both_drivers() {
+        bounded(async {
+            let (a, mut a_rx, _b, mut b_rx, _id) = pair(1 << 20).await;
+            a.close();
+            loop {
+                if let Some(PeerEvent::Closed(_)) = a_rx.recv().await {
+                    break;
+                }
+            }
+            assert!(a.is_ended());
+            // The remote hears the goodbye (or its ICE goes); either way its
+            // driver reports it and no write is taken after.
+            loop {
+                match b_rx.recv().await {
+                    Some(PeerEvent::Closed(_) | PeerEvent::ChannelClose(_)) | None => break,
+                    Some(PeerEvent::IceState(IceConnectionState::Disconnected)) => break,
+                    _ => {}
+                }
+            }
+        })
+        .await;
+    }
+}

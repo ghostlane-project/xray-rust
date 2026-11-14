@@ -1,0 +1,20 @@
+[package]
+name = "olc-rtc"
+description = "The olcRTC engines' WebRTC: one str0m peer connection per task on a protected socket, Chrome's ICE credentials and STUN order"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+is = { version = "=0.12.0", default-features = false }
+olc-net = { path = "../olc-net" }
+rand.workspace = true
+str0m = { version = "=0.25.0", default-features = false, features = ["aws-lc-rs"] }
+str0m-aws-lc-rs = "=0.7.0"
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
