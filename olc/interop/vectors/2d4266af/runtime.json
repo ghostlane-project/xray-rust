@@ -1,0 +1,963 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/runtime/zz_vectors_test.go TestZZVectors",
+ "sources": [
+  "internal/runtime/runtime.go:22-233"
+ ],
+ "cases": {
+  "constants": {
+   "smux_frame_overhead": 8,
+   "smux_wire_overhead": 52,
+   "min_smux_wire_payload": 53,
+   "connect_ack_timeout_ms": 90000,
+   "connect_request_timeout_ms": 120000,
+   "liveness_timeout_ms": 15000
+  },
+  "smux": [
+   {
+    "max_wire_payload": -1,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 0,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 1,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 52,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 53,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 1,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 1,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 1,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 54,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 2,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 2,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 2,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 100,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 48,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 48,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 48,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 1200,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 1148,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 1148,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 1148,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 12288,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 12236,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 12236,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 12236,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 32820,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 32821,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 61440,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 65535,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 1048576,
+    "profile": "server",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 33554432,
+     "max_stream_buffer": 4194304
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": -1,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 0,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 1,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 52,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 53,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 1,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 1,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 1,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 54,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 2,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 2,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 2,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 100,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 48,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 48,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 48,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 1200,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 1148,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 1148,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 1148,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 12288,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 12236,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 12236,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 12236,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 32820,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 32821,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 61440,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 65535,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   },
+   {
+    "max_wire_payload": 1048576,
+    "profile": "constrained",
+    "data": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "long": {
+     "version": 2,
+     "keepalive_disabled": false,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 120000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 4194304,
+     "max_stream_buffer": 524288
+    },
+    "control": {
+     "version": 2,
+     "keepalive_disabled": true,
+     "keepalive_interval_ms": 10000,
+     "keepalive_timeout_ms": 30000,
+     "max_frame_size": 32768,
+     "max_receive_buffer": 262144,
+     "max_stream_buffer": 32768
+    }
+   }
+  ],
+  "setup_key_set": [
+   {
+    "name": "client",
+    "key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "role": "client",
+    "verdict": "ok"
+   },
+   {
+    "name": "server",
+    "key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "role": "server",
+    "verdict": "ok"
+   },
+   {
+    "name": "upper case hex",
+    "key_hex": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+    "role": "client",
+    "verdict": "ok"
+   },
+   {
+    "name": "empty",
+    "key_hex": "",
+    "role": "client",
+    "verdict": "required",
+    "error_text": "key required (use -key \u003chex\u003e)"
+   },
+   {
+    "name": "odd length",
+    "key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+    "role": "client",
+    "verdict": "decode",
+    "error_text": "failed to decode key: encoding/hex: odd length hex string"
+   },
+   {
+    "name": "not hex",
+    "key_hex": "zz23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "role": "client",
+    "verdict": "decode",
+    "error_text": "failed to decode key: encoding/hex: invalid byte: U+007A 'z'"
+   },
+   {
+    "name": "31 bytes",
+    "key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcd",
+    "role": "client",
+    "verdict": "size",
+    "error_text": "key must be 32 bytes, got 31"
+   },
+   {
+    "name": "33 bytes",
+    "key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef00",
+    "role": "client",
+    "verdict": "size",
+    "error_text": "key must be 32 bytes, got 33"
+   },
+   {
+    "name": "spaces",
+    "key_hex": " 123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "role": "client",
+    "verdict": "decode",
+    "error_text": "failed to decode key: encoding/hex: invalid byte: U+0020 ' '"
+   },
+   {
+    "name": "role zero",
+    "key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "role": "role(0)",
+    "verdict": "other: failed to create key set: new key set: invalid crypto role: 0",
+    "error_text": "failed to create key set: new key set: invalid crypto role: 0"
+   },
+   {
+    "name": "role three",
+    "key_hex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "role": "role(3)",
+    "verdict": "other: failed to create key set: new key set: invalid crypto role: 3",
+    "error_text": "failed to create key set: new key set: invalid crypto role: 3"
+   }
+  ]
+ }
+}

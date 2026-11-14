@@ -1,0 +1,16 @@
+[package]
+name = "olc-muxconn"
+description = "olcRTC's lanes over a record stream: smux frames in OLC2 records, write batching, the inbound queue and the UDP lane, as the Go engine at 2d4266af does them"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+olc-wire = { path = "../olc-wire" }
+thiserror.workspace = true
+
+[dev-dependencies]
+olc-interop = { path = "../interop/oracle-client" }
+serde_json.workspace = true

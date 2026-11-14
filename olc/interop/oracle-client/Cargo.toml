@@ -1,0 +1,12 @@
+[package]
+name = "olc-interop"
+description = "Test support for the olcRTC port: the golden vectors of the Go engine at the pin, and its decode oracle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+serde_json.workspace = true
+sha2.workspace = true
