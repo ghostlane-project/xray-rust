@@ -26,6 +26,12 @@
 //     (server.go:231-246, link.go:366-424), so the client learns of the stop
 //     from the notice or from liveness; either way it reopens on the new
 //     server. The notice itself is held by olc-client's control tests;
+//   - peer close: the server on the pipe in peer mode (interoppipe.PeersName)
+//     runs its peer-routing path, which tells each peer CONTROL_CLOSE as a
+//     rejoin rebuilds it (closePeerRouting, server/link.go:263-288). The hub
+//     cuts the server alone; the client, still in the room, gives the session
+//     up as peer-close, reopens and carries a pull. The Go client runs it
+//     first, as the reference;
 //   - stalled far end: the hub stops reading the client's connection while
 //     uploads fill every buffer in front of it, so the client's write to the
 //     hub blocks for good. Liveness gives the session up and the client
@@ -52,6 +58,7 @@ import (
 	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/engine/interoppipe"
+	"github.com/openlibrecommunity/olcrtc/pkg/olcrtc/client"
 )
 
 // rustLiveness is olc-client's liveness block.
@@ -105,6 +112,13 @@ const childLifetime = 10 * time.Minute
 // The returned stop is idempotent: SIGTERM to the group (the server says
 // goodbye), SIGKILL to whatever is left after stopGrace, then the wait.
 func (e *e2eEnv) server(ep Endpoint, ring []string, allowPrivate bool) func() {
+	e.t.Helper()
+	return e.serverOn(interoppipe.Name, ep, ring, allowPrivate)
+}
+
+// serverOn is server on the engine engineName: interoppipe.PeersName puts
+// the server on its peer-routing path.
+func (e *e2eEnv) serverOn(engineName string, ep Endpoint, ring []string, allowPrivate bool) func() {
 	t := e.t
 	t.Helper()
 	binary, err := e.target.build(context.Background())
@@ -113,7 +127,7 @@ func (e *e2eEnv) server(ep Endpoint, ring []string, allowPrivate bool) func() {
 	}
 	dir := t.TempDir()
 	cfgPath, logPath := filepath.Join(dir, "srv.yaml"), filepath.Join(dir, serverLogName)
-	logFile, err := createPrivate(cfgPath, interopServerConfig(ep, ring), logPath)
+	logFile, err := createPrivate(cfgPath, serverConfigOn(t, engineName, ep, ring), logPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,6 +197,102 @@ func (e *e2eEnv) client(ep Endpoint, extra func(*rustConfig)) (string, *rustChil
 		e.t.Fatalf("rust client not ready within %s", startBudget)
 	}
 	return "", nil
+}
+
+// serverConfigOn is interopServerConfig on the engine engineName.
+func serverConfigOn(t *testing.T, engineName string, ep Endpoint, ring []string) string {
+	t.Helper()
+	cfg := interopServerConfig(ep, ring)
+	if engineName == interoppipe.Name {
+		return cfg
+	}
+	from := "name: " + interoppipe.Name + ","
+	if strings.Count(cfg, from) != 1 {
+		t.Fatalf("interopServerConfig does not name its engine as %q once:\n%s", from, cfg)
+	}
+	return strings.Replace(cfg, from, "name: "+engineName+",", 1)
+}
+
+// goPeersClient is the Go public client on the pipe in peer mode: it confirms
+// the peer its welcome names and sends to that peer alone (client/link.go:111,
+// :145-157), as on a carrier with peer ids.
+type goPeersClient struct{ cli cliClient }
+
+// Start runs the client on ep, as goInteropClient does.
+func (g goPeersClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, error) {
+	cfg := client.Config{
+		Transport: ep.Transport, Provider: "none", Engine: interoppipe.PeersName, URL: ep.Room,
+		KeyHex: ep.Key, LocalAddr: "127.0.0.1:0", DNSServer: ep.DNS, DeviceID: "gate-cli",
+	}
+	c := g.cli
+	c.run = func(ctx context.Context, _ client.Config, onReady func(addr string)) error {
+		return runPublicClient(ctx, cfg, onReady)
+	}
+	return c.Start(ctx, ep)
+}
+
+// peerClose runs the peer close under one client flavour: a server in peer
+// mode, a pull, the hub cutting the server alone, and the client, which was
+// not cut, hearing CONTROL_CLOSE as the server's rejoin rebuilds its peer
+// routing (reinstallPeerRouting, server/link.go:238-244, closePeers through
+// closePeerSession and notifyPeerClose, server/peer.go:691-767).
+func (e *e2eEnv) peerClose(flavour string) {
+	t := e.t
+	t.Helper()
+	hub := e.target.hub
+	name, ep := e.room(e.key())
+	srv, cli := ep, ep
+	srv.Room, cli.Room = hub.URL(name+"@srv"), hub.URL(name+"@"+flavour)
+	defer e.serverOn(interoppipe.PeersName, srv, []string{ep.Key}, true)()
+	log := e.capture.Begin()
+	var socks string
+	switch flavour {
+	case "rust":
+		var child *rustChild
+		socks, child = e.client(cli, nil)
+		defer child.halt(stopBudget, t.Logf)
+	case "cli":
+		ctx, cancel := context.WithTimeout(context.Background(), childLifetime)
+		defer cancel()
+		tun, err := goPeersClient{cli: cliClient{start: startBudget, stop: stopBudget}}.Start(ctx, cli)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tun.Stop()
+		socks = tun.SocksAddr
+	default:
+		t.Fatalf("no flavour %q", flavour)
+	}
+	e.pullSoon(socks, 10*time.Second)
+	if n := log.Count("client reconnect reason="); n != 0 {
+		t.Fatalf("%s: %d reconnects before the cut:\n%s", flavour, n, tail(log.Text(), 30))
+	}
+	hub.CutTag(name, "srv")
+	waitLog(t, log, "client reconnect reason=peer-close", 1, 10*time.Second)
+	// The death comes first and once; the engine's rejoin it asks for then
+	// comes back as "reason=provider" (handleReconnect, client/link.go:361-372),
+	// in both flavours, and is not a second death.
+	deaths := func() (first string, peerClose, liveness int) {
+		text := log.Text()
+		if i := strings.Index(text, "client reconnect reason="); i >= 0 {
+			first = text[i+len("client reconnect reason="):]
+			if j := strings.IndexAny(first, " \n"); j >= 0 {
+				first = first[:j]
+			}
+		}
+		return first, log.Count("client reconnect reason=peer-close"), log.Count("client reconnect reason=liveness")
+	}
+	if first, pc, lv := deaths(); first != "peer-close" || pc != 1 || lv != 0 {
+		t.Fatalf("%s: first death %q, %d peer-close, %d liveness; want the server's notice alone:\n%s",
+			flavour, first, pc, lv, tail(log.Text(), 30))
+	}
+	waitLog(t, log, " reopened (device=", 1, 30*time.Second)
+	e.pullSoon(socks, 20*time.Second)
+	if first, pc, lv := deaths(); first != "peer-close" || pc != 1 || lv != 0 {
+		t.Fatalf("%s: after the reopen: first death %q, %d peer-close, %d liveness:\n%s",
+			flavour, first, pc, lv, tail(log.Text(), 30))
+	}
+	t.Logf("%s: the server's notice ended the session (peer-close); it reopened and carried a pull", flavour)
 }
 
 // pull fetches the origin's 1 KB through socks.
@@ -484,6 +594,13 @@ func TestRustE2E(t *testing.T) {
 		defer env.server(ep, []string{ep.Key}, true)()
 		waitLog(t, log, " reopened (device=", 1, 90*time.Second)
 		env.pullSoon(socks, 20*time.Second)
+	})
+
+	t.Run("peer close", func(t *testing.T) {
+		env.t = t
+		for _, flavour := range []string{"cli", "rust"} {
+			env.peerClose(flavour)
+		}
 	})
 
 	t.Run("stalled far end: reconnect", func(t *testing.T) {
