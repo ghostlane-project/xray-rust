@@ -1,0 +1,11 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/transport/datachannel/zz_vectors_test.go TestZZVectors",
+ "sources": [
+  "internal/transport/datachannel/transport.go:14-26"
+ ],
+ "cases": {
+  "max_payload_size": 12288,
+  "write_interval_us": 5000
+ }
+}
