@@ -3709,7 +3709,8 @@ options after it: such an outbound dials TCP without binding its
 `interface`. Keepalive still applies.
 
 **Failures.** The first option that fails stops the ones after it. It is
-logged at debug level as "failed to apply socket options", and the dial goes
+logged at info level as "failed to apply socket options", as in Xray-core,
+and the dial goes
 on. The exception is `interface`: a device that does not exist or cannot be
 bound fails the dial. Android apps lack the privilege binding to a device
 needs, so there `interface` fails every dial, and `mark` stops the options

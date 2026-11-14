@@ -955,15 +955,15 @@ impl Core {
     }
 
     pub fn set_runtime_logger(&mut self, runtime_logger: RuntimeLogger) {
-        // A socket option that fails without failing its dial is logged, as
-        // Xray-core logs it.
+        // A socket option that fails without failing its dial is logged at
+        // info, as Xray-core logs it.
         let logger = runtime_logger.clone();
         self.transport_dialer = Arc::new(
             self.transport_dialer
                 .as_ref()
                 .clone()
                 .with_socket_options_report(Arc::new(move |error: &std::io::Error| {
-                    logger.debug(|| format!("failed to apply socket options: {error}"));
+                    logger.info(|| format!("failed to apply socket options: {error}"));
                 })),
         );
         self.runtime_logger = runtime_logger;

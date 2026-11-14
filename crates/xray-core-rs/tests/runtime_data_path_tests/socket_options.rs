@@ -76,6 +76,70 @@ async fn tun_udp_through_freedom_takes_its_socket_options() {
     }
 }
 
+/// An option that fails without failing its dial is logged at info, as
+/// Xray-core logs it: the line is written at `loglevel: info` and not at
+/// `warning`, and the datagram still leaves.
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+#[tokio::test]
+async fn a_socket_option_that_fails_is_logged_at_info() {
+    // An unknown type fails when the option is applied, on every platform.
+    const FAILING: &str = r#"{"customSockopt": [{"opt": "1", "type": "bool"}]}"#;
+    const LINE: &str = " info failed to apply socket options: unknown CustomSockopt type: bool";
+    for (level, expected) in [("info", 1), ("warning", 0)] {
+        let log_dir = create_runtime_log_temp_dir("xray-rust-sockopt-log");
+        let server = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+        let raw = format!(
+            r#"{{
+            "log": {{"loglevel": "{level}"}},
+            "inbounds": [{SOCKS_IN}],
+            "outbounds": [{{"tag": "direct", "protocol": "freedom",
+                            "streamSettings": {{"sockopt": {FAILING}}}}}]
+        }}"#
+        );
+        let parsed = parse_xray_json(&raw)
+            .unwrap_or_else(|error| panic!("{raw} should parse: {:?}", error.diagnostics));
+        let mut core = Core::new(parsed.config).unwrap();
+        core.set_runtime_logger(
+            RuntimeLogger::new(RuntimeLogConfig::directory(&log_dir.path).with_log(parsed.log))
+                .unwrap(),
+        );
+        core.start().await.unwrap();
+        let socks = core.inbound_addr(Some("socks-in")).unwrap();
+        let mut control = TcpStream::connect(socks).await.unwrap();
+        let relay = socks5_udp_associate(&mut control).await;
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let target = Target::new(
+            RoutingTargetAddr::Ip(server_addr.ip()),
+            server_addr.port(),
+            RoutingNetwork::Udp,
+        );
+        let request = encode_socks5_udp_datagram(&target, b"options").unwrap();
+        client.send_to(&request, relay).await.unwrap();
+        assert!(arrives(&server).await, "{level}: the dial went on");
+        drop(control);
+        core.stop().await.unwrap();
+        drop(core);
+
+        // The log thread writes what is queued within its 100 ms flush.
+        let error_log = log_dir.path.join("xray-error.log");
+        let deadline = TokioInstant::now() + Duration::from_secs(2);
+        let log = loop {
+            let log = std::fs::read_to_string(&error_log).unwrap_or_default();
+            if log.contains(LINE) || TokioInstant::now() >= deadline {
+                break log;
+            }
+            sleep(Duration::from_millis(50)).await;
+        };
+        let failures = log
+            .lines()
+            .filter(|line| line.contains("failed to apply socket options"))
+            .collect::<Vec<_>>();
+        assert_eq!(failures.len(), expected, "{level}: {log}");
+        assert!(failures.iter().all(|line| line.contains(LINE)), "{log}");
+    }
+}
+
 /// TUN answers an A or AAAA question through the resolver and forwards any
 /// other one itself; both leave through freedom with its options.
 #[tokio::test]
