@@ -1,4 +1,4 @@
-//! Heap that HTTP/2 frame reading keeps.
+//! Heap that HTTP/2 frame reading and XHTTP request composition keep.
 //!
 //! A counting global allocator (live bytes, a resettable peak, and the number
 //! of allocation calls) measures this test binary. dhat-rs has no peak reset,
@@ -15,6 +15,9 @@
 //! - A burst of 32 packet-up downloads whose readers lag keeps every frame
 //!   waiting for its reader in an allocation of its own size, not a share
 //!   of a larger read buffer, and peaks under a ceiling set from that.
+//! - A packet-up POST costs fewer allocations to compose and convert: the
+//!   static header block is built once per transport.
+//! - The request headers are pinned byte for byte.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -34,7 +37,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream
 use tokio::time::timeout;
 
 use xray_transport::stream::xhttp_composer_test_only::{
-    XhttpConfig, XhttpConfigInput, XhttpEndpoint, XhttpModeSelection, XhttpRange, XhttpScheme,
+    NormalizedRange, XhttpConfig, XhttpConfigInput, XhttpEndpoint, XhttpMetadataPlacement,
+    XhttpModeSelection, XhttpPaddingPlacement, XhttpRange, XhttpScheme,
 };
 use xray_transport::stream::xhttp_h2_test_only::{connect_h2_with_window, H2ReceiveWindow};
 use xray_transport::stream::xhttp_transport_test_only::{
@@ -168,6 +172,10 @@ fn reset_peak() {
 
 fn peak_bytes() -> isize {
     PEAK_BYTES.load(Ordering::SeqCst)
+}
+
+fn allocation_calls() -> u64 {
+    ALLOCATION_CALLS.load(Ordering::SeqCst)
 }
 
 fn live_by_class() -> [isize; SIZE_CLASSES] {
@@ -528,6 +536,16 @@ impl Server {
             downlinks: Mutex::new(Vec::new()),
         }
     }
+
+    async fn wait_for_posts(&self, posts: usize) {
+        timeout(DEADLINE, async {
+            while self.posts.load(Ordering::Acquire) < posts {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("the server did not answer every POST");
+    }
 }
 
 /// Dials an in-process H2 server over a pipe of `pipe` bytes; with
@@ -641,6 +659,222 @@ fn transport_for(config: XhttpConfig, connections: i32, pinned_rng: bool) -> Xht
     } else {
         transport
     }
+}
+
+// ===== allocations per POST =====
+
+/// POSTs counted together.
+const POSTS: u64 = 200;
+/// A packet's payload: a typical small upload.
+const POST_PAYLOAD: usize = 1200;
+/// Allocation calls one POST may cost to compose and convert into its H2
+/// request, the payload not included. Measured: 123 when every POST
+/// masqueraded and converted every header again, 25 from the transport's
+/// template; 40 leaves room for a few more fields.
+const ALLOCATIONS_PER_POST_LIMIT: u64 = 40;
+
+#[test]
+fn a_packet_post_is_composed_with_few_allocations() {
+    measured(post_allocations());
+}
+
+async fn post_allocations() {
+    let transport = app_shaped_transport(None);
+    // The first POST resolves the browser versions, once per process.
+    drop(
+        transport
+            .h2_packet_request_for_test("session", 0, vec![0x55; POST_PAYLOAD])
+            .unwrap(),
+    );
+    let payloads: Vec<Vec<u8>> = (0..POSTS).map(|_| vec![0x55; POST_PAYLOAD]).collect();
+
+    let before = allocation_calls();
+    for (sequence, payload) in (1..).zip(payloads) {
+        let request = transport
+            .h2_packet_request_for_test("session", sequence, payload)
+            .unwrap();
+        drop(request);
+    }
+    let per_post = (allocation_calls() - before) / POSTS;
+    eprintln!(
+        "one packet-up POST: {per_post} allocation calls to compose and convert \
+         (limit {ALLOCATIONS_PER_POST_LIMIT})"
+    );
+    assert!(
+        per_post <= ALLOCATIONS_PER_POST_LIMIT,
+        "a packet-up POST costs {per_post} allocation calls; the limit is \
+         {ALLOCATIONS_PER_POST_LIMIT}"
+    );
+}
+
+// ===== the request headers on the wire =====
+
+/// POSTs each wire case sends.
+const WIRE_POSTS: usize = 6;
+
+/// The HEADERS frames a packet-up flow writes (its GET, then one POST per
+/// upload), compared byte for byte with what the code wrote before the
+/// static header block was cached. The configured User-Agent turns the
+/// browser masquerade off, whose versions are drawn once per process, so
+/// these bytes are the same in every run.
+#[test]
+fn packet_up_request_headers_on_the_wire_are_unchanged() {
+    measured(request_headers_on_the_wire());
+}
+
+async fn request_headers_on_the_wire() {
+    let mut changed = Vec::new();
+    for (name, config, expected) in wire_cases() {
+        let headers = wire_headers(config).await;
+        let digest = fnv1a(&headers);
+        eprintln!(
+            "wire case {name}: {} B of HEADERS, digest {digest:#018x}",
+            headers.len()
+        );
+        if (headers.len(), digest) != expected {
+            changed.push(name);
+        }
+    }
+    assert!(
+        changed.is_empty(),
+        "the request headers changed on the wire in {changed:?}"
+    );
+}
+
+/// (name, config, (HEADERS bytes, FNV-1a of them)) recorded before the change.
+fn wire_cases() -> Vec<(&'static str, XhttpConfig, (usize, u64))> {
+    let mut plain = XhttpConfigInput {
+        mode: XhttpModeSelection::PacketUp,
+        path: "/api".to_owned(),
+        ..XhttpConfigInput::default()
+    };
+    plain.headers.set("User-Agent", "wire-test");
+    plain.headers.set("X-Static", "kept");
+
+    // Static headers that the per-request ones meet: a Referer the padding
+    // replaces in place, a Cookie the session cookie joins, and padding,
+    // session and sequence in a header, a cookie and the query.
+    let mut colliding = XhttpConfigInput {
+        mode: XhttpModeSelection::PacketUp,
+        path: "/api?static=1".to_owned(),
+        x_padding_obfs_mode: true,
+        x_padding_key: "pad".to_owned(),
+        x_padding_header: "Referer".to_owned(),
+        x_padding_placement: XhttpPaddingPlacement::Header,
+        session_placement: XhttpMetadataPlacement::Cookie,
+        session_key: "sid".to_owned(),
+        seq_placement: XhttpMetadataPlacement::Query,
+        seq_key: "seq".to_owned(),
+        ..XhttpConfigInput::default()
+    };
+    colliding.headers.set("User-Agent", "wire-test");
+    colliding
+        .headers
+        .set("Referer", "https://example.com/static");
+    colliding.headers.set("Cookie", "static=1");
+    colliding.headers.set("Accept-Encoding", "");
+
+    let mut in_headers = XhttpConfigInput {
+        mode: XhttpModeSelection::PacketUp,
+        path: "/api".to_owned(),
+        x_padding_obfs_mode: true,
+        x_padding_key: "pad".to_owned(),
+        x_padding_header: "X-Pad".to_owned(),
+        x_padding_placement: XhttpPaddingPlacement::Cookie,
+        session_placement: XhttpMetadataPlacement::Header,
+        session_key: "X-Session".to_owned(),
+        seq_placement: XhttpMetadataPlacement::Header,
+        seq_key: "X-Seq".to_owned(),
+        ..XhttpConfigInput::default()
+    };
+    in_headers.headers.set("User-Agent", "wire-test");
+    in_headers.headers.set("X-Session", "static");
+
+    let normalize = |input: XhttpConfigInput| {
+        let mut config = XhttpConfig::normalize(input).unwrap();
+        config.min_posts_interval_ms = NormalizedRange::exact(0);
+        config
+    };
+    vec![
+        ("plain", normalize(plain), (4247, 0x2cf1_02cc_9161_d3be)),
+        (
+            "colliding",
+            normalize(colliding),
+            (4211, 0x97fc_b44b_4158_f263),
+        ),
+        (
+            "in-headers",
+            normalize(in_headers),
+            (3950, 0xfb89_def9_1c70_86a6),
+        ),
+    ]
+}
+
+/// The HEADERS and CONTINUATION frames, header and payload, that one
+/// packet-up flow of `config` writes for its GET and `WIRE_POSTS` uploads.
+async fn wire_headers(config: XhttpConfig) -> Vec<u8> {
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let server = Arc::new(Server::new(16, 16));
+    let dial = server_dial(Arc::clone(&server), 64 * 1024, Some(Arc::clone(&writes)));
+    let transport = transport_for(config, 1, true);
+    let mut flow = transport
+        .open_stream_with_dial(Arc::clone(&dial))
+        .await
+        .unwrap();
+    for post in 0..WIRE_POSTS {
+        flow.write_all(&vec![0x30 + post as u8; 100 + post * 50])
+            .await
+            .unwrap();
+        flow.flush().await.unwrap();
+        server.wait_for_posts(post + 1).await;
+    }
+    let mut download = [0; 16];
+    timeout(DEADLINE, flow.read_exact(&mut download))
+        .await
+        .expect("the downlink did not arrive")
+        .unwrap();
+    drop(flow);
+    let writes = writes.lock().unwrap();
+    header_frames(&writes)
+}
+
+const CLIENT_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+const FRAME_HEADERS: u8 = 0x1;
+const FRAME_CONTINUATION: u8 = 0x9;
+
+fn header_frames(writes: &[u8]) -> Vec<u8> {
+    frames_of(writes, &[FRAME_HEADERS, FRAME_CONTINUATION]).0
+}
+
+/// The client's frames of the given types, header and payload, one after
+/// another, and their payload lengths.
+fn frames_of(writes: &[u8], kinds: &[u8]) -> (Vec<u8>, Vec<usize>) {
+    let mut offset = if writes.starts_with(CLIENT_PREFACE) {
+        CLIENT_PREFACE.len()
+    } else {
+        0
+    };
+    let mut frames = Vec::new();
+    let mut lens = Vec::new();
+    while offset + 9 <= writes.len() {
+        let payload = usize::from(writes[offset]) << 16
+            | usize::from(writes[offset + 1]) << 8
+            | usize::from(writes[offset + 2]);
+        let end = offset + 9 + payload;
+        assert!(end <= writes.len(), "a client frame was cut short");
+        if kinds.contains(&writes[offset + 3]) {
+            frames.extend_from_slice(&writes[offset..end]);
+            lens.push(payload);
+        }
+        offset = end;
+    }
+    (frames, lens)
+}
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 /// Bytes every client stream has read from its pipe.

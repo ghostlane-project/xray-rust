@@ -8,13 +8,19 @@
 //! A Rust HTTP stack would lowercase or reorder these, which is why this is
 //! written by hand.
 
+use std::sync::Arc;
+
 /// Insertion-order-independent header storage that keeps literal key casing.
 ///
 /// Go's `http.Header` is a map, so two keys differing only in case are two
 /// distinct headers, and both are emitted. This mirrors that.
+///
+/// Names and values are shared strings: XHTTP composes every request from one
+/// block of configured and masquerade headers, and a clone of that block
+/// costs one allocation, not two for each field.
 #[derive(Debug, Clone, Default)]
 pub struct HeaderMap {
-    entries: Vec<(String, String)>,
+    entries: Vec<(Arc<str>, Arc<str>)>,
 }
 
 const DEFAULT_USER_AGENT: &str = "Go-http-client/1.1";
@@ -36,36 +42,36 @@ impl HeaderMap {
     /// Replaces every existing value for this exact key with one value.
     /// Comparison is case-sensitive, matching Go's map semantics.
     pub fn set(&mut self, key: &str, value: &str) {
-        let replacement = value.to_owned();
+        let replacement: Arc<str> = Arc::from(value);
         let mut found = false;
         self.entries.retain_mut(|(name, existing)| {
-            if name != key {
+            if &**name != key {
                 return true;
             }
             if found {
                 return false;
             }
-            *existing = replacement.clone();
+            *existing = Arc::clone(&replacement);
             found = true;
             true
         });
         if !found {
-            self.entries.push((key.to_owned(), replacement));
+            self.entries.push((Arc::from(key), replacement));
         }
     }
 
     /// Appends another value for this exact key without replacing earlier
     /// values, matching Go's `http.Header.Add` value ordering.
     pub fn add(&mut self, key: &str, value: &str) {
-        self.entries.push((key.to_owned(), value.to_owned()));
+        self.entries.push((Arc::from(key), Arc::from(value)));
     }
 
     /// Returns the first value for this exact key, like Go's `Header.Get`.
     pub fn get(&self, key: &str) -> Option<&str> {
         self.entries
             .iter()
-            .find(|(name, _)| name == key)
-            .map(|(_, value)| value.as_str())
+            .find(|(name, _)| &**name == key)
+            .map(|(_, value)| &**value)
     }
 
     /// Iterates literal key/value pairs without exposing the backing storage.
@@ -74,13 +80,58 @@ impl HeaderMap {
     /// HTTP/1.1 still uses the original casing and its own Go-compatible sort.
     /// The HTTP CONNECT outbound reads the masquerade block through it.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.entries
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str()))
+        self.entries.iter().map(|(name, value)| (&**name, &**value))
     }
 
     pub fn remove(&mut self, key: &str) {
-        self.entries.retain(|(name, _)| name != key);
+        self.entries.retain(|(name, _)| &**name != key);
+    }
+
+    /// Replaces the first field whose name matches `key` in any case with
+    /// `key: value`, in its place, and drops the later ones; appends the
+    /// field when none matches. The order is the one rebuilding the map
+    /// field by field gives, without rebuilding it.
+    pub(crate) fn set_ignoring_case(&mut self, key: &str, value: &str) {
+        let mut found = false;
+        self.entries.retain_mut(|(name, existing)| {
+            if !name.eq_ignore_ascii_case(key) {
+                return true;
+            }
+            if found {
+                return false;
+            }
+            *name = Arc::from(key);
+            *existing = Arc::from(value);
+            found = true;
+            true
+        });
+        if !found {
+            self.entries.push((Arc::from(key), Arc::from(value)));
+        }
+    }
+
+    /// A copy with room for `headroom` more fields: the fields themselves are
+    /// shared, so this is one allocation.
+    pub(crate) fn clone_with_headroom(&self, headroom: usize) -> Self {
+        let mut entries = Vec::with_capacity(self.entries.len() + headroom);
+        entries.extend(self.entries.iter().cloned());
+        Self { entries }
+    }
+
+    /// Number of fields.
+    pub(crate) fn field_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether this map's first fields are `prefix`'s fields, in order.
+    pub(crate) fn starts_with(&self, prefix: &HeaderMap) -> bool {
+        self.entries.len() >= prefix.entries.len()
+            && self.entries.iter().zip(&prefix.entries).all(
+                |((name, value), (prefix_name, prefix_value))| {
+                    (Arc::ptr_eq(name, prefix_name) || name == prefix_name)
+                        && (Arc::ptr_eq(value, prefix_value) || value == prefix_value)
+                },
+            )
     }
 }
 
@@ -132,12 +183,12 @@ pub(crate) fn serialize_request_with_framing(
         }
     }
 
-    let mut rest: Vec<&(String, String)> = headers
+    let mut rest: Vec<&(Arc<str>, Arc<str>)> = headers
         .entries
         .iter()
         .filter(|(name, _)| {
             !matches!(
-                name.as_str(),
+                &**name,
                 "User-Agent" | "Host" | "Content-Length" | "Transfer-Encoding" | "Trailer"
             )
         })
