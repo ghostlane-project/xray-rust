@@ -81,6 +81,10 @@ pub fn run(provider: &Arc<CryptoProvider>, version: DtlsVersion, bytes: usize, c
         }
         let mut progressed = poll_side(&mut a, true, &mut st)?;
         progressed |= poll_side(&mut b, false, &mut st)?;
+        if flush_echo(&mut b, &mut st)? {
+            progressed = true;
+            poll_side(&mut b, false, &mut st)?;
+        }
         while !a.outq.is_empty() || !b.outq.is_empty() {
             progressed = true;
             if let Some(d) = a.outq.pop_front() {
@@ -141,6 +145,21 @@ struct State {
     sent: usize,
     echoed: usize,
     seq: u32,
+    echo_q: VecDeque<(ChannelId, Vec<u8>)>,
+}
+
+/// Writes what the answerer owes back while its channel takes it; true if anything went.
+fn flush_echo(b: &mut Side, st: &mut State) -> Result<bool, String> {
+    let mut moved = false;
+    while let Some((id, data)) = st.echo_q.front() {
+        let Some(mut ch) = b.rtc.channel(*id) else { break };
+        if !ch.write(true, data).map_err(|e| format!("echo: {e}"))? {
+            break;
+        }
+        st.echo_q.pop_front();
+        moved = true;
+    }
+    Ok(moved)
 }
 
 /// Hands one datagram to `to`.
@@ -190,11 +209,10 @@ fn poll_side(from: &mut Side, is_a: bool, st: &mut State) -> Result<bool, String
                         if is_a {
                             st.echoed += d.data.len();
                             st.report.messages += 1;
-                        } else if let Some(mut ch) = from.rtc.channel(d.id) {
-                            // The echo: the answerer writes back what it read.
-                            if !ch.write(true, &d.data).map_err(|e| format!("echo: {e}"))? {
-                                return Err("echo: the answerer's channel was full".into());
-                            }
+                        } else {
+                            // The echo: the answerer writes back what it read, in order, as
+                            // fast as its channel's send buffer takes it.
+                            st.echo_q.push_back((d.id, d.data.to_vec()));
                         }
                     }
                     _ => {}

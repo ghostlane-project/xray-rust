@@ -155,6 +155,8 @@ fn platform(s: &mut Snapshot) {
         size_allocated: usize,
     }
 
+    static PF_SAMPLED_MAX: AtomicUsize = AtomicUsize::new(0);
+
     // task_vm_info, through rev 3 (ledger_phys_footprint_peak); the kernel fills what the
     // count asks for.
     #[repr(C)]
@@ -200,7 +202,11 @@ fn platform(s: &mut Snapshot) {
         s.rss = info.resident_size as usize;
         s.rss_peak = info.resident_size_peak as usize;
         s.phys_footprint = info.phys_footprint as usize;
-        s.phys_footprint_peak = info.ledger_phys_footprint_peak.max(0) as usize;
+        // The ledger's peak reads 0 where the kernel keeps no interval maximum (seen on the
+        // macos-15 runner); the sampled maximum over every snapshot stands in for it then.
+        let sampled = PF_SAMPLED_MAX.fetch_max(s.phys_footprint, Ordering::Relaxed).max(s.phys_footprint);
+        let ledger = info.ledger_phys_footprint_peak.max(0) as usize;
+        s.phys_footprint_peak = if ledger > 0 { ledger } else { sampled };
     }
     let mut ms = MallocStatistics::default();
     // SAFETY: a null zone asks for the sum over every zone.
