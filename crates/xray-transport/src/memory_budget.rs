@@ -773,30 +773,49 @@ impl<'b> ReceiveGate<'b> {
         let budget = self.permits.budget();
         let need = queued.saturating_sub(budget.floor());
         let before = self.permits.held();
-        // The room is claimed among the gates before `B` is asked, so two
-        // gates cannot both take the same part of it.
+        if need == 0 && before == 0 {
+            // A stream that keeps up: nothing to hold, nothing to claim.
+            return std::mem::take(&mut self.owed);
+        }
         let cap = budget.window_cap();
         let mut windows = budget.window_bytes.load(Ordering::SeqCst);
-        let claimed = loop {
+        let held = loop {
             let others = windows.saturating_sub(before);
             let claim = need.min(cap.saturating_sub(others));
+            if claim <= before {
+                // Less to hold: the bytes go back to `B` before the gate's
+                // share of the windows' part, so the gates never hold more
+                // than that part, not even for a moment.
+                if claim < before {
+                    self.permits.try_hold(claim);
+                    budget
+                        .window_bytes
+                        .fetch_sub(before - claim, Ordering::SeqCst);
+                    budget.settle_if_room();
+                }
+                break claim;
+            }
+            // More to hold: the room is claimed among the gates before `B`
+            // is asked, so two gates cannot both take the same part of it.
             match budget.window_bytes.compare_exchange_weak(
                 windows,
                 others + claim,
                 Ordering::SeqCst,
                 Ordering::SeqCst,
             ) {
-                Ok(_) => break claim,
+                Ok(_) => {
+                    let held = self.permits.try_hold(claim);
+                    if held < claim {
+                        // `B` had less free: the relays hold the rest.
+                        budget
+                            .window_bytes
+                            .fetch_sub(claim - held, Ordering::SeqCst);
+                    }
+                    break held;
+                }
                 Err(current) => windows = current,
             }
         };
-        let held = self.permits.try_hold(claimed);
-        if held < claimed {
-            // `B` had less free: the relays hold the rest.
-            budget
-                .window_bytes
-                .fetch_sub(claimed - held, Ordering::SeqCst);
-        }
         if held < need || (need > 0 && budget.in_use() > budget.capacity()) {
             return 0;
         }
@@ -807,11 +826,11 @@ impl<'b> ReceiveGate<'b> {
     pub fn close(&mut self) {
         self.owed = 0;
         let held = self.permits.held();
-        self.permits
-            .budget()
-            .window_bytes
-            .fetch_sub(held, Ordering::SeqCst);
+        // The bytes first, then the share, as in `grant`.
         self.permits.release();
+        let budget = self.permits.budget();
+        budget.window_bytes.fetch_sub(held, Ordering::SeqCst);
+        budget.settle_if_room();
     }
 }
 
@@ -1247,5 +1266,69 @@ mod tests {
         let_the_settler_run().await;
         assert_eq!(budget.withholding.load(Ordering::SeqCst), 0);
         assert!(!budget.lock_withheld().settling, "the settler ended");
+    }
+
+    #[test]
+    fn concurrent_gates_and_relays_stay_within_the_budget_and_end_holding_nothing() {
+        let budget = budget(64 * KIB, 4 * KIB);
+        let cap = budget.window_cap();
+        let done = AtomicUsize::new(0);
+        let worst_windows = AtomicUsize::new(0);
+        let worst_in_use = AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for seed in 0..4u64 {
+                let (budget, done) = (&budget, &done);
+                scope.spawn(move || {
+                    let mut x = seed.wrapping_mul(6_364_136_223_846_793_005) | 1;
+                    let mut next = move || {
+                        x = x
+                            .wrapping_mul(6_364_136_223_846_793_005)
+                            .wrapping_add(1_442_695_040_888_963_407);
+                        (x >> 33) as usize
+                    };
+                    for _ in 0..50 {
+                        let mut gate = ReceiveGate::new(budget);
+                        for _ in 0..200 {
+                            gate.consumed(next() % (8 * KIB));
+                            gate.grant(next() % (80 * KIB));
+                            assert!(gate.held() <= cap);
+                        }
+                        if next() % 2 == 0 {
+                            gate.close();
+                        }
+                    }
+                    done.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+            for seed in 10..12u64 {
+                let (budget, done) = (&budget, &done);
+                scope.spawn(move || {
+                    let mut x = seed;
+                    let mut relay = BudgetPermits::new(budget);
+                    for _ in 0..20_000 {
+                        x = x
+                            .wrapping_mul(6_364_136_223_846_793_005)
+                            .wrapping_add(1_442_695_040_888_963_407);
+                        relay.try_hold(((x >> 33) as usize) % (32 * KIB));
+                    }
+                    done.fetch_add(1, Ordering::SeqCst);
+                });
+            }
+            let (budget, done) = (&budget, &done);
+            let (worst_windows, worst_in_use) = (&worst_windows, &worst_in_use);
+            scope.spawn(move || {
+                while done.load(Ordering::SeqCst) < 6 {
+                    let usage = budget.usage();
+                    worst_windows.fetch_max(usage.window_bytes, Ordering::SeqCst);
+                    worst_in_use.fetch_max(usage.in_use, Ordering::SeqCst);
+                    std::thread::yield_now();
+                }
+            });
+        });
+        let usage = budget.usage();
+        assert!(worst_windows.load(Ordering::SeqCst) <= cap, "{usage:?}");
+        assert!(worst_in_use.load(Ordering::SeqCst) <= 64 * KIB, "{usage:?}");
+        assert_eq!(usage.window_bytes, 0);
+        assert_eq!(usage.in_use, 0);
     }
 }
