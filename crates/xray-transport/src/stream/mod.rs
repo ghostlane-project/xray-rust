@@ -31,6 +31,7 @@
 
 mod grpc;
 mod h2_bdp;
+mod h2_budget;
 mod http2_connect;
 pub(crate) mod http_headers;
 mod httpupgrade;
