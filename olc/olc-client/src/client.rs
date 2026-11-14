@@ -38,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{Config, ConfigError, TRANSPORT_DATACHANNEL};
 use crate::control::{self, End, Hooks};
 use crate::direct::Rules;
-use crate::hello::{self, HelloError, DEFAULT_TIMEOUT};
+use crate::hello::{self, HelloError, DEFAULT_TIMEOUT, HELLO_RESEND_INTERVAL};
 use crate::lane::{Lane, DATACHANNEL};
 use crate::pipe::{LinkEvent, PipeLink, EVENT_QUEUE};
 use crate::udp::Flows;
@@ -487,13 +487,32 @@ impl Inner {
         Ok((lane, session))
     }
 
+    /// The wait before a handshake's first hello: until the peer has settled
+    /// in the room ([`PipeLink::wait_peer_settled`]), for one resend
+    /// interval at most, or until `stop`; what is left of `timeout`. Go sends
+    /// the hello at once, and one that reaches an empty room, or a server
+    /// between its rejoin and its new session, is lost to the first resend
+    /// 2 s later: the e2e reconnects lost it in most rounds, the Go client as
+    /// often as this one. The wait comes out of the handshake's budget, so a
+    /// peer that never answers is given up when Go gives it up.
+    async fn hello_budget(&self, timeout: Duration, stop: &CancellationToken) -> Duration {
+        let started = Instant::now();
+        tokio::select! {
+            () = stop.cancelled() => {}
+            () = self.link.wait_peer_settled() => {}
+            () = tokio::time::sleep(HELLO_RESEND_INTERVAL.min(timeout)) => {}
+        }
+        timeout.saturating_sub(started.elapsed())
+    }
+
     /// `bringUpLink` after the link joined: the first session and its
     /// handshake.
     async fn bring_up(self: &Arc<Self>) -> Result<(), RunError> {
         let _g = self.reconnect_mu.lock().await;
         let (lane, session) = self.new_session()?;
+        let hello_remaining = self.hello_budget(DEFAULT_TIMEOUT, &self.run).await;
         let opened =
-            match hello::open_control_stream(&session, &self.device_id, DEFAULT_TIMEOUT, &self.run)
+            match hello::open_control_stream(&session, &self.device_id, hello_remaining, &self.run)
                 .await
             {
                 Ok(o) => o,
@@ -806,8 +825,9 @@ impl Inner {
                 return Round::Silent;
             }
         };
+        let hello_remaining = self.hello_budget(DEFAULT_TIMEOUT, run).await;
         let opened =
-            match hello::open_control_stream(&session, &self.device_id, DEFAULT_TIMEOUT, run).await
+            match hello::open_control_stream(&session, &self.device_id, hello_remaining, run).await
             {
                 Ok(o) => o,
                 Err(err) => {
@@ -1019,6 +1039,34 @@ mod tests {
             let _ = waiter.await;
             assert_eq!(me.parked.load(Ordering::Relaxed), 0);
             drop(me);
+            stop.cancel();
+            let _ = run.await;
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn the_first_hello_waits_for_the_peer_to_settle_in_the_room() {
+        bounded(async {
+            let (hub, url) = TestHub::start("settle").await;
+            let stop = CancellationToken::new();
+            let (run, _, _) = start(&url, &stop).await;
+            let mut m = hub.accept().await;
+            // Nobody else is in the room: a hello now reaches nobody, and
+            // Go's is lost to its first resend, 2 s on.
+            let early = tokio::time::timeout(Duration::from_millis(300), m.read()).await;
+            assert!(early.is_err(), "a frame went into an empty room: {early:?}");
+            let came = Instant::now();
+            m.send(crate::pipe::KIND_PEERS, &1u16.to_be_bytes())
+                .await
+                .unwrap();
+            let (kind, _) = m.read().await.unwrap();
+            let after = came.elapsed();
+            assert_eq!(kind, crate::pipe::KIND_DATA);
+            assert!(
+                after >= Duration::from_millis(5) && after < Duration::from_secs(1),
+                "the first hello went {after:?} after the peer came"
+            );
             stop.cancel();
             let _ = run.await;
         })
