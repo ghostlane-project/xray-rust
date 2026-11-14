@@ -27,10 +27,9 @@ use std::sync::Mutex;
 
 use chacha20poly1305::aead::inout::InOutBuf;
 use chacha20poly1305::{AeadInOut, Key, KeyInit, Tag, XChaCha20Poly1305, XNonce};
-use hkdf::Hkdf;
 use rand::RngCore;
-use sha2::Sha256;
-use zeroize::Zeroize;
+use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, Zeroizing};
 
 /// HKDF info of the client-to-server key (chacha.go:31).
 pub const CLIENT_TO_SERVER_LABEL: &str = "olcrtc/v2/client-to-server";
@@ -266,25 +265,62 @@ impl std::fmt::Debug for DirectionalKeys {
     }
 }
 
-/// Derives both directions' keys from `psk` (chacha.go:160-177).
+/// Derives both directions' keys from `psk` (chacha.go:160-177): HKDF-SHA256
+/// (RFC 5869) with no salt and each label as the info.
+///
+/// Written out rather than through the `hkdf` crate so that the PRK is wiped
+/// as the keys are: `Hkdf::new` drops the PRK it extracts unwiped and keeps
+/// it as an HMAC keyed with it, whose padded key blocks `hmac` leaves on the
+/// stack. Here the PRK, the padded blocks and the inner hashes are wiped, and
+/// the SHA-256 states wipe themselves on drop (`sha2`'s `zeroize`).
 #[must_use]
 pub fn derive_keys(psk: &[u8; PSK_SIZE]) -> DirectionalKeys {
-    let hkdf = Hkdf::<Sha256>::new(None, psk);
+    // Extract: no salt is HashLen zero bytes (RFC 5869 2.2).
+    let mut prk = Zeroizing::new([0u8; 32]);
+    hmac_sha256(&[0; 32], &[psk], &mut prk);
+    // Expand: a 32-byte key is T(1) = HMAC(PRK, info | 0x01) (RFC 5869 2.3).
     let mut keys = DirectionalKeys {
         client_to_server: [0; 32],
         server_to_client: [0; 32],
     };
-    hkdf.expand(
-        CLIENT_TO_SERVER_LABEL.as_bytes(),
+    hmac_sha256(
+        &prk,
+        &[CLIENT_TO_SERVER_LABEL.as_bytes(), &[1]],
         &mut keys.client_to_server,
-    )
-    .expect("32 bytes is a valid HKDF-SHA256 length");
-    hkdf.expand(
-        SERVER_TO_CLIENT_LABEL.as_bytes(),
+    );
+    hmac_sha256(
+        &prk,
+        &[SERVER_TO_CLIENT_LABEL.as_bytes(), &[1]],
         &mut keys.server_to_client,
-    )
-    .expect("32 bytes is a valid HKDF-SHA256 length");
+    );
     keys
+}
+
+/// SHA-256's block: a key of at most this many bytes is padded, not hashed.
+const SHA256_BLOCK: usize = 64;
+
+/// HMAC-SHA256 (RFC 2104) of `parts`, in order, under `key`, into `out`.
+/// The copies of the key it makes, the padded blocks and the inner hash, are
+/// wiped before it returns; the hashers wipe themselves as they drop.
+fn hmac_sha256(key: &[u8; 32], parts: &[&[u8]], out: &mut [u8; 32]) {
+    let mut pad = Zeroizing::new([0u8; SHA256_BLOCK]);
+    pad[..key.len()].copy_from_slice(key);
+    pad.iter_mut().for_each(|b| *b ^= 0x36);
+    let mut inner = Sha256::new();
+    inner.update(&pad[..]);
+    for part in parts {
+        inner.update(part);
+    }
+    let mut hash = sha2::digest::Output::<Sha256>::default();
+    inner.finalize_into(&mut hash);
+    pad.iter_mut().for_each(|b| *b ^= 0x36 ^ 0x5c);
+    let mut outer = Sha256::new();
+    outer.update(&pad[..]);
+    outer.update(&hash[..]);
+    hash[..].zeroize();
+    outer.finalize_into(&mut hash);
+    out.copy_from_slice(&hash[..]);
+    hash[..].zeroize();
 }
 
 /// One lane's sender: its prefix and the last counter it used
@@ -743,6 +779,41 @@ mod tests {
             MAX_REPLAY_SENDERS * std::mem::size_of::<ReplayEntry>(),
             64 * 1024
         );
+    }
+
+    #[test]
+    fn the_keys_are_hkdf_sha256_as_the_crate_derives_them() {
+        // The Go vectors (W01) hold a few keys; this holds the written-out
+        // HKDF to the crate's over more of them, the edges included.
+        let mut psks = vec![[0u8; 32], [0xff; 32], PSK];
+        let mut psk = [0u8; 32];
+        for i in 0..64u8 {
+            for (j, b) in psk.iter_mut().enumerate() {
+                *b = i
+                    .wrapping_mul(31)
+                    .wrapping_add(u8::try_from(j).unwrap().wrapping_mul(7));
+            }
+            psks.push(psk);
+        }
+        for psk in psks {
+            let hkdf = hkdf::Hkdf::<Sha256>::new(None, &psk);
+            let (mut c2s, mut s2c) = ([0u8; 32], [0u8; 32]);
+            hkdf.expand(CLIENT_TO_SERVER_LABEL.as_bytes(), &mut c2s)
+                .unwrap();
+            hkdf.expand(SERVER_TO_CLIENT_LABEL.as_bytes(), &mut s2c)
+                .unwrap();
+            let keys = derive_keys(&psk);
+            assert_eq!(keys.client_to_server, c2s, "psk {psk:02x?}");
+            assert_eq!(keys.server_to_client, s2c, "psk {psk:02x?}");
+        }
+    }
+
+    #[test]
+    fn the_hashers_that_hold_the_prk_wipe_themselves() {
+        // The SHA-256 states hold the padded PRK once it is absorbed: they
+        // are wiped on drop only with `sha2`'s `zeroize` on.
+        fn wiped_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        wiped_on_drop::<Sha256>();
     }
 
     #[test]
