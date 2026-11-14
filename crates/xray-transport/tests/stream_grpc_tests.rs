@@ -6049,3 +6049,206 @@ mod stream_grpc_budget_tests {
         drop(flow);
     }
 }
+
+mod stream_grpc_bench_tests {
+    //! gRPC downloads at a simulated 120 ms round trip on a phone, run by
+    //! hand with `--ignored`: numbers for the tables.
+    use std::future::poll_fn;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use h2::server::{self, SendResponse};
+    use h2::SendStream;
+    use http::{HeaderValue, Response};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio::sync::mpsc;
+    use tokio::time::Instant;
+    use xray_routing::{Network, Target, TargetAddr};
+    use xray_transport::stream::grpc_test_only::encode_hunk;
+    use xray_transport::stream::{GrpcConfig, GrpcTransport, TransportLayer};
+    use xray_transport::{BoxedTransportStream, ConnectorConfig, MemoryClass, TransportDialer};
+
+    const HUNK: usize = 32 * 1024;
+
+    fn config() -> GrpcConfig {
+        GrpcConfig {
+            service_name: "xray.grpc".to_owned(),
+            multi_mode: false,
+            authority: "grpc.example.com".parse().expect("a literal authority"),
+            user_agent: HeaderValue::from_static("grpc-go/1.81.0"),
+            idle_timeout_secs: 0,
+            health_check_timeout_secs: 0,
+            permit_without_stream: false,
+            initial_windows_size: 0,
+        }
+    }
+
+    async fn send_all(send: &mut SendStream<Bytes>, mut chunk: Bytes) -> bool {
+        while !chunk.is_empty() {
+            send.reserve_capacity(chunk.len());
+            let Some(Ok(granted)) = poll_fn(|cx| send.poll_capacity(cx)).await else {
+                return false;
+            };
+            let take = granted.min(chunk.len());
+            if send.send_data(chunk.split_to(take), false).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// A peer that answers each call, once the call has sent its first
+    /// bytes, with `each` payload bytes as fast as its credit lets it, and
+    /// then holds the call.
+    async fn spawn_peer(each: usize) -> SocketAddr {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a loopback listener");
+        let addr = listener.local_addr().expect("the listener's address");
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut connection =
+                        server::handshake(socket).await.expect("server handshake");
+                    while let Some(Ok((request, respond))) = connection.accept().await {
+                        tokio::spawn(answer(request.into_body(), respond, each));
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    async fn answer(mut body: h2::RecvStream, mut respond: SendResponse<Bytes>, each: usize) {
+        let response = Response::builder()
+            .status(200)
+            .header("content-type", "application/grpc")
+            .body(())
+            .expect("a well-formed response");
+        let mut send = respond.send_response(response, false).expect("respond");
+        if body.data().await.is_none() {
+            return;
+        }
+        let hunk = Bytes::from(encode_hunk(&vec![0xa5; HUNK]));
+        for _ in 0..each.div_ceil(HUNK) {
+            if !send_all(&mut send, hunk.clone()).await {
+                return;
+            }
+        }
+        let _held = (send, body);
+        std::future::pending::<()>().await;
+    }
+
+    /// A TCP relay to `to` that holds every byte `one_way` in each
+    /// direction.
+    async fn delay_relay(to: SocketAddr, one_way: Duration) -> SocketAddr {
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("a loopback listener");
+        let addr = listener.local_addr().expect("the listener's address");
+        tokio::spawn(async move {
+            while let Ok((client, _)) = listener.accept().await {
+                let server = TcpStream::connect(to).await.expect("the peer accepts");
+                let (client_read, client_write) = client.into_split();
+                let (server_read, server_write) = server.into_split();
+                tokio::spawn(pipe(client_read, server_write, one_way));
+                tokio::spawn(pipe(server_read, client_write, one_way));
+            }
+        });
+        addr
+    }
+
+    async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, one_way: Duration) {
+        let (queue, mut queued) = mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+        let writer = tokio::spawn(async move {
+            while let Some((due, bytes)) = queued.recv().await {
+                tokio::time::sleep_until(due).await;
+                if to.write_all(&bytes).await.is_err() {
+                    return;
+                }
+            }
+        });
+        let mut buffer = vec![0; 64 * 1024];
+        while let Ok(read @ 1..) = from.read(&mut buffer).await {
+            let _ = queue.send((Instant::now() + one_way, buffer[..read].to_vec()));
+        }
+        drop(queue);
+        let _ = writer.await;
+    }
+
+    async fn open_flow(
+        dialer: &TransportDialer,
+        transport: &TransportLayer,
+        addr: SocketAddr,
+    ) -> BoxedTransportStream {
+        let target = Target::new(TargetAddr::Ip(addr.ip()), addr.port(), Network::Tcp);
+        dialer
+            .connect_stream(&ConnectorConfig::Tcp, transport, &target, &[addr], None)
+            .await
+            .expect("the flow opens")
+    }
+
+    /// Mbit/s of `calls` downloads of `each` payload bytes at once on one
+    /// connection through a 120 ms round trip, with a phone's windows and
+    /// the process's byte budget, if it has one, at a phone's; `None` if
+    /// they did not all finish within 20 s. Every call is open before any
+    /// asks for data.
+    async fn download_at_120ms(calls: usize, each: usize) -> Option<f64> {
+        let peer = spawn_peer(each).await;
+        let relay = delay_relay(peer, Duration::from_millis(60)).await;
+        let dialer = TransportDialer::system().expect("a system dialer");
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config()));
+        let mut flows = Vec::new();
+        for _ in 0..calls {
+            flows.push(open_flow(&dialer, &transport, relay).await);
+        }
+        let started = Instant::now();
+        for flow in &mut flows {
+            flow.write_all(b"g").await.expect("the call writes");
+            flow.flush().await.expect("the call flushes");
+        }
+        let reads = flows.into_iter().map(|mut flow| async move {
+            let mut bytes = vec![0; each];
+            flow.read_exact(&mut bytes).await.is_ok()
+        });
+        let finished = tokio::time::timeout(
+            Duration::from_secs(20),
+            futures_util::future::join_all(reads),
+        )
+        .await
+        .is_ok_and(|reads| reads.into_iter().all(|read| read));
+        let elapsed = started.elapsed();
+        let mbit = (calls * each) as f64 * 8.0 / elapsed.as_secs_f64() / 1e6;
+        finished.then_some(mbit)
+    }
+
+    /// One call, four and 32 on one connection, each best of three.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "a benchmark: prints Mbit/s at a simulated 120 ms round trip"]
+    async fn grpc_downloads_at_a_120ms_round_trip() {
+        const MIB: usize = 1024 * 1024;
+        xray_transport::set_memory_class(Some(MemoryClass::Constrained));
+        for (calls, each) in [(1, 16 * MIB), (4, 4 * MIB), (32, MIB)] {
+            let mut runs = Vec::new();
+            for _ in 0..3 {
+                runs.push(download_at_120ms(calls, each).await);
+            }
+            let best = runs.iter().flatten().copied().fold(0.0, f64::max);
+            let shown: Vec<String> = runs
+                .iter()
+                .map(|run| match run {
+                    Some(mbit) => format!("{mbit:.0}"),
+                    None => "stalled".to_owned(),
+                })
+                .collect();
+            eprintln!(
+                "GRPC-RTT120 calls {calls}: best {best:.0} Mbit/s of [{}]",
+                shown.join(", ")
+            );
+        }
+        xray_transport::set_memory_class(None);
+    }
+}

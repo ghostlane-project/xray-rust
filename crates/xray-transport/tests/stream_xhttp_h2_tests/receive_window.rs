@@ -707,3 +707,88 @@ async fn a_body_dropped_mid_download_hands_its_withheld_credit_to_the_connection
     drop(unread);
     server.close().await;
 }
+
+/// Mbit/s of `streams` downloads of `each` bytes at once on one connection,
+/// through a link that holds every byte 60 ms each way, with a phone's
+/// adaptive windows and the process's byte budget, if it has one, at a
+/// phone's; `None` if they did not all finish within 20 s. Every response
+/// is open before any data is sent.
+async fn xhttp_download_at_120ms(streams: usize, each: usize) -> Option<f64> {
+    let (client_io, server_io) = delayed_link(Duration::from_millis(60));
+    let client = connect_h2_with_window(Box::new(client_io), None, ADAPTIVE);
+    let server = server::Builder::new().handshake::<_, Bytes>(server_io);
+    let (client, server) = tokio::join!(client, server);
+    let client = client.unwrap();
+    let (request_tx, requests) = mpsc::unbounded_channel();
+    let (commands, command_rx) = mpsc::unbounded_channel();
+    let driver = tokio::spawn(drive_server(server.unwrap(), request_tx, command_rx));
+    let mut server = TestServer {
+        requests,
+        commands: Some(commands),
+        driver: Some(driver),
+    };
+    let mut bodies = Vec::new();
+    let mut sends = Vec::new();
+    for _ in 0..streams {
+        let (body, send) = response_pair(&client, &mut server).await;
+        bodies.push(body);
+        sends.push(send);
+    }
+    let started = Instant::now();
+    let senders: Vec<_> = sends
+        .into_iter()
+        .map(|mut send| {
+            tokio::spawn(async move {
+                send_bytes(&mut send, each).await;
+                let _ = send.send_data(Bytes::new(), true);
+            })
+        })
+        .collect();
+    let reads = bodies.into_iter().map(|mut body| async move {
+        let mut bytes = vec![0; each];
+        body.read_exact(&mut bytes).await.is_ok()
+    });
+    let finished = timeout(
+        Duration::from_secs(20),
+        futures_util::future::join_all(reads),
+    )
+    .await
+    .is_ok_and(|reads| reads.into_iter().all(|read| read));
+    let elapsed = started.elapsed();
+    for sender in senders {
+        sender.abort();
+    }
+    drop(client);
+    server.close().await;
+    let mbit = (streams * each) as f64 * 8.0 / elapsed.as_secs_f64() / 1e6;
+    finished.then_some(mbit)
+}
+
+/// XHTTP H2 downloads at a simulated 120 ms round trip on a phone: one
+/// stream, four and 32 on one connection, each best of three. Numbers for
+/// the tables, run by hand with `--ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "a benchmark: prints Mbit/s at a simulated 120 ms round trip"]
+async fn xhttp_downloads_at_a_120ms_round_trip() {
+    const MIB: usize = 1024 * 1024;
+    xray_transport::set_memory_class(Some(xray_transport::MemoryClass::Constrained));
+    for (streams, each) in [(1, 16 * MIB), (4, 4 * MIB), (32, MIB)] {
+        let mut runs = Vec::new();
+        for _ in 0..3 {
+            runs.push(xhttp_download_at_120ms(streams, each).await);
+        }
+        let best = runs.iter().flatten().copied().fold(0.0, f64::max);
+        let shown: Vec<String> = runs
+            .iter()
+            .map(|run| match run {
+                Some(mbit) => format!("{mbit:.0}"),
+                None => "stalled".to_owned(),
+            })
+            .collect();
+        eprintln!(
+            "XHTTP-RTT120 streams {streams}: best {best:.0} Mbit/s of [{}]",
+            shown.join(", ")
+        );
+    }
+    xray_transport::set_memory_class(None);
+}
