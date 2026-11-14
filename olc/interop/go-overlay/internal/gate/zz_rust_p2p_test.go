@@ -27,6 +27,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"flag"
@@ -59,8 +60,8 @@ const (
 	turnPass = "olc-interop"
 	// turnReadyBudget bounds coturn's start.
 	turnReadyBudget = 15 * time.Second
-	// turnReadyMarker is what coturn logs once a listener is open.
-	turnReadyMarker = "listener opened on"
+	// turnProbeWait bounds one readiness probe of coturn's listener.
+	turnProbeWait = 200 * time.Millisecond
 )
 
 var (
@@ -231,6 +232,7 @@ func startCoturn(t *testing.T, mode, logDir string) string {
 		"--listening-port=" + strconv.Itoa(port), "--tls-listening-port=" + strconv.Itoa(tlsPort),
 		"--min-port=" + strconv.Itoa(minPort), "--max-port=" + strconv.Itoa(minPort+400),
 		"--lt-cred-mech", "--user=" + turnUser + ":" + turnPass, "--realm=olc.interop", "--fingerprint",
+		"--userdb=" + filepath.Join(work, "turndb"),
 		"--allow-loopback-peers", "--no-multicast-peers", "--no-dtls",
 		"--log-file=stdout", "--simple-log", "--pidfile=" + filepath.Join(work, "turnserver.pid"),
 	}
@@ -267,19 +269,12 @@ func startCoturn(t *testing.T, mode, logDir string) string {
 		_ = logFile.Close()
 		t.Fatalf("coturn (%s): %v", *gateTurnServer, err)
 	}
-	ready := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		sc := bufio.NewScanner(out)
-		said := false
 		for sc.Scan() {
-			line := sc.Text()
-			_, _ = logFile.WriteString(line + "\n")
-			if !said && strings.Contains(line, turnReadyMarker) {
-				said = true
-				close(ready)
-			}
+			_, _ = logFile.WriteString(sc.Text() + "\n")
 		}
 	}()
 	t.Cleanup(func() {
@@ -288,12 +283,19 @@ func startCoturn(t *testing.T, mode, logDir string) string {
 		_ = cmd.Wait()
 		_ = logFile.Close()
 	})
-	select {
-	case <-ready:
-	case <-done:
-		t.Fatalf("coturn ended before it listened; see %s", logFile.Name())
-	case <-time.After(turnReadyBudget):
-		t.Fatalf("coturn not listening within %s; see %s", turnReadyBudget, logFile.Name())
+	// coturn 4.6 logs its listeners only when verbose, so the listener is
+	// asked instead.
+	deadline := time.Now().Add(turnReadyBudget)
+	for !coturnAnswers(mode, port, tlsPort) {
+		select {
+		case <-done:
+			t.Fatalf("coturn ended before it listened; see %s", logFile.Name())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("coturn not listening within %s; see %s", turnReadyBudget, logFile.Name())
+		}
+		time.Sleep(turnProbeWait / 2)
 	}
 	q := url.Values{}
 	q.Set("turn", turnURL)
@@ -302,6 +304,41 @@ func startCoturn(t *testing.T, mode, logDir string) string {
 	q.Set("policy", "relay")
 	t.Logf("coturn %s: %s (relay-only server)", mode, turnURL)
 	return q.Encode()
+}
+
+// coturnAnswers reports whether coturn's listener for mode is up: a STUN
+// binding request answered over udp, a TCP connect for tcp and tls.
+func coturnAnswers(mode string, port, tlsPort int) bool {
+	if mode != "udp" {
+		p := port
+		if mode == "tls" {
+			p = tlsPort
+		}
+		c, err := net.DialTimeout("tcp4", "127.0.0.1:"+strconv.Itoa(p), turnProbeWait)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	}
+	c, err := net.Dial("udp4", "127.0.0.1:"+strconv.Itoa(port))
+	if err != nil {
+		return false
+	}
+	defer func() { _ = c.Close() }()
+	req := make([]byte, 20) // a binding request: type, length 0, cookie, id
+	binary.BigEndian.PutUint16(req[0:], 0x0001)
+	binary.BigEndian.PutUint32(req[4:], 0x2112A442)
+	if _, err := rand.Read(req[8:]); err != nil {
+		return false
+	}
+	_ = c.SetDeadline(time.Now().Add(turnProbeWait))
+	if _, err := c.Write(req); err != nil {
+		return false
+	}
+	resp := make([]byte, 1500)
+	n, err := c.Read(resp)
+	return err == nil && n >= 20 && binary.BigEndian.Uint16(resp) == 0x0101
 }
 
 // TestGateP2P is the gate on the p2p target.
