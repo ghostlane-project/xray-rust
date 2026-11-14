@@ -319,10 +319,37 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -W clippy::perf -W clippy::suspicious
 
+      - name: Size lints on the app's code
+        # Fork only (memory model 05, T9). The thresholds are in
+        # .ghostlane/clippy/clippy.toml, read through CLIPPY_CONF_DIR, so
+        # upstream's Lint step above is unchanged. Library and binary targets
+        # only (test, bench and example code is off the tunnel's paths) and the
+        # default features: the `fuzzing` drivers that `--all-features` compiles
+        # into the libraries are not shipped.
+        env:
+          CLIPPY_CONF_DIR: .ghostlane/clippy
+        run: >
+          cargo clippy --locked --lib --bins
+          -p xray-config -p xray-utls -p xray-routing -p xray-tun -p xray-proxy
+          -p xray-vless-encryption -p xray-transport -p xray-wireguard
+          -p xray-runtime -p xray-core-rs -p xray-ffi
+          -- -D clippy::large_futures -D clippy::large_stack_arrays
+          -D clippy::large_types_passed_by_value
+
       - name: Test
         # `--all-targets` overrides the fuzz bins' `test = false` metadata and
         # would otherwise launch their libFuzzer mains without a run bound.
         run: cargo test --workspace --exclude xray-rust-fuzz --all-targets --locked
+
+      - name: Memory size guards (release)
+        # Future and type sizes and the UDP association heap are release-profile
+        # numbers (debug builds `ignore` these tests). The Ghostlane packet
+        # tunnel is killed at about 50 MB: a size that regrows fails here
+        # (memory model 05, T1).
+        run: |
+          cargo test --release --locked -p xray-core-rs --lib size_tests
+          cargo test --release --locked -p xray-transport --test size_guards
+          cargo test --release --locked -p xray-core-rs --test udp_association_memory
 
       - name: Replay fuzz seed corpora
         run: bash scripts/replay-fuzz-corpus.sh
