@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 //! `socks` outbound against the pinned Go Xray-core SOCKS5 server.
 //!
 //! One Xray process runs a password inbound with a synthetic account and a

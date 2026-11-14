@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 #[path = "stream_xhttp_transport_tests/h2_receive_window.rs"]
 mod h2_receive_window;
 #[path = "stream_xhttp_transport_tests/split_download.rs"]

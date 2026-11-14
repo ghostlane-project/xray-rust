@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 mod stream_websocket_tests {
     use xray_transport::stream::{
         encode_client_frames, FrameDecoder, FrameEvent, MAX_FRAME_PAYLOAD,

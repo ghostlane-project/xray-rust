@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 use base64::{
     engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
     Engine,

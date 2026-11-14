@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 //! The dialer runs the `header-custom` handshake on every TCP carrier as soon
 //! as it connects: before the fragment mask, TLS and REALITY.
 use std::{net::Ipv4Addr, sync::Arc, time::Duration};

@@ -1,10 +1,7 @@
 // Size lints (clippy.toml, memory model 05 T9) guard the app's paths. Test code
 // is off them: a test's stack is not a tunnel worker's and a test's future
 // is never a flow's.
-#![cfg_attr(
-    test,
-    allow(clippy::large_futures, clippy::large_stack_arrays)
-)]
+#![cfg_attr(test, allow(clippy::large_futures, clippy::large_stack_arrays))]
 use async_trait::async_trait;
 use std::net::{SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket};
 use std::pin::Pin;

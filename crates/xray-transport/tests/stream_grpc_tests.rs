@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 // Named like the sibling `stream_*_tests` files (e.g.
 // `stream_websocket_tests.rs`'s `stream_websocket_handshake_tests`) rather
 // than a bare `mod path`, so later gRPC test modules — framing, pool — read

@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 //! HTTP messages read and written as Go's `net/http` does in Xray-core's HTTP
 //! inbound. Every expected byte string here is what Xray-core v26.10.31 sent
 //! on in a live capture.

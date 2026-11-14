@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 //! The bridge side of the VLESS reverse proxy against a portal written here
 //! from Xray-core v26.10.31's VLESS inbound and Mux client: the tunnel, the
 //! sessions routed as from the reverse tag, freedom's default refusal, and

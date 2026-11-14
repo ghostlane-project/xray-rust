@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 use std::collections::{BTreeMap, VecDeque};
 use std::future::pending;
 use std::io::{Cursor, ErrorKind};

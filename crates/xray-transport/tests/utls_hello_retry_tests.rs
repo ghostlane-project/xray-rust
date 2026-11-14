@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 //! A HelloRetryRequest answered as uTLS answers it (`handshake_client_tls13.go`).
 //!
 //! A scripted server reads the first ClientHello, writes a HelloRetryRequest

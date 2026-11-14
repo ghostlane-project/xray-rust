@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 //! A SOCKS UDP association's heap stays bounded at 117 associations, the
 //! number hev-socks5-tunnel kept alive during the iOS speed test (memory model
 //! 05, section 5.1 and R3/R4).

@@ -1,3 +1,6 @@
+// Test target: off the app's paths, so the size lints (clippy.toml, memory model
+// 05 T9) do not apply to a test's stack arrays or futures.
+#![allow(clippy::large_futures, clippy::large_stack_arrays)]
 //! Xray-core's ChromeParrot first flight, byte for byte.
 //!
 //! `tests/fixtures/chrome-parrot/initials.json` holds what Xray-core
