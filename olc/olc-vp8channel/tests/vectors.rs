@@ -10,7 +10,9 @@
 //! - `vp8/olkb.json` (W29), `vp8/datagram.json` (W30): batches built and split;
 //! - `vp8/inbound-verdicts.json` (W27): what a client does with each frame;
 //! - `vp9/carrier.json` (W34, W35): the VP9 dress and payloader;
-//! - `vp8/rtp.json` (W36): pion's VP8 payloader and packetizer.
+//! - `vp8/rtp.json` (W36): pion's VP8 payloader and packetizer;
+//! - `vp8/rtp-reader.json` (W36, W37): RED, the reorder buffer and the
+//!   assemblers, over scripts of packets.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,7 +23,8 @@ use olc_interop::{bytes, hex, load, pattern, sha256_hex};
 use olc_kcp::link;
 use olc_vp8channel::conn::Packet;
 use olc_vp8channel::lane::{batch_sample_up_to, LaneParams};
-use olc_vp8channel::rtp::{Packetizer, Payloader, Vp8Payloader, PAYLOAD_MTU};
+use olc_vp8channel::rtp::{Packetizer, Payloader, RtpPacket, Vp8Payloader, PAYLOAD_MTU};
+use olc_vp8channel::rtp_reader::{accepts, red_primary, TrackReader};
 use olc_vp8channel::wire::{
     binding_token, datagram_frame, epoch_crc, epoch_header, format_peer_id, parse_epoch_header,
     parse_peer_id, split_datagram_batch_payload, split_datagram_payload, split_kcp_payload,
@@ -431,7 +434,7 @@ fn w34_w35_the_vp9_dress_and_payloader() {
     }
 }
 
-fn assert_rtp(want: &[Value], got: &[olc_vp8channel::rtp::RtpPacket], what: &str) {
+fn assert_rtp(want: &[Value], got: &[RtpPacket], what: &str) {
     assert_eq!(got.len(), want.len(), "{what}: packets");
     for (k, w) in got.iter().zip(want) {
         assert_eq!(u64::from(k.seq), w["seq"].as_u64().unwrap(), "{what}: seq");
@@ -515,4 +518,171 @@ fn w36_what_pion_makes_of_a_sample() {
     vp9::dress(&mut sample, &frame, true);
     let got = k.packetize(&sample, 1_000_000_000 / 60);
     assert_rtp(arr(&vk["packets"]), &got, "vp9 keyframe");
+}
+
+/// `zzREDPayload`.
+fn red_payload(pt: u8, primary: &[u8], redundant: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for b in redundant {
+        let n = u16::try_from(b.len()).unwrap();
+        out.extend_from_slice(&[0x80 | pt, 0, (n >> 8) as u8 & 0x03, n as u8]);
+    }
+    out.push(pt);
+    for b in redundant {
+        out.extend_from_slice(b);
+    }
+    out.extend_from_slice(primary);
+    out
+}
+
+/// `zzGenerate`: the frames, peer to us, through our packetizer at 60 fps.
+fn generate(payloader: Payloader, seq: u16, frames: &[Value], dress: bool) -> Vec<RtpPacket> {
+    let mut k = Packetizer::new(payloader, seq, 0);
+    let mut out = Vec::new();
+    for f in frames {
+        let mut frame = epoch_header(token(), 0x200, 0x100).to_vec();
+        frame.extend_from_slice(&spec(f));
+        let sample = if dress {
+            let mut d = Vec::new();
+            vp9::dress(&mut d, &frame, f["keyframe"].as_bool().unwrap_or(false));
+            d
+        } else {
+            frame
+        };
+        out.extend(k.packetize(&sample, 1_000_000_000 / 60));
+    }
+    out
+}
+
+/// `zzListDigest`.
+fn assert_list(want: &Value, pkts: &[RtpPacket]) {
+    assert_eq!(pkts.len(), usize_of(&want["packets"]), "generated packets");
+    let mut all = Vec::new();
+    for p in pkts {
+        all.extend_from_slice(&p.seq.to_be_bytes());
+        all.push(u8::from(p.marker));
+        all.extend_from_slice(&u32::try_from(p.payload.len()).unwrap().to_be_bytes());
+        all.extend_from_slice(&p.payload);
+    }
+    assert_eq!(
+        sha256_hex(&all),
+        str_of(&want["sha256"]),
+        "generated packets"
+    );
+}
+
+/// `zzRunReader`'s script on a [`TrackReader`]: a microsecond a step, and a
+/// second more on an aged one (the Go side ages the gap it holds).
+fn run_reader(v: &Value, carrier: Carrier, mime: &str, gen: &[RtpPacket]) {
+    let mut r = TrackReader::new(carrier, mime).unwrap();
+    let steps = arr(&v["steps"]);
+    let outs = arr(&v["out"]);
+    assert_eq!(steps.len(), outs.len());
+    let mut now = Instant::now();
+    for (n, (s, want)) in steps.iter().zip(outs).enumerate() {
+        now += Duration::from_micros(1);
+        if s["aged"].as_bool().unwrap_or(false) {
+            now += Duration::from_secs(1);
+        }
+        let (seq, mut marker, mut payload) = if let Some(i) = s["i"].as_u64() {
+            let g = &gen[usize::try_from(i).unwrap()];
+            (g.seq, g.marker, g.payload.clone())
+        } else {
+            (
+                u16::try_from(s["seq"].as_u64().unwrap()).unwrap(),
+                false,
+                bytes(s, "raw"),
+            )
+        };
+        if let Some(m) = s["marker"].as_bool() {
+            marker = m;
+        }
+        payload = match s["red"].as_str().unwrap_or("") {
+            "" => payload,
+            "plain" => red_payload(96, &payload, &[]),
+            "one" => red_payload(96, &payload, &[&payload[..payload.len().min(10)]]),
+            "fec" => red_payload(106, &payload, &[]),
+            other => panic!("red {other}"),
+        };
+        let before = (r.reorder().next_seq(), r.reorder().held());
+        let mut frames = Vec::new();
+        r.push(seq, marker, 96, &payload, now, &mut |f| {
+            frames.push(f.to_vec())
+        });
+        if want["skipped"].as_bool().unwrap_or(false) {
+            assert!(frames.is_empty(), "step {n}: a skipped packet made a frame");
+            assert_eq!(
+                (r.reorder().next_seq(), r.reorder().held()),
+                before,
+                "step {n}: skipped"
+            );
+            continue;
+        }
+        let wf = arr(&want["frames"]);
+        assert_eq!(frames.len(), wf.len(), "step {n} ({s}): frames");
+        for (f, w) in frames.iter().zip(wf) {
+            assert_bytes(w, f, &format!("step {n} frame"));
+        }
+        assert_eq!(
+            u64::from(r.reorder().next_seq()),
+            want["next_seq"].as_u64().unwrap(),
+            "step {n}: next seq"
+        );
+        assert_eq!(
+            r.reorder().held(),
+            usize_of(&want["held"]),
+            "step {n}: held"
+        );
+    }
+}
+
+#[test]
+fn w36_w37_the_track_reader() {
+    let v = load("vp8/rtp-reader.json");
+    for c in arr(&v["red"]) {
+        let input = bytes(c, "hex");
+        let got = red_primary(&input);
+        assert_eq!(got.is_ok(), c["ok"].as_bool().unwrap(), "{}", c["name"]);
+        if let Ok((pt, data)) = got {
+            assert_eq!(u64::from(pt), c["pt"].as_u64().unwrap(), "{}", c["name"]);
+            assert_eq!(hex(data), str_of(&c["data"]), "{}", c["name"]);
+        }
+    }
+    for c in arr(&v["accepts"]) {
+        let m = str_of(&c["mime"]);
+        assert_eq!(accepts(Carrier::Vp8, m), c["vp8"].as_bool().unwrap(), "{m}");
+        assert_eq!(accepts(Carrier::Vp8, m), c["own"].as_bool().unwrap(), "{m}");
+        assert_eq!(accepts(Carrier::Vp9, m), c["vp9"].as_bool().unwrap(), "{m}");
+    }
+
+    let s = &v["vp8"];
+    let gen = generate(
+        Payloader::Vp8(Vp8Payloader::default()),
+        65534,
+        arr(&s["frames"]),
+        false,
+    );
+    assert_list(&s["generated"], &gen);
+    run_reader(s, Carrier::Vp8, "video/VP8", &gen);
+
+    let s = &v["vp8_red"];
+    let gen = generate(
+        Payloader::Vp8(Vp8Payloader::default()),
+        1000,
+        arr(&s["frames"]),
+        false,
+    );
+    assert_list(&s["generated"], &gen);
+    run_reader(s, Carrier::Vp8, "video/red", &gen);
+
+    let s = &v["vp9"];
+    let id = u16::try_from(s["picture_id"].as_u64().unwrap()).unwrap();
+    let gen = generate(
+        Payloader::Vp9(vp9::Payloader::with_picture_id(id)),
+        200,
+        arr(&s["frames"]),
+        true,
+    );
+    assert_list(&s["generated"], &gen);
+    run_reader(s, Carrier::Vp9, "video/VP9", &gen);
 }

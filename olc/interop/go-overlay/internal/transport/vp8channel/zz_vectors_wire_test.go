@@ -49,6 +49,7 @@ func zzWireVectors(t *testing.T) {
 	zzInboundVectors(t)
 	zzVP9Vectors(t)
 	zzRTPVectors(t)
+	zzReaderVectors(t)
 }
 
 // zzBytes is b as hex, or as its length and SHA-256 when it is large.

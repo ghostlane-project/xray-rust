@@ -19,7 +19,9 @@
 //!   datagrams, the inbound dispatch (W27);
 //! - [`transport`]: the channel on Tokio;
 //! - [`rtp`]: what pion makes of a written sample (W36), [`vp9`]: the VP9
-//!   carrier (W34, W35).
+//!   carrier (W34, W35);
+//! - [`rtp_reader`]: the remote track back into frames: RED (W37), the
+//!   reorder buffer, the VP8 and VP9 assemblers (W36).
 //!
 //! # What is not ported
 //!
@@ -38,6 +40,7 @@ pub mod lane;
 pub mod log;
 pub mod pace;
 pub mod rtp;
+pub mod rtp_reader;
 pub mod segment;
 pub mod transport;
 pub mod vp9;

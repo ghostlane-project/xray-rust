@@ -42,7 +42,7 @@ expected=(
 	handshake/client.json handshake/hello.json handshake/server.json
 	transport/datachannel.json transport/vp8channel.json
 	vp8/datagram.json vp8/epoch.json vp8/inbound-verdicts.json vp8/kcp-crc.json vp8/kcp-settings.json
-	vp8/kcp.json vp8/olkb.json vp8/rtp.json vp8/token.json vp9/carrier.json
+	vp8/kcp.json vp8/olkb.json vp8/rtp-reader.json vp8/rtp.json vp8/token.json vp9/carrier.json
 )
 
 cd "$engine"
