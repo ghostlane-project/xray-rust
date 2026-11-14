@@ -77,6 +77,17 @@ type e2eEnv struct {
 	target    *InteropTarget
 	capture   *Capture
 	serverLog string // the log of the server started last
+	// lifetime bounds the servers this env starts; childLifetime when zero.
+	// TestT1Host holds its server longer than any scenario runs.
+	lifetime time.Duration
+}
+
+// serverLifetime is the context bound of a server this env starts.
+func (e *e2eEnv) serverLifetime() time.Duration {
+	if e.lifetime > 0 {
+		return e.lifetime
+	}
+	return childLifetime
 }
 
 // room is a fresh room on the hub: its name and its endpoint.
@@ -110,7 +121,7 @@ const childLifetime = 10 * time.Minute
 //     failure or a t.Fatal before the scenario stops it itself;
 //   - Pdeathsig kills it when the test process dies (a panic, -timeout, a
 //     kill), where no cleanup runs;
-//   - its context carries childLifetime.
+//   - its context carries childLifetime (the env's lifetime when set).
 //
 // The returned stop is idempotent: SIGTERM to the group (the server says
 // goodbye), SIGKILL to whatever is left after stopGrace, then the wait.
@@ -134,7 +145,7 @@ func (e *e2eEnv) serverOn(engineName string, ep Endpoint, ring []string, allowPr
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), childLifetime)
+	ctx, cancel := context.WithTimeout(context.Background(), e.serverLifetime())
 	cmd := exec.CommandContext(ctx, binary, cfgPath)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	env := []string{bridgeDelayEnv + "=0s"}

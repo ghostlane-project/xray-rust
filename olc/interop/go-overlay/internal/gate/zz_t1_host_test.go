@@ -40,7 +40,8 @@ type t1Host struct {
 	// non-loopback IPv4 it answers on ("" when it has none).
 	EchoPort int    `json:"echo_port"`
 	EchoIP   string `json:"echo_ip"`
-	// ServerLog is the server's log file.
+	// ServerLog is the server's log file while the host runs; it is copied
+	// to $OLC_T1_HOST_OUT.server.log when the host stops.
 	ServerLog string `json:"server_log"`
 }
 
@@ -84,10 +85,20 @@ func TestT1Host(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(hub.Close)
+	// The server lives as long as the host holds, not a scenario's
+	// childLifetime: the XCTest joins after the runner has built the Rust
+	// core, ten minutes and more after the server came up.
 	env := &e2eEnv{t: t, target: &InteropTarget{root: moduleRoot(t), work: t.TempDir(), hub: hub,
-		origin: startOrigin(t)}}
+		origin: startOrigin(t)}, lifetime: hold + 5*time.Minute}
 	_, ep := env.room(env.key())
 	defer env.server(ep, []string{ep.Key}, true)()
+	// The server's log, kept at $OLC_T1_HOST_OUT.server.log: this cleanup
+	// runs after the deferred stop and before the server's TempDir goes.
+	t.Cleanup(func() {
+		if raw, err := os.ReadFile(env.serverLog); err == nil {
+			_ = os.WriteFile(out+".server.log", raw, 0o644)
+		}
+	})
 
 	echo, err := net.ListenPacket("udp4", "0.0.0.0:0")
 	if err != nil {
