@@ -9,7 +9,8 @@ name: olc-p2p-lab
 #
 # A gl/olc-p2p-lab-* commit may carry olc/interop/lab.env (NAME=value
 # lines): OLC_LAB_TEST replaces the cargo test arguments and skips clippy,
-# the build and the gate (the RED runs); OLC_LAB_GATE=no skips the gate.
+# the build and the gate (the RED runs); OLC_LAB_GATE=no skips the gate;
+# OLC_LAB_GO_RUN narrows the engine's Go tests (go test -run).
 
 on:
   push:
@@ -91,6 +92,24 @@ jobs:
           name: olc-client
           path: target/release/olc-client
           retention-days: 3
+
+  go-engine:
+    # The interop-p2p engine's own tests (gofmt, vet, then go test).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: lab overrides
+        run: |
+          if [ -f olc/interop/lab.env ]; then cat olc/interop/lab.env >> "$GITHUB_ENV"; fi
+      - name: p2p.sh --engine
+        run: |
+          # shellcheck disable=SC2086
+          bash olc/interop/p2p.sh --engine ${OLC_LAB_GO_RUN:+-run=$OLC_LAB_GO_RUN}
 
   t2a:
     needs: rust
