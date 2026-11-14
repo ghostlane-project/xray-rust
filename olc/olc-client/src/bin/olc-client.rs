@@ -6,6 +6,11 @@
 //! run, after the control loop says goodbye. A config with `rooms` runs the
 //! room supervisor (the primary room first, then the others, as
 //! `mobile/runtime.go` does); one with only `url` runs that room.
+//!
+//! Built with `shaped-tls`, its `wss://` and `https://` go over the fork's
+//! shaped-rustls with Chrome's ClientHello. Built with the `heap-stats` feature, the process counts every byte it
+//! takes from the allocator and says `heap now <n> KiB peak <n> KiB` every
+//! [`heap::EVERY`] and at its end (plan section 9: the engine's gauge).
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -18,6 +23,83 @@ use tokio_util::sync::CancellationToken;
 const MAX_WORKERS: usize = 4;
 /// A worker's stack (plan §9: 512 KiB; futures live on the heap).
 const WORKER_STACK: usize = 512 * 1024;
+
+#[cfg(feature = "heap-stats")]
+#[allow(unsafe_code)]
+mod heap {
+    //! The counting allocator: the system's, with the bytes it holds now and
+    //! the most it held, two relaxed atomics per call.
+
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+    use std::time::Duration;
+
+    /// How often the gauge is said while the client runs.
+    pub const EVERY: Duration = Duration::from_secs(10);
+
+    static NOW: AtomicUsize = AtomicUsize::new(0);
+    static PEAK: AtomicUsize = AtomicUsize::new(0);
+
+    struct Counting;
+
+    #[global_allocator]
+    static COUNTING: Counting = Counting;
+
+    fn grew(n: usize) {
+        let now = NOW.fetch_add(n, Relaxed) + n;
+        PEAK.fetch_max(now, Relaxed);
+    }
+
+    // SAFETY: every call goes straight to `System` with the caller's
+    // arguments; the counters are only arithmetic on the sizes.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: the caller's contract, passed on.
+            let p = unsafe { System.alloc(layout) };
+            if !p.is_null() {
+                grew(layout.size());
+            }
+            p
+        }
+
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            // SAFETY: the caller's contract, passed on.
+            let p = unsafe { System.alloc_zeroed(layout) };
+            if !p.is_null() {
+                grew(layout.size());
+            }
+            p
+        }
+
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            // SAFETY: the caller's contract, passed on.
+            unsafe { System.dealloc(ptr, layout) };
+            NOW.fetch_sub(layout.size(), Relaxed);
+        }
+
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            // SAFETY: the caller's contract, passed on.
+            let p = unsafe { System.realloc(ptr, layout, new_size) };
+            if !p.is_null() {
+                if new_size >= layout.size() {
+                    grew(new_size - layout.size());
+                } else {
+                    NOW.fetch_sub(layout.size() - new_size, Relaxed);
+                }
+            }
+            p
+        }
+    }
+
+    /// Says the gauge.
+    pub fn say() {
+        olc_client::info!(
+            "heap now {} KiB peak {} KiB",
+            NOW.load(Relaxed) >> 10,
+            PEAK.load(Relaxed) >> 10
+        );
+    }
+}
 
 fn main() -> ExitCode {
     let Some(path) = std::env::args().nth(1) else {
@@ -38,6 +120,11 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    #[cfg(feature = "shaped-tls")]
+    if let Err(e) = olc_net::shaped_tls::install(olc_net::shaped_tls::FINGERPRINT) {
+        eprintln!("tls: {e}");
+        return ExitCode::FAILURE;
+    }
     let workers = std::thread::available_parallelism()
         .map_or(2, std::num::NonZeroUsize::get)
         .clamp(2, MAX_WORKERS);
@@ -53,7 +140,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    rt.block_on(async move {
+    let code = rt.block_on(async move {
+        #[cfg(feature = "heap-stats")]
+        tokio::spawn(async {
+            let mut tick = tokio::time::interval(heap::EVERY);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                heap::say();
+            }
+        });
         let stop = CancellationToken::new();
         {
             let stop = stop.clone();
@@ -84,5 +180,8 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         }
-    })
+    });
+    #[cfg(feature = "heap-stats")]
+    heap::say();
+    code
 }
