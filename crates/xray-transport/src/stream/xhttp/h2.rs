@@ -954,12 +954,16 @@ fn lock_received(received: &Mutex<ReceivedBody>) -> MutexGuard<'_, ReceivedBody>
 
 /// Moves response DATA out of h2 as it arrives.
 ///
-/// h2 keeps every received frame as a slice of its shared read buffer, so
-/// frames queued behind a slow or paused reader pin roughly twice their size:
-/// eight stalled streams held about 60 MiB for 32 MiB of window. A frame that
-/// has to wait is therefore copied to an exact-size buffer; a frame the reader
-/// takes at once is passed through. Flow control is unchanged: credit returns
-/// to the peer only as the reader consumes bytes.
+/// A frame the reader takes at once is passed through. A frame that has to
+/// wait is copied into a buffer of exactly its payload, so a queue behind a
+/// slow or paused reader holds its payload and nothing the frame was read
+/// with. Upstream h2 hands a frame out as a slice of the connection's shared
+/// read buffer: eight stalled streams held about 60 MiB for 32 MiB of window.
+/// A reader that reads each frame into an allocation of its own holds 9 bytes
+/// of frame header with each payload, in an allocation the allocator rounds
+/// up from an odd size; the copy costs one allocation and one copy of the
+/// payload per waiting frame. Flow control is unchanged: credit returns to the
+/// peer only as the reader consumes bytes.
 async fn drain_response(mut recv: RecvStream, received: Arc<Mutex<ReceivedBody>>) {
     let end = loop {
         let Some(first) = recv.data().await else {
