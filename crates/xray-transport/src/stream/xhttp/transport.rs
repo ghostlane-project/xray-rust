@@ -12,7 +12,7 @@
 //! pool while still allowing simultaneous logical flows to reuse connections.
 
 use std::fmt;
-use std::future::{poll_fn, Future};
+use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -27,7 +27,7 @@ use futures_util::task::AtomicWaker;
 use http::{header, HeaderName, HeaderValue, Method, Request, Version};
 use rand::{rngs::OsRng, RngCore};
 use thiserror::Error;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, ReadBuf};
 use tokio::sync::{oneshot, watch, Mutex as AsyncMutex};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::Instant;
@@ -40,6 +40,7 @@ use super::h2::{connect_h2_with_window, H2Client, H2Error, H2ReceiveWindow, H2Re
 use super::h3::{
     connect_h3_candidates, H3Client, H3ConnectConfig, H3Error, H3QuicConfig, H3ResponseBody,
 };
+use super::packet_pipe::{packet_pipe, PacketPipeReader};
 use super::padding::draw_range;
 use super::request::{
     compose_packet_request, compose_stream_request, XhttpRequest, XhttpRequestBody,
@@ -52,10 +53,6 @@ use crate::{
 };
 
 const PACKET_RESPONSE_CAP_FALLBACK: usize = 1;
-// Xray's packet-up pipe is made from pooled 8 KiB buffers. Grow the H1 body
-// only while bytes are actually available instead of materializing the
-// configured (potentially multi-megabyte) POST ceiling for every flow.
-const H1_PACKET_READ_CHUNK_BYTES: usize = 8 * 1024;
 const MAX_PACKET_RESPONSE_TASKS: usize = 256;
 const MAX_H1_IDLE_UPLOAD_STREAMS: usize = 256;
 const HTTP_MULTIPLEXED_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -94,92 +91,12 @@ struct PreparedRequest {
 }
 
 struct PacketWorkerContext {
-    input: tokio::io::DuplexStream,
-    first_uplink: Option<oneshot::Receiver<FirstUplink>>,
+    input: PacketPipeReader,
     session: String,
-    max_packet: u32,
     response_cap: usize,
     upload_client: Arc<XmuxClient>,
     dial: XhttpModeDial,
     failure: Arc<SharedFailure>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FirstUplink {
-    Data,
-    Closed,
-}
-
-/// Keeps an idle H1 packet-up stream allocation-free on its worker side.
-///
-/// Tokio's in-memory duplex buffer grows lazily, but the packet worker used to
-/// reserve and zero `scMaxEachPostBytes` as soon as the logical stream opened.
-/// Notify the worker only after this side has actually accepted a byte. A
-/// clean shutdown before any write is distinct so the worker can exit without
-/// constructing its packet buffer at all.
-struct FirstUplinkWriter {
-    inner: tokio::io::DuplexStream,
-    first_uplink: Option<oneshot::Sender<FirstUplink>>,
-}
-
-impl FirstUplinkWriter {
-    fn new(inner: tokio::io::DuplexStream, first_uplink: oneshot::Sender<FirstUplink>) -> Self {
-        Self {
-            inner,
-            first_uplink: Some(first_uplink),
-        }
-    }
-
-    fn notify(&mut self, event: FirstUplink) {
-        if let Some(first_uplink) = self.first_uplink.take() {
-            let _ = first_uplink.send(event);
-        }
-    }
-}
-
-impl AsyncWrite for FirstUplinkWriter {
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        input: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        let this = self.get_mut();
-        let result = Pin::new(&mut this.inner).poll_write(cx, input);
-        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
-            this.notify(FirstUplink::Data);
-        }
-        result
-    }
-
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        input: &[io::IoSlice<'_>],
-    ) -> Poll<io::Result<usize>> {
-        let this = self.get_mut();
-        let result = Pin::new(&mut this.inner).poll_write_vectored(cx, input);
-        if matches!(result, Poll::Ready(Ok(written)) if written > 0) {
-            this.notify(FirstUplink::Data);
-        }
-        result
-    }
-
-    fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
-    }
-
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let this = self.get_mut();
-        let result = Pin::new(&mut this.inner).poll_shutdown(cx);
-        if result.is_ready() {
-            this.notify(FirstUplink::Closed);
-        }
-        result
-    }
 }
 
 #[derive(Clone)]
@@ -905,23 +822,18 @@ impl XhttpTransport {
             )
             .await?;
         let max_packet = self.draw(self.config.max_each_post_bytes)?;
+        // The pipe holds at most one POST, so a take is at most one POST:
+        // Xray's pipe is bounded by `scMaxEachPostBytes` the same way. It
+        // holds only the bytes waiting, so an idle or download-only flow
+        // keeps nothing of this size.
         let pipe_capacity = usize::try_from(max_packet)
             .map_err(|_| XhttpTransportError::PacketSizeTooLarge)?
             .max(1);
         let response_cap = usize::try_from(self.config.max_buffered_posts)
             .map_err(|_| XhttpTransportError::WorkerLimitTooLarge)?
             .clamp(PACKET_RESPONSE_CAP_FALLBACK, MAX_PACKET_RESPONSE_TASKS);
-        let (uplink, worker_input) = tokio::io::duplex(pipe_capacity);
-        let (uplink, first_uplink): (BoxedWrite, _) = match self.http_version {
-            XhttpHttpVersion::Http1 => {
-                let (first_uplink_tx, first_uplink_rx) = oneshot::channel();
-                (
-                    Box::new(FirstUplinkWriter::new(uplink, first_uplink_tx)),
-                    Some(first_uplink_rx),
-                )
-            }
-            XhttpHttpVersion::Http2 | XhttpHttpVersion::Http3 => (Box::new(uplink), None),
-        };
+        let (uplink, worker_input) = packet_pipe(pipe_capacity);
+        let uplink: BoxedWrite = Box::new(uplink);
         let worker_failure = Arc::clone(&failure);
         let response_failure = Arc::clone(&failure);
         let transport = self.clone();
@@ -929,9 +841,7 @@ impl XhttpTransport {
             if let Err(error) = transport
                 .run_packet_worker(PacketWorkerContext {
                     input: worker_input,
-                    first_uplink,
                     session,
-                    max_packet,
                     response_cap,
                     upload_client: client,
                     dial,
@@ -1006,27 +916,17 @@ impl XhttpTransport {
     ) -> Result<(), XhttpTransportError> {
         let PacketWorkerContext {
             mut input,
-            first_uplink,
             session,
-            max_packet,
             response_cap,
             mut upload_client,
             dial,
             failure,
         } = context;
-        if let Some(first_uplink) = first_uplink {
-            match first_uplink.await {
-                Ok(FirstUplink::Data) => {}
-                Ok(FirstUplink::Closed) | Err(_) => return Ok(()),
-            }
-        }
-        let max_packet =
-            usize::try_from(max_packet).map_err(|_| XhttpTransportError::PacketSizeTooLarge)?;
-        let mut buffer = match self.http_version {
-            XhttpHttpVersion::Http1 => h1_packet_buffer(max_packet)?,
-            XhttpHttpVersion::Http2 | XhttpHttpVersion::Http3 => fixed_packet_buffer(max_packet)?,
-        };
 
+        // Each POST's payload is taken from the pipe as it stands: everything
+        // waiting, at most one POST, in one allocation of its own size that
+        // the request owns until it is sent. Nothing between POSTs stays
+        // allocated, so an idle flow holds no buffer at all.
         let mut sequence = 0_i64;
         let mut last_request = None;
         // The logical stream's main lease continues to cover its original
@@ -1036,24 +936,20 @@ impl XhttpTransport {
         let mut rotated_upload_usage = None;
         match self.http_version {
             XhttpHttpVersion::Http1 => loop {
-                let read = read_h1_packet_input(&mut input, &mut buffer, max_packet).await?;
-                if read == 0 {
+                let Some(payload) = input.take().await else {
                     return Ok(());
-                }
+                };
                 self.wait_packet_interval(&mut last_request).await?;
                 self.rotate_packet_client_if_needed(&mut upload_client, &mut rotated_upload_usage)
                     .await?;
-                let request = self.compose_packet(&session, &sequence.to_string(), buffer)?;
+                let request = self.compose_packet(&session, &sequence.to_string(), payload)?;
                 sequence = sequence.wrapping_add(1);
                 // The upstream H1 raw pool writes one request, then consumes
                 // its response before that same connection can be checked out
                 // again. Waiting here preserves that ordering and is what
                 // makes returning a socket to our safe pool possible.
-                buffer = reclaim_after_h1_packet_send(
-                    self.send_h1_packet(&upload_client, dial.stream()?, request),
-                    max_packet,
-                )
-                .await?;
+                self.send_h1_packet(&upload_client, dial.stream()?, request)
+                    .await?;
             },
             XhttpHttpVersion::Http2 | XhttpHttpVersion::Http3 => {
                 // `scMaxBufferedPosts` is an inbound reassembly bound in Xray,
@@ -1071,13 +967,12 @@ impl XhttpTransport {
                         packet_response_result(completed)?;
                     }
 
-                    let read = read_packet_input(&mut input, &mut buffer, &mut responses).await?;
-                    if read == 0 {
+                    let Some(payload) = take_packet_input(&mut input, &mut responses).await? else {
                         while !responses.is_empty() {
                             join_packet_response(&mut responses).await?;
                         }
                         return Ok(());
-                    }
+                    };
 
                     self.wait_packet_interval(&mut last_request).await?;
                     self.rotate_packet_client_if_needed(
@@ -1085,11 +980,7 @@ impl XhttpTransport {
                         &mut rotated_upload_usage,
                     )
                     .await?;
-                    let request = self.compose_packet(
-                        &session,
-                        &sequence.to_string(),
-                        buffer[..read].to_vec(),
-                    )?;
+                    let request = self.compose_packet(&session, &sequence.to_string(), payload)?;
                     sequence = sequence.wrapping_add(1);
                     let (uploaded, uploaded_rx) = oneshot::channel();
                     let transport = self.clone();
@@ -1172,7 +1063,7 @@ impl XhttpTransport {
         client: &Arc<XmuxClient>,
         dial: XhttpDial,
         prepared: PreparedRequest,
-    ) -> Result<PreparedRequest, XhttpTransportError> {
+    ) -> Result<(), XhttpTransportError> {
         debug_assert!(!prepared.auto_gzip);
         let body = fixed_packet_body(&prepared.request)?;
         let mut retry_stale_pool_entry = true;
@@ -1220,7 +1111,7 @@ impl XhttpTransport {
             if let Some(stream) = reusable {
                 client.h1_pool.put(stream).await;
             }
-            return Ok(prepared);
+            return Ok(());
         }
     }
 
@@ -1273,10 +1164,10 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpDial,
-        prepared: PreparedRequest,
+        mut prepared: PreparedRequest,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), XhttpTransportError> {
-        let body = Bytes::copy_from_slice(fixed_packet_body(&prepared.request)?);
+        let body = Bytes::from(take_packet_body(&mut prepared.request)?);
         let auto_gzip = prepared.auto_gzip;
         let exchange = async {
             let mut force_fresh = false;
@@ -1353,6 +1244,9 @@ impl XhttpTransport {
                 }
             }
         }
+        // The payload is sent: free what the upload still owns rather than
+        // keep it until the response drains.
+        drop(upload_future);
 
         let response = match response {
             Some(response) => response,
@@ -1384,10 +1278,10 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpH3Dial,
-        prepared: PreparedRequest,
+        mut prepared: PreparedRequest,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), XhttpTransportError> {
-        let body = Bytes::copy_from_slice(fixed_packet_body(&prepared.request)?);
+        let body = take_packet_body(&mut prepared.request)?;
         let auto_gzip = prepared.auto_gzip;
         let checkout = match client.h3_client(dial).await {
             Ok(checkout) => checkout,
@@ -1455,6 +1349,9 @@ impl XhttpTransport {
                 }
             }
         }
+        // The payload is sent: free what the upload still owns rather than
+        // keep it until the response drains.
+        drop(upload_future);
 
         let response = match response {
             Some(response) => response,
@@ -1606,108 +1503,17 @@ fn fixed_packet_body(request: &XhttpRequest) -> Result<&[u8], XhttpTransportErro
     }
 }
 
-fn h1_packet_buffer(max_packet: usize) -> Result<Vec<u8>, XhttpTransportError> {
-    let mut buffer = Vec::new();
-    buffer
-        .try_reserve_exact(max_packet.min(H1_PACKET_READ_CHUNK_BYTES))
-        .map_err(|error| XhttpTransportError::BackgroundTask(error.to_string()))?;
-    Ok(buffer)
-}
-
-fn fixed_packet_buffer(max_packet: usize) -> Result<Vec<u8>, XhttpTransportError> {
-    resize_fixed_packet_buffer(Vec::new(), max_packet)
-}
-
-async fn reclaim_after_h1_packet_send<F>(
-    send: F,
-    max_packet: usize,
-) -> Result<Vec<u8>, XhttpTransportError>
-where
-    F: Future<Output = Result<PreparedRequest, XhttpTransportError>>,
-{
-    let request = send.await?;
-    reclaim_packet_buffer(request, max_packet)
-}
-
-fn reclaim_packet_buffer(
-    prepared: PreparedRequest,
-    max_packet: usize,
-) -> Result<Vec<u8>, XhttpTransportError> {
-    let buffer = match prepared.request.body {
-        XhttpRequestBody::Bytes(body) => body,
-        XhttpRequestBody::None | XhttpRequestBody::Streaming => Vec::new(),
-    };
-    if buffer.capacity() > max_packet {
-        return h1_packet_buffer(max_packet);
+/// Moves a packet POST's payload out of its request, which keeps its target
+/// and headers for a retry. The payload is not copied, and it is freed once
+/// its last byte is handed to the connection, not when the response ends.
+fn take_packet_body(request: &mut XhttpRequest) -> Result<Vec<u8>, XhttpTransportError> {
+    match std::mem::replace(&mut request.body, XhttpRequestBody::None) {
+        XhttpRequestBody::None => Ok(Vec::new()),
+        XhttpRequestBody::Bytes(body) => Ok(body),
+        XhttpRequestBody::Streaming => Err(XhttpTransportError::BackgroundTask(
+            "packet composer returned a streaming body".to_owned(),
+        )),
     }
-    let mut buffer = buffer;
-    buffer.clear();
-    Ok(buffer)
-}
-
-fn resize_fixed_packet_buffer(
-    mut buffer: Vec<u8>,
-    max_packet: usize,
-) -> Result<Vec<u8>, XhttpTransportError> {
-    if buffer.capacity() < max_packet {
-        buffer
-            .try_reserve_exact(max_packet.saturating_sub(buffer.len()))
-            .map_err(|error| XhttpTransportError::BackgroundTask(error.to_string()))?;
-    }
-    buffer.resize(max_packet, 0);
-    Ok(buffer)
-}
-
-/// Drains the bytes currently available from the packet pipe into one H1
-/// request, up to the configured ceiling. The vector grows in the same 8 KiB
-/// units used by Xray's pooled MultiBuffer implementation, so an idle flow
-/// that has sent only its small VLESS header does not pin 500 KiB merely
-/// because `scMaxEachPostBytes` allows a future request that large.
-async fn read_h1_packet_input(
-    input: &mut tokio::io::DuplexStream,
-    buffer: &mut Vec<u8>,
-    max_packet: usize,
-) -> Result<usize, XhttpTransportError> {
-    buffer.clear();
-    poll_fn(|cx| loop {
-        if buffer.len() == max_packet {
-            return Poll::Ready(Ok(buffer.len()));
-        }
-
-        let filled = buffer.len();
-        let next = filled
-            .saturating_add(H1_PACKET_READ_CHUNK_BYTES)
-            .min(max_packet);
-        if buffer.capacity() < next {
-            if let Err(error) = buffer.try_reserve_exact(next - buffer.len()) {
-                return Poll::Ready(Err(XhttpTransportError::BackgroundTask(error.to_string())));
-            }
-        }
-        buffer.resize(next, 0);
-
-        let mut read_buf = ReadBuf::new(&mut buffer[filled..next]);
-        match Pin::new(&mut *input).poll_read(cx, &mut read_buf) {
-            Poll::Pending => {
-                buffer.truncate(filled);
-                if filled == 0 {
-                    return Poll::Pending;
-                }
-                return Poll::Ready(Ok(filled));
-            }
-            Poll::Ready(Err(error)) => {
-                buffer.truncate(filled);
-                return Poll::Ready(Err(XhttpTransportError::Io(error)));
-            }
-            Poll::Ready(Ok(())) => {
-                let read = read_buf.filled().len();
-                buffer.truncate(filled + read);
-                if read == 0 {
-                    return Poll::Ready(Ok(buffer.len()));
-                }
-            }
-        }
-    })
-    .await
 }
 
 fn gzip_response_reader<R>(reader: R) -> BoxedRead
@@ -2048,14 +1854,16 @@ async fn join_packet_response(
     packet_response_result(result)
 }
 
-async fn read_packet_input(
-    input: &mut tokio::io::DuplexStream,
-    buffer: &mut [u8],
+/// The next payload from the pipe, or `None` once the flow's writer is
+/// closed and nothing is left. A response that completes meanwhile is joined
+/// so its failure ends the worker at once.
+async fn take_packet_input(
+    input: &mut PacketPipeReader,
     responses: &mut JoinSet<Result<(), StoredFailure>>,
-) -> Result<usize, XhttpTransportError> {
+) -> Result<Option<Vec<u8>>, XhttpTransportError> {
     loop {
         if responses.is_empty() {
-            return input.read(buffer).await.map_err(XhttpTransportError::Io);
+            return Ok(input.take().await);
         }
         tokio::select! {
             response = responses.join_next() => {
@@ -2066,8 +1874,8 @@ async fn read_packet_input(
                 })?;
                 packet_response_result(response)?;
             }
-            read = input.read(buffer) => {
-                return read.map_err(XhttpTransportError::Io);
+            payload = input.take() => {
+                return Ok(payload);
             }
         }
     }
@@ -3127,156 +2935,35 @@ impl H3DialAttempt {
 }
 
 #[cfg(test)]
-mod packet_buffer_tests {
-    use tokio::io::AsyncWriteExt;
-    use tokio::sync::oneshot::error::TryRecvError;
-
+mod packet_body_tests {
     use super::*;
 
-    struct DropProbe(Arc<AtomicUsize>);
-
-    impl Drop for DropProbe {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::SeqCst);
+    fn packet_request(body: XhttpRequestBody) -> XhttpRequest {
+        XhttpRequest {
+            method: "POST".to_owned(),
+            target: "/upload/session/0".to_owned(),
+            headers: XhttpHeaderMap::new(),
+            body,
         }
     }
 
-    #[tokio::test]
-    async fn first_uplink_writer_waits_for_data_and_distinguishes_clean_shutdown() {
-        let (inner, mut peer) = tokio::io::duplex(16);
-        let (first_uplink_tx, mut first_uplink_rx) = oneshot::channel();
-        let mut writer = FirstUplinkWriter::new(inner, first_uplink_tx);
-
-        writer.flush().await.unwrap();
-        assert_eq!(first_uplink_rx.try_recv(), Err(TryRecvError::Empty));
-
-        writer.write_all(b"x").await.unwrap();
-        assert_eq!(first_uplink_rx.await.unwrap(), FirstUplink::Data);
-        let mut byte = [0_u8; 1];
-        peer.read_exact(&mut byte).await.unwrap();
-        assert_eq!(byte, *b"x");
-
-        let (inner, _peer) = tokio::io::duplex(16);
-        let (first_uplink_tx, first_uplink_rx) = oneshot::channel();
-        let mut writer = FirstUplinkWriter::new(inner, first_uplink_tx);
-        writer.shutdown().await.unwrap();
-        assert_eq!(first_uplink_rx.await.unwrap(), FirstUplink::Closed);
-    }
-
-    #[tokio::test]
-    async fn dropping_an_idle_first_uplink_writer_releases_the_worker_gate() {
-        let (inner, _peer) = tokio::io::duplex(16);
-        let (first_uplink_tx, first_uplink_rx) = oneshot::channel();
-        let writer = FirstUplinkWriter::new(inner, first_uplink_tx);
-
-        drop(writer);
-        assert!(first_uplink_rx.await.is_err());
-    }
-
-    #[tokio::test]
-    async fn h1_packet_buffer_grows_with_available_bytes_not_the_ceiling() {
-        const MAX_PACKET: usize = 500_000;
-        let (mut writer, mut input) = tokio::io::duplex(MAX_PACKET);
-        writer.write_all(b"vless-header").await.unwrap();
-
-        let mut buffer = h1_packet_buffer(MAX_PACKET).unwrap();
-        let read = read_h1_packet_input(&mut input, &mut buffer, MAX_PACKET)
-            .await
-            .unwrap();
-
-        assert_eq!(read, b"vless-header".len());
-        assert_eq!(buffer, b"vless-header");
-        assert!(buffer.capacity() < MAX_PACKET);
-    }
-
     #[test]
-    fn h1_body_packet_reclaims_the_actual_allocation_without_expanding_it() {
-        const MAX_PACKET: usize = 500_000;
+    fn a_packet_body_moves_out_without_a_copy_and_the_request_stays_whole() {
+        let payload = vec![0x5a; 200_000];
+        let allocation = payload.as_ptr();
+        let mut request = packet_request(XhttpRequestBody::Bytes(payload));
 
-        let mut body = h1_packet_buffer(MAX_PACKET).unwrap();
-        let allocation = body.as_ptr();
-        body.extend_from_slice(b"data");
-        let request = PreparedRequest {
-            request: XhttpRequest {
-                method: "POST".to_owned(),
-                target: "/upload".to_owned(),
-                headers: XhttpHeaderMap::new(),
-                body: XhttpRequestBody::Bytes(body),
-            },
-            auto_gzip: false,
-        };
+        let body = take_packet_body(&mut request).unwrap();
+        assert_eq!(body.as_ptr(), allocation);
+        assert_eq!(body.len(), 200_000);
+        assert_eq!(request.body, XhttpRequestBody::None);
+        assert_eq!(request.target, "/upload/session/0");
 
-        let reclaimed = reclaim_packet_buffer(request, MAX_PACKET).unwrap();
-        assert_eq!(reclaimed.as_ptr(), allocation);
-        assert!(reclaimed.is_empty());
-        assert_eq!(reclaimed.capacity(), H1_PACKET_READ_CHUNK_BYTES);
-    }
-
-    #[tokio::test]
-    async fn h1_packet_reclaim_waits_for_send_completion_and_cancellation_drops_owner_once() {
-        const MAX_PACKET: usize = 500_000;
-
-        let mut body = h1_packet_buffer(MAX_PACKET).unwrap();
-        body.extend_from_slice(b"cancelled");
-        let request = PreparedRequest {
-            request: XhttpRequest {
-                method: "POST".to_owned(),
-                target: "/upload".to_owned(),
-                headers: XhttpHeaderMap::new(),
-                body: XhttpRequestBody::Bytes(body),
-            },
-            auto_gzip: false,
-        };
-        let cancelled_drops = Arc::new(AtomicUsize::new(0));
-        let probe = DropProbe(Arc::clone(&cancelled_drops));
-        let (owned_tx, owned_rx) = oneshot::channel();
-        let (_release_tx, release_rx) = oneshot::channel::<()>();
-        let send = async move {
-            let _probe = probe;
-            owned_tx.send(()).unwrap();
-            release_rx.await.unwrap();
-            Ok::<PreparedRequest, XhttpTransportError>(request)
-        };
-        let cancelled = tokio::spawn(reclaim_after_h1_packet_send(send, MAX_PACKET));
-
-        owned_rx.await.unwrap();
-        assert!(!cancelled.is_finished());
-        cancelled.abort();
-        let cancelled = cancelled.await.unwrap_err();
-        assert!(cancelled.is_cancelled());
-        assert_eq!(cancelled_drops.load(Ordering::SeqCst), 1);
-
-        let mut body = h1_packet_buffer(MAX_PACKET).unwrap();
-        let allocation = body.as_ptr();
-        body.extend_from_slice(b"completed");
-        let request = PreparedRequest {
-            request: XhttpRequest {
-                method: "POST".to_owned(),
-                target: "/upload".to_owned(),
-                headers: XhttpHeaderMap::new(),
-                body: XhttpRequestBody::Bytes(body),
-            },
-            auto_gzip: false,
-        };
-        let completed_drops = Arc::new(AtomicUsize::new(0));
-        let probe = DropProbe(Arc::clone(&completed_drops));
-        let (owned_tx, owned_rx) = oneshot::channel();
-        let (release_tx, release_rx) = oneshot::channel();
-        let send = async move {
-            let _probe = probe;
-            owned_tx.send(()).unwrap();
-            release_rx.await.unwrap();
-            Ok::<PreparedRequest, XhttpTransportError>(request)
-        };
-        let completed = tokio::spawn(reclaim_after_h1_packet_send(send, MAX_PACKET));
-
-        owned_rx.await.unwrap();
-        assert!(!completed.is_finished());
-        release_tx.send(()).unwrap();
-        let reclaimed = completed.await.unwrap().unwrap();
-        assert_eq!(reclaimed.as_ptr(), allocation);
-        assert!(reclaimed.is_empty());
-        assert_eq!(completed_drops.load(Ordering::SeqCst), 1);
+        // A header- or cookie-placed payload leaves an empty body, as before.
+        let mut request = packet_request(XhttpRequestBody::None);
+        assert!(take_packet_body(&mut request).unwrap().is_empty());
+        let mut request = packet_request(XhttpRequestBody::Streaming);
+        assert!(take_packet_body(&mut request).is_err());
     }
 }
 
