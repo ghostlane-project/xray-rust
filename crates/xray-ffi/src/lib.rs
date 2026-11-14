@@ -4510,16 +4510,20 @@ fn runtime_plan_for(
             .filter(|count| (1..=64).contains(count))
     };
     if ios {
-        // iOS (the packet tunnel extension is killed at about 50 MB). Every
-        // worker costs about 32-64 KiB of touched stack + 128 KiB of relay
-        // pool spare + 6 KB of tokio state, so 6 workers against 2 is 0.7 MB.
-        // 2 workers still give Hysteria2 (12 s/GB, 0.9-1.35 cores at a
-        // phone's 300 Mbit/s) two cores; Reality needs 0.06-0.26. The
-        // blocking pool (getaddrinfo for a domain dialed without the core's
-        // DNS) is capped at 4 threads, each with its own touched stack, and
-        // a thread idles 2 s, not tokio's 10 s. A cap queues, never refuses.
+        // iOS (the packet tunnel extension is killed at about 50 MB). One
+        // worker: each costs about 32-64 KiB of touched stack + 128 KiB of
+        // relay pool spare + 6 KB of tokio state, and in the lab (p2/09,
+        // section 7) one worker cut XHTTP's CPU per GB by about 30 % on Linux
+        // and macOS with downloads as fast or faster, WebTunnel about the
+        // same. Earlier (run 43553887055) one worker carried Reality at
+        // 4.5-10.9 Gbit/s and Hysteria2 at 0.6-1.2 Gbit/s, far above a
+        // phone's link (300 Mbit/s). `XRAY_FFI_WORKER_THREADS` raises it.
+        // The blocking pool (getaddrinfo for a domain dialed without the
+        // core's DNS) is capped at 4 threads, each with its own touched
+        // stack, and a thread idles 2 s, not tokio's 10 s. A cap queues,
+        // never refuses.
         RuntimePlan {
-            workers: count(workers_override).unwrap_or(2),
+            workers: count(workers_override).unwrap_or(1),
             max_blocking: Some(count(blocking_override).unwrap_or(4)),
             keep_alive: Some(Duration::from_secs(2)),
         }
@@ -4770,15 +4774,15 @@ mod tests {
     /// The packet tunnel extension is killed at about 50 MB: every worker is
     /// 32-64 KiB of touched stack, 128 KiB of relay pool spare and 6 KB of
     /// tokio state, and the blocking pool is bounded by tokio at 512 threads.
-    /// Two workers keep Hysteria2 (about 1 core at a phone's 300 Mbit/s) on
-    /// two cores.
+    /// One worker carried Hysteria2 at 0.6-1.2 Gbit/s in the lab (run
+    /// 43553887055), above a phone's link; the override gives it more.
     #[test]
-    fn runtime_plan_on_ios_is_two_workers_and_four_blocking_threads() {
+    fn runtime_plan_on_ios_is_one_worker_and_four_blocking_threads() {
         for available in [1, 2, 4, 6, 8] {
             assert_eq!(
                 runtime_plan_for(true, available, None, None),
                 RuntimePlan {
-                    workers: 2,
+                    workers: 1,
                     max_blocking: Some(4),
                     keep_alive: Some(Duration::from_secs(2)),
                 },
@@ -4795,7 +4799,7 @@ mod tests {
         assert_eq!((plan.workers, plan.max_blocking), (1, Some(2)));
         for bad in ["0", "65", "-1", "two", ""] {
             let plan = runtime_plan_for(true, 6, Some(bad), Some(bad));
-            assert_eq!((plan.workers, plan.max_blocking), (2, Some(4)), "{bad:?}");
+            assert_eq!((plan.workers, plan.max_blocking), (1, Some(4)), "{bad:?}");
         }
     }
 
