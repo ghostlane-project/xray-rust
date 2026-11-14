@@ -5810,8 +5810,8 @@ mod stream_grpc_budget_tests {
     use tokio::io::AsyncReadExt;
     use tokio::net::{TcpListener, TcpStream};
     use xray_routing::{Network, Target, TargetAddr};
-    use xray_transport::stream::grpc_test_only::encode_hunk;
     use xray_transport::memory_budget::ByteBudget;
+    use xray_transport::stream::grpc_test_only::encode_hunk;
     use xray_transport::stream::{GrpcConfig, GrpcTransport, TransportLayer};
     use xray_transport::{
         BoxedTransportStream, ByteBudgetSettings, ConnectorConfig, MemoryClass, TransportDialer,
@@ -5919,8 +5919,7 @@ mod stream_grpc_budget_tests {
         let budget = budget_with(ByteBudgetSettings::for_class(MemoryClass::Constrained));
         let addr = spawn_peer().await;
         let dialer = TransportDialer::system().expect("a system dialer");
-        let transport =
-            TransportLayer::Grpc(GrpcTransport::new(config()).with_byte_budget(budget));
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config()).with_byte_budget(budget));
         let mut flows = Vec::new();
         for _ in 0..CALLS {
             flows.push(open_flow(&dialer, &transport, addr).await);
@@ -6013,8 +6012,7 @@ mod stream_grpc_budget_tests {
             initial_windows_size: WINDOW as u32,
             ..config()
         };
-        let transport =
-            TransportLayer::Grpc(GrpcTransport::new(config).with_byte_budget(budget));
+        let transport = TransportLayer::Grpc(GrpcTransport::new(config).with_byte_budget(budget));
         let mut flow = open_flow(&dialer, &transport, addr).await;
 
         // Unread, the call's window fills and the peer stops.
@@ -6111,8 +6109,7 @@ mod stream_grpc_bench_tests {
         tokio::spawn(async move {
             while let Ok((socket, _)) = listener.accept().await {
                 tokio::spawn(async move {
-                    let mut connection =
-                        server::handshake(socket).await.expect("server handshake");
+                    let mut connection = server::handshake(socket).await.expect("server handshake");
                     while let Some(Ok((request, respond))) = connection.accept().await {
                         tokio::spawn(answer(request.into_body(), respond, each));
                     }
