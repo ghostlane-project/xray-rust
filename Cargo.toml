@@ -17,6 +17,7 @@ members = [
     "fuzz",
     "olc/olc-wire",
     "olc/olc-muxconn",
+    "olc/olc-client",
     "olc/interop/oracle-client",
 ]
 resolver = "2"

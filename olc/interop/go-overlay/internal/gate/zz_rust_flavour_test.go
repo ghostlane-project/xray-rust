@@ -163,6 +163,10 @@ type rustConfig struct {
 	DeviceID  string `json:"device_id"`
 	SocksUser string `json:"socks_user,omitempty"`
 	SocksPass string `json:"socks_pass,omitempty"`
+	// Liveness and LivenessFallbackMS shorten the client's liveness for the
+	// e2e scenarios (zz_rust_e2e_test.go).
+	Liveness           *rustLiveness `json:"liveness,omitempty"`
+	LivenessFallbackMS int           `json:"liveness_fallback_ms,omitempty"`
 }
 
 // rustClient runs the Rust client as a child process; its stderr is the

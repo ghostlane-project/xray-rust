@@ -1,0 +1,26 @@
+[package]
+name = "olc-client"
+description = "The olcRTC client, ported from the Go engine at 2d4266af: the SOCKS5 front, CONNECT, UDP and DNS over the tunnel, the link's bring-up, the hello race, the control loop and reconnect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+olc-muxconn = { path = "../olc-muxconn" }
+olc-smux = { path = "../olc-smux" }
+olc-wire = { path = "../olc-wire" }
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7.19", default-features = false }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[[bin]]
+name = "olc-client"
+path = "src/bin/olc-client.rs"

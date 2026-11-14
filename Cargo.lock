@@ -1571,6 +1571,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "olc-client"
+version = "0.10.0"
+dependencies = [
+ "olc-muxconn",
+ "olc-smux",
+ "olc-wire",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "olc-interop"
 version = "0.10.0"
 dependencies = [
