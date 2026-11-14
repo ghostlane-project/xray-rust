@@ -232,7 +232,8 @@ type rustChild struct {
 	ready  chan string
 	exited chan struct{}
 	err    error
-	peak   int64 // the highest VmRSS sampled, KiB
+	peak   int64  // the highest VmRSS sampled, KiB
+	snap   string // memSnapshot at that sample, when OLCRTC_GATE_MEM_DIR is set
 	peakMu sync.Mutex
 	once   sync.Once
 }
@@ -307,6 +308,9 @@ func (c *rustChild) sample() {
 	for {
 		if kb := procStatusKB(c.cmd.Process.Pid, "VmRSS:"); kb > 0 {
 			c.peakMu.Lock()
+			if kb > c.peak && os.Getenv(memDirEnv) != "" {
+				c.snap = memSnapshot(c.cmd.Process.Pid)
+			}
 			c.peak = max(c.peak, kb)
 			c.peakMu.Unlock()
 		}
@@ -316,6 +320,40 @@ func (c *rustChild) sample() {
 		case <-tick.C:
 		}
 	}
+}
+
+// memDirEnv names a directory for the child's memory at its highest sampled
+// VmRSS (memSnapshot), one rust-mem-<pid>.txt per child: a measurement aid.
+const memDirEnv = "OLCRTC_GATE_MEM_DIR"
+
+// memSnapshot is the child's /proc status, smaps_rollup and smaps, and its
+// sockets as ss -m lists them (each with its skmem line).
+func memSnapshot(pid int) string {
+	var b strings.Builder
+	for _, f := range []string{"status", "smaps_rollup", "smaps"} {
+		if raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/%s", pid, f)); err == nil {
+			fmt.Fprintf(&b, "== %s\n%s\n", f, raw)
+		}
+	}
+	out, err := exec.Command("ss", "-tuanpm").Output()
+	if err != nil {
+		return b.String()
+	}
+	b.WriteString("== ss\n")
+	needle, keep := fmt.Sprintf("pid=%d,", pid), false
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "\t") || strings.HasPrefix(line, " ") {
+			if keep {
+				b.WriteString(line + "\n")
+			}
+			continue
+		}
+		keep = strings.Contains(line, needle)
+		if keep {
+			b.WriteString(line + "\n")
+		}
+	}
+	return b.String()
 }
 
 // procStatusKB reads one kB field of /proc/<pid>/status; 0 when it cannot.
@@ -347,6 +385,13 @@ func (c *rustChild) halt(budget time.Duration, logf func(string, ...any)) {
 		if logf != nil {
 			c.peakMu.Lock()
 			logf("rust client memory: VmHWM %d KiB, peak sampled VmRSS %d KiB", hwm, c.peak)
+			if dir := os.Getenv(memDirEnv); dir != "" && c.snap != "" {
+				name := filepath.Join(dir, fmt.Sprintf("rust-mem-%d.txt", c.cmd.Process.Pid))
+				body := fmt.Sprintf("VmHWM %d kB\npeak VmRSS %d kB\n%s", hwm, c.peak, c.snap)
+				if err := os.WriteFile(name, []byte(body), 0o600); err != nil {
+					logf("rust client memory: %v", err)
+				}
+			}
 			c.peakMu.Unlock()
 		}
 	})

@@ -157,6 +157,9 @@ jobs:
       - name: gate S0-S5, relayed over ${{ matrix.turn }} (${{ matrix.relay }})
         run: |
           chmod +x bin/olc-client
+          # The Rust client's /proc smaps, status and sockets at its RSS peak.
+          export OLCRTC_GATE_MEM_DIR=$PWD/olc/interop/.work/gate-artifacts/mem
+          mkdir -p "$OLCRTC_GATE_MEM_DIR"
           bash olc/interop/p2p.sh "$PWD/bin/olc-client" \
             -olcrtc.gate-turn=${{ matrix.turn }} -olcrtc.gate-turnserver=/usr/bin/turnserver \
             -olcrtc.gate-relay=${{ matrix.relay }} -olcrtc.gate-flavours=rust,cli 2>&1 | tee gate.log
@@ -164,6 +167,40 @@ jobs:
         if: always()
         with:
           name: t2a-${{ matrix.turn }}-${{ matrix.relay }}
+          path: |
+            gate.log
+            olc/interop/.work/gate-artifacts
+          retention-days: 7
+          if-no-files-found: warn
+
+  fakeroom:
+    # M4's SaluteJazz path (T2(b): the engine's fake SFU against the Go engine
+    # at the pin), the same binary on the same runner type, for the memory
+    # figures the p2p cells are read against.
+    needs: rust
+    if: needs.rust.outputs.gate == 'yes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: olc-client
+          path: bin
+      - name: fake-room gate S0-S5 (rust)
+        run: |
+          chmod +x bin/olc-client
+          export OLCRTC_GATE_MEM_DIR=$PWD/olc/interop/.work/gate-artifacts/mem
+          mkdir -p "$OLCRTC_GATE_MEM_DIR"
+          bash olc/interop/fakeroom.sh "$PWD/bin/olc-client" gate -olcrtc.gate-flavours=rust 2>&1 | tee gate.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: t2b-fakeroom
           path: |
             gate.log
             olc/interop/.work/gate-artifacts
