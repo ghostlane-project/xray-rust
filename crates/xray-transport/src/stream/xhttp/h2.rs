@@ -1062,6 +1062,23 @@ impl H2ResponseBody {
         Ok(())
     }
 
+    /// Ends the response's part in the budget. Credit its reader took that
+    /// the budget held back goes to the connection now, as it would have
+    /// without the budget, rather than when h2 lets the stream go: an upload
+    /// half still open keeps the stream, and with it that credit, until it
+    /// ends too. Then the queue's bytes of the budget come back.
+    fn close_window(&mut self) {
+        let owed = self.window.owed();
+        if let Some(flow) = self.flow.as_mut().filter(|_| owed > 0) {
+            // h2 still counts the owed bytes as received and not released,
+            // so it takes them back, and for a stream it has reset it sends
+            // no stream WINDOW_UPDATE. An error leaves nothing to return: the
+            // connection is gone.
+            let _ = flow.release_capacity(owed);
+        }
+        self.window.close();
+    }
+
     /// Response headers excluding the HTTP/2 pseudo-headers.
     pub fn headers(&self) -> &HeaderMap {
         &self.headers
@@ -1084,6 +1101,7 @@ impl Drop for H2ResponseBody {
         if !self.eof {
             self.shared.cancel();
         }
+        self.close_window();
         // Dropping the receive stream with the flow-control handle returns
         // any unread credit to the connection.
         if let Some(drain) = self.drain.take() {
@@ -1139,8 +1157,8 @@ impl AsyncRead for H2ResponseBody {
                     drop(guard);
                     this.trailers = trailers;
                     this.received = None;
+                    this.close_window();
                     this.flow = None;
-                    this.window.close();
                     this.eof = true;
                     return Poll::Ready(Ok(()));
                 }

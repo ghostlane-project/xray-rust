@@ -650,3 +650,60 @@ async fn eight_parallel_downloads_on_one_connection_all_finish_under_a_phone_bud
     drop(bodies);
     server.close().await;
 }
+
+/// A body dropped in the middle of a pressed download hands the credit its
+/// reader took, and the budget held back, to the connection at once, though
+/// the request's upload half is still open and keeps the stream: another
+/// response on the connection can use it. The credit of what was still
+/// queued comes back with the stream, once the upload half ends too.
+#[tokio::test(start_paused = true)]
+async fn a_body_dropped_mid_download_hands_its_withheld_credit_to_the_connection() {
+    const WINDOW: usize = 8 * 1024 * 1024;
+    const MIB: usize = 1024 * 1024;
+    // Far below the queue: every read's credit waits.
+    let budget: &'static ByteBudget =
+        Box::leak(Box::new(ByteBudget::with_settings(ByteBudgetSettings {
+            capacity: MIB,
+            floor: 4 * 1024,
+        })));
+    let (client, mut server) = pair_with_window(server::Builder::new(), Some(WINDOW as u32)).await;
+    let client = client.with_byte_budget(budget);
+    let (upload, pending) = client
+        .start_streaming(request(Method::POST, "http://example.test/one"))
+        .await
+        .unwrap();
+    let (_, mut respond) = server.accept().await.unwrap().unwrap();
+    let mut send = respond
+        .send_response(response(StatusCode::OK), false)
+        .unwrap();
+    let mut body = pending.open().await.unwrap();
+    // A second response takes the rest of the connection's 16 MiB.
+    let (unread, mut other) = response_pair(&client, &mut server).await;
+    timeout(DEADLINE, send_bytes(&mut send, WINDOW))
+        .await
+        .unwrap();
+    timeout(DEADLINE, send_bytes(&mut other, WINDOW))
+        .await
+        .unwrap();
+    let (_victim_body, mut victim) = response_pair(&client, &mut server).await;
+    assert_blocked(&mut victim).await;
+
+    // 4 MiB read and 4 MiB still queued, beyond the budget: their credit
+    // waits.
+    let mut bytes = vec![0; 4 * MIB];
+    body.read_exact(&mut bytes).await.unwrap();
+    assert_blocked(&mut victim).await;
+
+    drop(body);
+    timeout(DEADLINE, send_bytes(&mut victim, 4 * MIB))
+        .await
+        .expect("the dropped body's withheld credit reaches the connection");
+    assert_blocked(&mut victim).await;
+    drop(upload);
+    timeout(DEADLINE, send_bytes(&mut victim, 4 * MIB))
+        .await
+        .expect("the queue's credit comes back with the stream");
+    assert_eq!(budget.in_use(), 0, "the dropped body holds nothing");
+    drop(unread);
+    server.close().await;
+}
