@@ -441,6 +441,27 @@ fn go_errno_text(e: &io::Error) -> String {
     }
 }
 
+/// pion's line for a relayed candidate whose peer connection closed: its
+/// read loop ends on the TURN client's closed socket and says so, once per
+/// relay candidate (`candidateBase.recvLoop`, `Failed to read from
+/// candidate %s: %v`; seen at every close of the Go server's peer
+/// connections in `t3-live-2`). The apps read `use of closed network
+/// connection` in it as a lost transport. The related address is the one
+/// our candidate's SDP gives (`0.0.0.0:0`); pion's gives the mapped address.
+#[must_use]
+pub fn closed_relay_line(relayed: SocketAddr) -> String {
+    let net = if relayed.is_ipv4() { "udp4" } else { "udp6" };
+    let unspecified = if relayed.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    format!(
+        "Failed to read from candidate {net} relay {relayed} related {unspecified} \
+         (resolved: {relayed}): read udp {relayed}: use of closed network connection"
+    )
+}
+
 /// Counts a datagram the host refused and, for a refusal pion would have
 /// seen (not a full socket buffer: Go's write blocks there), writes pion's
 /// line at most once per [`REFUSED_LINE_EVERY`].
@@ -655,7 +676,9 @@ async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
             () = sh.kick.notified() => {}
         }
     };
-    relays.close(&sock, Instant::now());
+    for relayed in relays.close(&sock, Instant::now()) {
+        olc_net::info!("[ice] WARN: {}", closed_relay_line(relayed));
+    }
     sh.ended.store(true, Ordering::Release);
     sh.progressed.notify_waiters();
     olc_net::debug!("webrtc: {} peer connection ended: {reason}", sh.name);
@@ -732,6 +755,22 @@ mod tests {
             refused_line(v6, to6, &io::Error::from_raw_os_error(113)),
             "Failed to send packet: write udp6 [2001:db8::1]:5000->[2001:db8::2]:3478: sendto: no route to host"
         );
+    }
+
+    /// The line a closed relay candidate writes, in pion's words (the Go
+    /// server's at the end of `t3-live-2`, addresses aside).
+    #[test]
+    fn a_closed_relay_reads_as_pions_line() {
+        let relayed: SocketAddr = "192.0.2.7:44444".parse().unwrap();
+        assert_eq!(
+            closed_relay_line(relayed),
+            "Failed to read from candidate udp4 relay 192.0.2.7:44444 related 0.0.0.0:0 \
+             (resolved: 192.0.2.7:44444): read udp 192.0.2.7:44444: use of closed network connection"
+        );
+        let v6: SocketAddr = "[2001:db8::7]:44444".parse().unwrap();
+        assert!(closed_relay_line(v6).starts_with(
+            "Failed to read from candidate udp6 relay [2001:db8::7]:44444 related [::]:0 "
+        ));
     }
 
     /// A refusal is counted every time; the line is written at most once

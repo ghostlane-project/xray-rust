@@ -682,18 +682,23 @@ impl Relays {
 
     /// Releases every allocation (a Refresh with a zero lifetime, as Chrome
     /// sends on close) and sends those requests once; a TCP connection's
-    /// task sends its queue and ends once the relays are dropped.
-    pub(crate) fn close(&mut self, sock: &UdpSocket, now: Instant) {
+    /// task sends its queue and ends once the relays are dropped. Returns
+    /// the relayed addresses that were still up (for pion's close lines,
+    /// [`crate::peer::closed_relay_line`]).
+    pub(crate) fn close(&mut self, sock: &UdpSocket, now: Instant) -> Vec<SocketAddr> {
         let at = self.at(now);
+        let mut up = Vec::new();
         for r in &mut self.list {
-            if !r.done && r.relayed.is_some() {
+            if let (false, Some(relayed)) = (r.done, r.relayed) {
                 let _ = r.client.delete(at);
+                up.push(relayed);
             }
             while let Some(t) = r.client.poll_transmit(at) {
                 let _ = r.path.send(sock, t.to, t.data.as_ref());
             }
             r.done = true;
         }
+        up
     }
 }
 
@@ -942,7 +947,9 @@ mod tests {
             assert_eq!(relays.dropped() - before, 40);
             // A datagram from no relayed address is the caller's to send.
             assert!(!relays.send(&sock, local, relayed, &[0, 1, 0, 0], Instant::now()));
-            relays.close(&sock, Instant::now());
+            // Closing names the allocation that was up, once.
+            assert_eq!(relays.close(&sock, Instant::now()), [relayed]);
+            assert!(relays.close(&sock, Instant::now()).is_empty());
             server.close().await.unwrap();
         })
         .await;
