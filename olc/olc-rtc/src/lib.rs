@@ -132,6 +132,7 @@ pub(crate) mod testing {
         let entry = crate::turn::TurnServer {
             host: addr.ip().to_string(),
             port: addr.port(),
+            transport: crate::turn::TurnTransport::Udp,
             username: TURN_USER.into(),
             password: TURN_PASS.into(),
         };

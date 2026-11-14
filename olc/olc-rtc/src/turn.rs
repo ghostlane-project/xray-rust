@@ -3,14 +3,27 @@
 
 //! TURN relays for one peer connection: turn-client-proto's UDP client on the
 //! peer's own socket, as Chrome shares one UDP socket between its host
-//! candidate and its TURN allocations.
+//! candidate and its TURN allocations, and its TCP client on a TCP
+//! connection of its own per server.
 //!
 //! SaluteJazz's SFU offers only private host candidates, so a client reaches
-//! it through Sber's TURN or not at all. The Go engine at 2d4266af hands the
-//! `rtc:config` servers to pion, which allocated over UDP there (the valid
-//! pairs of `t3-live-1` are `relay` at local preference 3, pion's UDP); this
-//! module does the same. TURN over TCP and TLS, which `rtc:config` lists too,
-//! were not used by pion and come later.
+//! it through Sber's TURN or not at all. The Go engine at 2d4266af hands
+//! every `rtc:config` server to pion, which allocates on each: over UDP (the
+//! valid pairs of `t3-live-1` are `relay` at local preference 3, pion's
+//! UDP), over TCP, and over TLS (`turns:`). This module allocates over UDP
+//! and TCP, so a network that drops UDP still leaves the TCP path; TLS waits
+//! for a ClientHello that is libwebrtc's (port plan section 8, M8), as a
+//! TURN server's TLS hello from this client would otherwise be the one
+//! hello on the wire that is no browser's.
+//!
+//! Over TCP (RFC 8656 section 3.1) a task per server ([`stream`]) dials it
+//! through the engine's protected dial and moves bytes both ways: what the
+//! client sends waits in a queue of [`STREAM_QUEUE`] datagrams, what the
+//! server sends comes to the driver in chunks of at most [`STREAM_READ`]
+//! bytes, [`STREAM_INBOUND`] of them in flight for the whole peer. The
+//! client frames STUN and ChannelData on the stream (padding a ChannelData
+//! to four bytes) and reassembles what arrives; it holds at most one
+//! partial message, whose length field bounds it to 64 KiB.
 //!
 //! The driver ([`crate::peer`]) owns a [`Relays`]: datagrams from a TURN
 //! server go to its client, and what the client unwraps goes to str0m as
@@ -25,25 +38,42 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UdpSocket;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use turn_client_proto::api::{
     TurnClientApi, TurnConfig, TurnEvent, TurnPeerData, TurnPollRet, TurnRecvRet,
 };
+use turn_client_proto::client::TurnClient;
 use turn_client_proto::prelude::DelayedTransmitBuild;
 use turn_client_proto::stun::agent::Transmit;
 use turn_client_proto::stun::Instant as TurnInstant;
+use turn_client_proto::tcp::TurnClientTcp;
 use turn_client_proto::types::stun::message::IntegrityAlgorithm;
 use turn_client_proto::types::{AddressFamily, TransportType, TurnCredentials};
 use turn_client_proto::udp::TurnClientUdp;
 
+/// How a client reaches a TURN server: the URL's `transport` (RFC 7065).
+/// The relayed address is UDP either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnTransport {
+    /// Datagrams from the peer's own socket.
+    Udp,
+    /// A TCP connection of its own, STUN and ChannelData framed on it.
+    Tcp,
+}
+
 /// A TURN server from the carrier's ICE servers (WebRTC's `RTCIceServer`,
-/// one `turn:` URL over UDP), its host not yet resolved.
+/// one `turn:` URL over UDP or TCP), its host not yet resolved.
 #[derive(Clone, PartialEq, Eq)]
 pub struct TurnServer {
     /// The server's host name or address literal (without brackets).
     pub host: String,
     /// Its port (3478 when the URL names none).
     pub port: u16,
+    /// How it is reached.
+    pub transport: TurnTransport,
     /// The long-term credential's user name.
     pub username: String,
     /// The long-term credential's password.
@@ -55,6 +85,7 @@ impl std::fmt::Debug for TurnServer {
         f.debug_struct("TurnServer")
             .field("host", &self.host)
             .field("port", &self.port)
+            .field("transport", &self.transport)
             .field("username_len", &self.username.len())
             .field("password_len", &self.password.len())
             .finish()
@@ -64,13 +95,13 @@ impl std::fmt::Debug for TurnServer {
 /// TURN's default port (RFC 8656 §3.1, pion's `DefaultPort` for `turn:`).
 pub const DEFAULT_PORT: u16 = 3478;
 
-/// The UDP TURN servers of one ICE server entry: each `turn:` URL whose
-/// transport is UDP (named or by default), as pion's `ParseURL` reads
-/// `turn:host[:port][?transport=udp|tcp]`. `turns:`, `stun:` and TCP are
-/// left out (pion allocated over UDP on SaluteJazz; TCP and TLS come
-/// later); so is a URL that does not parse.
+/// The TURN servers of one ICE server entry this client allocates on: each
+/// `turn:` URL over UDP (named or by default) or TCP, as pion's `ParseURL`
+/// reads `turn:host[:port][?transport=udp|tcp]`, in the list's order.
+/// `turns:` (TLS) is left out until its ClientHello is libwebrtc's (M8);
+/// so are `stun:` and a URL that does not parse.
 #[must_use]
-pub fn udp_servers(urls: &[String], username: &str, password: &str) -> Vec<TurnServer> {
+pub fn servers(urls: &[String], username: &str, password: &str) -> Vec<TurnServer> {
     let mut out = Vec::new();
     for url in urls {
         let Some(rest) = url.strip_prefix("turn:") else {
@@ -84,15 +115,18 @@ pub fn udp_servers(urls: &[String], username: &str, password: &str) -> Vec<TurnS
                 _ => transport = "",
             }
         }
-        if !transport.eq_ignore_ascii_case("udp") {
-            continue;
-        }
+        let transport = match transport.to_ascii_lowercase().as_str() {
+            "udp" => TurnTransport::Udp,
+            "tcp" => TurnTransport::Tcp,
+            _ => continue,
+        };
         let Some((host, port)) = split_host_port(addr) else {
             continue;
         };
         let s = TurnServer {
             host: host.to_owned(),
             port,
+            transport,
             username: username.to_owned(),
             password: password.to_owned(),
         };
@@ -132,6 +166,7 @@ fn split_host_port(s: &str) -> Option<(&str, u16)> {
 #[derive(Clone)]
 pub(crate) struct Resolved {
     pub(crate) addr: SocketAddr,
+    pub(crate) transport: TurnTransport,
     pub(crate) username: String,
     pub(crate) password: String,
 }
@@ -154,11 +189,15 @@ pub(crate) async fn resolve(servers: &[TurnServer], v4: bool) -> Vec<Resolved> {
             continue;
         };
         let addr = SocketAddr::new(ip, s.port);
-        if out.iter().any(|r: &Resolved| r.addr == addr) {
+        if out
+            .iter()
+            .any(|r: &Resolved| r.addr == addr && r.transport == s.transport)
+        {
             continue;
         }
         out.push(Resolved {
             addr,
+            transport: s.transport,
             username: s.username.clone(),
             password: s.password.clone(),
         });
@@ -167,10 +206,11 @@ pub(crate) async fn resolve(servers: &[TurnServer], v4: bool) -> Vec<Resolved> {
 }
 
 /// The allocations one peer connection holds at most: SaluteJazz's
-/// `rtc:config` names two TURN hosts over UDP (`a-t`, `s-t`), and Chrome
-/// allocates on each; twice that leaves room for a carrier listing more
-/// without letting a long list open sockets' worth of state.
-pub const MAX_ALLOCATIONS: usize = 4;
+/// `rtc:config` names two TURN hosts (`a-t`, `s-t`), each over UDP, TCP and
+/// TLS, and Chrome allocates on all six. This client takes the UDP and TCP
+/// four; six leaves room for TLS without letting a long list open sockets'
+/// worth of state.
+pub const MAX_ALLOCATIONS: usize = 6;
 
 /// The remote addresses one allocation keeps permissions and channels for:
 /// the remote candidates of one peer connection (an SFU trickles one or two
@@ -197,6 +237,42 @@ pub const SEND_BUF: usize = crate::peer::RECV_BUF + TURN_OVERHEAD;
 // peer) adds 59.
 const _: () = assert!(TURN_OVERHEAD >= 59 && 1200 + 59 <= SEND_BUF);
 
+/// One read from a TURN server's TCP connection, at most: a few of the
+/// ChannelData messages a peer's 1200-byte datagrams become.
+pub const STREAM_READ: usize = 4096;
+
+/// The datagrams waiting for one TCP connection, at most (each at most
+/// [`SEND_BUF`]): a burst of ICE checks or SCTP's window in 1200-byte
+/// datagrams. Past it a datagram is dropped, as a full UDP socket buffer
+/// drops one, and SCTP sends it again.
+pub const STREAM_QUEUE: usize = 16;
+
+/// The chunks read from a peer's TCP connections waiting for its driver
+/// (each at most [`STREAM_READ`]): a reader with none left waits, so a slow
+/// driver slows the server through TCP.
+pub const STREAM_INBOUND: usize = 8;
+
+/// The kernel's send buffer for a TURN TCP connection (`SO_SNDBUF`, set
+/// before the dial so autotuning never grows it): the queue's worth twice.
+pub const STREAM_SNDBUF: u32 = 64 * 1024;
+
+/// A write to a TURN server over TCP that has not finished in this long
+/// ends the connection: a server that reads nothing for this long has gone
+/// (ICE's consent checks give up on its pairs after 30 s).
+pub const STREAM_WRITE_STALL: Duration = Duration::from_secs(10);
+
+// What one TCP connection holds at most stays far under the 12 MiB gauge:
+// its queue, a read, and the client's partial message.
+const _: () = assert!(STREAM_QUEUE * SEND_BUF + STREAM_READ + 65_556 <= 128 * 1024);
+
+/// What a TCP connection's task read from its server, for the driver
+/// ([`Relays::recv_stream`]); empty when the connection ended.
+pub(crate) struct StreamChunk {
+    /// The relay's place in [`Relays`].
+    pub(crate) slot: usize,
+    pub(crate) data: Vec<u8>,
+}
+
 /// What the relays tell the driver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RelayEvent {
@@ -222,9 +298,10 @@ pub(crate) enum Arrival<'a> {
 
 /// The relays of one peer connection: at most [`MAX_ALLOCATIONS`], each
 /// with at most [`MAX_PEERS`] permissions and channels, and one
-/// [`SEND_BUF`] for wrapping. Their memory is that and turn-client-proto's
+/// [`SEND_BUF`] for wrapping. Their memory is that, turn-client-proto's
 /// state per allocation (its transactions, one per request in flight, and
-/// the permission and channel lists our caps bound).
+/// the permission and channel lists our caps bound) and, for one over TCP,
+/// its connection's queues ([`STREAM_QUEUE`], [`STREAM_READ`]).
 pub(crate) struct Relays {
     base: Instant,
     local: SocketAddr,
@@ -237,8 +314,10 @@ pub(crate) struct Relays {
 }
 
 struct Relay {
-    client: TurnClientUdp,
+    client: TurnClient,
     server: SocketAddr,
+    /// How what the client sends reaches the server.
+    path: Path,
     /// The server's nonce was looked at for RFC 8489's cookie (logged once:
     /// Chrome ignores the cookie, turn-client-proto follows it, M8's X6).
     cookie_seen: bool,
@@ -251,16 +330,79 @@ struct Relay {
     done: bool,
 }
 
+/// How a relay's client reaches its server.
+enum Path {
+    /// From the peer's socket.
+    Udp,
+    /// Through its TCP connection's task ([`stream`]), whose queue this is.
+    Stream(mpsc::Sender<Vec<u8>>),
+}
+
+/// What became of one datagram for a TURN server.
+enum Sent {
+    Ok,
+    /// A full socket buffer or queue: dropped, as UDP drops it.
+    Full,
+    /// The host refused it (a path the firewall drops).
+    Refused(io::Error),
+    /// The TCP connection has ended.
+    Closed,
+}
+
+impl Path {
+    fn send(&self, sock: &UdpSocket, to: SocketAddr, data: &[u8]) -> Sent {
+        match self {
+            Path::Udp => match sock.try_send_to(data, to) {
+                Ok(_) => Sent::Ok,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => Sent::Full,
+                Err(e) => Sent::Refused(e),
+            },
+            Path::Stream(tx) => match tx.try_send(data.to_vec()) {
+                Ok(()) => Sent::Ok,
+                Err(TrySendError::Full(_)) => Sent::Full,
+                Err(TrySendError::Closed(_)) => Sent::Closed,
+            },
+        }
+    }
+}
+
+impl Relay {
+    /// Logs, once, whether the server's first challenge carries RFC 8489's
+    /// nonce cookie (Chrome ignores the cookie, turn-client-proto follows
+    /// it, M8's X6).
+    fn note_cookie(&mut self, data: &[u8]) {
+        if self.cookie_seen || data.len() <= 20 || data[0] != 0x01 || data[1] != 0x13 {
+            return;
+        }
+        self.cookie_seen = true;
+        let cookie = data
+            .windows(RFC8489_COOKIE.len())
+            .any(|w| w == RFC8489_COOKIE);
+        olc_net::debug!(
+            "webrtc: TURN server {} challenge, RFC 8489 nonce cookie: {}",
+            self.server,
+            if cookie { "yes" } else { "no" }
+        );
+    }
+}
+
 impl Relays {
     /// An allocation request on each of `servers` (the first
-    /// [`MAX_ALLOCATIONS`] of `local`'s family), from `local`. Nothing is
-    /// sent until [`Relays::poll`].
-    pub(crate) fn new(servers: &[Resolved], local: SocketAddr, base: Instant) -> Relays {
+    /// [`MAX_ALLOCATIONS`] of `local`'s family), from `local`; a server
+    /// over TCP gets its connection's task, which sends what `inbound`
+    /// reads. Nothing is sent until [`Relays::poll`].
+    pub(crate) fn new(
+        servers: &[Resolved],
+        local: SocketAddr,
+        base: Instant,
+        inbound: &mpsc::Sender<StreamChunk>,
+    ) -> Relays {
         let list = servers
             .iter()
             .filter(|s| s.addr.is_ipv4() == local.is_ipv4())
             .take(MAX_ALLOCATIONS)
-            .map(|s| {
+            .enumerate()
+            .map(|(slot, s)| {
                 let mut cfg = TurnConfig::new(TurnCredentials::new(&s.username, &s.password));
                 // SHA-1 stays first: a classic server's challenge (no RFC
                 // 8489 nonce cookie: pion's, coturn's by default) gets
@@ -274,9 +416,27 @@ impl Relays {
                 if local.is_ipv6() {
                     cfg.set_address_family(AddressFamily::IPV6);
                 }
+                // Over TCP the client's local address only names the
+                // connection to itself (its buffers are keyed by it): the
+                // peer's socket address, as the relayed candidate's base.
+                let (client, path) = match s.transport {
+                    TurnTransport::Udp => (
+                        TurnClient::Udp(TurnClientUdp::allocate(local, s.addr, cfg)),
+                        Path::Udp,
+                    ),
+                    TurnTransport::Tcp => {
+                        let (tx, rx) = mpsc::channel(STREAM_QUEUE);
+                        tokio::spawn(stream(slot, s.addr, rx, inbound.clone()));
+                        (
+                            TurnClient::Tcp(TurnClientTcp::allocate(local, s.addr, cfg)),
+                            Path::Stream(tx),
+                        )
+                    }
+                };
                 Relay {
-                    client: TurnClientUdp::allocate(local, s.addr, cfg),
+                    client,
                     server: s.addr,
+                    path,
                     cookie_seen: false,
                     relayed: None,
                     permitted: Vec::with_capacity(MAX_PEERS),
@@ -311,7 +471,7 @@ impl Relays {
         TurnInstant::from_nanos(i64::try_from(nanos).unwrap_or(i64::MAX))
     }
 
-    /// Hands a datagram from `from` to the relay whose server sent it.
+    /// Hands a datagram from `from` to the UDP relay whose server sent it.
     pub(crate) fn recv<'a>(
         &mut self,
         from: SocketAddr,
@@ -320,19 +480,14 @@ impl Relays {
     ) -> Arrival<'a> {
         let at = self.at(now);
         let local = self.local;
-        let Some(r) = self.list.iter_mut().find(|r| r.server == from) else {
+        let Some(r) = self
+            .list
+            .iter_mut()
+            .find(|r| r.server == from && matches!(r.path, Path::Udp))
+        else {
             return Arrival::Direct;
         };
-        if !r.cookie_seen && data.len() > 20 && data[0] == 0x01 && data[1] == 0x13 {
-            r.cookie_seen = true;
-            let cookie = data
-                .windows(RFC8489_COOKIE.len())
-                .any(|w| w == RFC8489_COOKIE);
-            olc_net::debug!(
-                "webrtc: TURN server {from} challenge, RFC 8489 nonce cookie: {}",
-                if cookie { "yes" } else { "no" }
-            );
-        }
+        r.note_cookie(data);
         match r
             .client
             .recv(Transmit::new(data, TransportType::Udp, from, local), at)
@@ -343,6 +498,44 @@ impl Relays {
                 _ => Arrival::Handled,
             },
             TurnRecvRet::Handled | TurnRecvRet::PeerIcmp { .. } => Arrival::Handled,
+        }
+    }
+
+    /// Hands what a TCP connection's task read to its relay's client: each
+    /// remote's datagram the client unwraps goes to `deliver` (the relayed
+    /// address it arrived at, the remote, the datagram). An empty chunk: the
+    /// connection ended, and the relay with it.
+    pub(crate) fn recv_stream(
+        &mut self,
+        chunk: &StreamChunk,
+        now: Instant,
+        mut deliver: impl FnMut(SocketAddr, SocketAddr, &[u8]),
+    ) {
+        let at = self.at(now);
+        let local = self.local;
+        let Some(r) = self.list.get_mut(chunk.slot) else {
+            return;
+        };
+        if r.done || !matches!(r.path, Path::Stream(_)) {
+            return;
+        }
+        let from = r.server;
+        let arrived = Transmit::new(&chunk.data[..], TransportType::Tcp, from, local);
+        if chunk.data.is_empty() {
+            olc_net::debug!("webrtc: TURN server {from} over TCP: the connection ended");
+            let _ = r.client.recv(arrived, at);
+            r.done = true;
+            return;
+        }
+        r.note_cookie(&chunk.data);
+        let relayed = r.relayed;
+        if let (TurnRecvRet::PeerData(d), Some(relayed)) = (r.client.recv(arrived, at), relayed) {
+            deliver(relayed, d.peer, d.data());
+        }
+        while let Some(d) = r.client.poll_recv(at) {
+            if let Some(relayed) = relayed {
+                deliver(relayed, d.peer, d.data());
+            }
         }
     }
 
@@ -393,11 +586,18 @@ impl Relays {
         match r.client.send_to(TransportType::Udp, to, data, at) {
             Ok(Some(wrapped)) if wrapped.data.len() <= self.out.len() => {
                 let server = wrapped.to;
-                let w = wrapped.write_into(&mut self.out);
-                if let Err(e) = sock.try_send_to(w.data, server) {
-                    self.dropped += 1;
-                    if e.kind() != io::ErrorKind::WouldBlock {
+                let len = wrapped.data.len();
+                let w = wrapped.write_into(&mut self.out[..len]);
+                match r.path.send(sock, server, w.data) {
+                    Sent::Ok => {}
+                    Sent::Full => self.dropped += 1,
+                    Sent::Refused(e) => {
+                        self.dropped += 1;
                         self.refused = Some((server, e));
+                    }
+                    Sent::Closed => {
+                        self.dropped += 1;
+                        r.done = true;
                     }
                 }
             }
@@ -441,8 +641,13 @@ impl Relays {
                 TurnPollRet::AllocateTcpSocket { .. } | TurnPollRet::TcpClose { .. } => {}
             }
             while let Some(t) = r.client.poll_transmit(at) {
-                if sock.try_send_to(t.data.as_ref(), t.to).is_err() {
-                    self.dropped += 1;
+                match r.path.send(sock, t.to, t.data.as_ref()) {
+                    Sent::Ok => {}
+                    Sent::Full | Sent::Refused(_) => self.dropped += 1,
+                    Sent::Closed => {
+                        self.dropped += 1;
+                        r.done = true;
+                    }
                 }
             }
             while let Some(e) = r.client.poll_event() {
@@ -471,7 +676,8 @@ impl Relays {
     }
 
     /// Releases every allocation (a Refresh with a zero lifetime, as Chrome
-    /// sends on close) and sends those requests once.
+    /// sends on close) and sends those requests once; a TCP connection's
+    /// task sends its queue and ends once the relays are dropped.
     pub(crate) fn close(&mut self, sock: &UdpSocket, now: Instant) {
         let at = self.at(now);
         for r in &mut self.list {
@@ -479,10 +685,78 @@ impl Relays {
                 let _ = r.client.delete(at);
             }
             while let Some(t) = r.client.poll_transmit(at) {
-                let _ = sock.try_send_to(t.data.as_ref(), t.to);
+                let _ = r.path.send(sock, t.to, t.data.as_ref());
             }
             r.done = true;
         }
+    }
+}
+
+/// One TURN server's TCP connection: dials it from a protected socket,
+/// writes what `out` holds, reads into chunks for the driver. It ends when
+/// the server closes the connection or a write stalls for
+/// [`STREAM_WRITE_STALL`] (the driver hears an empty chunk), or when the
+/// relays are dropped: then it writes what is queued (a closing Refresh)
+/// and shuts the connection down, within [`crate::peer::CLOSE_DRAIN`].
+async fn stream(
+    slot: usize,
+    server: SocketAddr,
+    mut out: mpsc::Receiver<Vec<u8>>,
+    inbound: mpsc::Sender<StreamChunk>,
+) {
+    let ended = || StreamChunk {
+        slot,
+        data: Vec::new(),
+    };
+    let tcp = match olc_net::net::dial_tcp_with(server, Some(STREAM_SNDBUF)).await {
+        Ok(tcp) => tcp,
+        Err(e) => {
+            olc_net::debug!("webrtc: TURN server {server} over TCP: {e}");
+            let _ = inbound.send(ended()).await;
+            return;
+        }
+    };
+    let _ = tcp.set_nodelay(true);
+    let (mut rd, mut wr) = tcp.into_split();
+    let reader = async {
+        let mut buf = vec![0u8; STREAM_READ];
+        loop {
+            match rd.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let chunk = StreamChunk {
+                        slot,
+                        data: buf[..n].to_vec(),
+                    };
+                    if inbound.send(chunk).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        let _ = inbound.send(ended()).await;
+    };
+    let writer = async {
+        while let Some(b) = out.recv().await {
+            match tokio::time::timeout(STREAM_WRITE_STALL, wr.write_all(&b)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    olc_net::debug!("webrtc: TURN server {server} over TCP: write: {e}");
+                    let _ = inbound.try_send(ended());
+                    return;
+                }
+                Err(_) => {
+                    olc_net::debug!("webrtc: TURN server {server} over TCP: write stalled");
+                    let _ = inbound.try_send(ended());
+                    return;
+                }
+            }
+        }
+        let _ = tokio::time::timeout(crate::peer::CLOSE_DRAIN, wr.shutdown()).await;
+    };
+    tokio::select! {
+        () = reader => {}
+        () = writer => {}
     }
 }
 
@@ -509,6 +783,7 @@ mod tests {
         let s = TurnServer {
             host: "a-t.example".into(),
             port: 3478,
+            transport: TurnTransport::Udp,
             username: "1700000000:user".into(),
             password: "s3cr3t-credential".into(),
         };
@@ -519,10 +794,11 @@ mod tests {
     }
 
     /// SaluteJazz's `rtc:config` as the spike's probe (e) logged it: of six
-    /// URLs, the two `turn:` ones over UDP are used.
+    /// URLs, the four `turn:` ones, over UDP and TCP, in the list's order
+    /// (`turns:` waits for libwebrtc's TLS hello).
     #[test]
-    fn only_the_udp_turn_urls_are_taken() {
-        let got = udp_servers(
+    fn the_udp_and_tcp_turn_urls_are_taken() {
+        let got = servers(
             &urls(&[
                 "turn:a-t.salutejazz.ru:3478?transport=udp",
                 "turn:s-t.salutejazz.ru:3478?transport=udp",
@@ -534,21 +810,32 @@ mod tests {
             "u",
             "p",
         );
-        let hosts: Vec<_> = got.iter().map(|s| (s.host.as_str(), s.port)).collect();
+        let hosts: Vec<_> = got
+            .iter()
+            .map(|s| (s.host.as_str(), s.port, s.transport))
+            .collect();
         assert_eq!(
             hosts,
-            [("a-t.salutejazz.ru", 3478), ("s-t.salutejazz.ru", 3478)]
+            [
+                ("a-t.salutejazz.ru", 3478, TurnTransport::Udp),
+                ("s-t.salutejazz.ru", 3478, TurnTransport::Udp),
+                ("a-t.salutejazz.ru", 3478, TurnTransport::Tcp),
+                ("s-t.salutejazz.ru", 3478, TurnTransport::Tcp),
+            ]
         );
         assert!(got.iter().all(|s| s.username == "u" && s.password == "p"));
     }
 
     #[test]
     fn a_turn_url_reads_as_pion_reads_it() {
-        let one = |u: &str| udp_servers(&urls(&[u]), "u", "p");
+        let one = |u: &str| servers(&urls(&[u]), "u", "p");
         assert_eq!(one("turn:192.0.2.1")[0].port, DEFAULT_PORT);
+        assert_eq!(one("turn:192.0.2.1")[0].transport, TurnTransport::Udp);
         assert_eq!(one("turn:[2001:db8::1]:5000")[0].host, "2001:db8::1");
         assert_eq!(one("turn:[2001:db8::1]")[0].port, DEFAULT_PORT);
         assert_eq!(one("turn:h:3479?transport=UDP")[0].port, 3479);
+        assert_eq!(one("turn:h?transport=tcp")[0].transport, TurnTransport::Tcp);
+        assert_eq!(one("turn:h:443?transport=TCP")[0].port, 443);
         for bad in [
             "stun:stun.l.google.com:19302",
             "turn:",
@@ -556,39 +843,54 @@ mod tests {
             "turn:h:0",
             "turn:h:x",
             "turn:2001:db8::1",
-            "turn:h?transport=tcp",
+            "turn:h?transport=sctp",
             "turn:h?foo=bar",
+            "turns:h:443?transport=tcp",
+            "turns:h",
         ] {
             assert!(one(bad).is_empty(), "{bad}");
         }
-        // The same server twice is allocated on once.
+        // The same server twice is allocated on once; over UDP and over TCP
+        // it is two.
         assert_eq!(
-            udp_servers(&urls(&["turn:h", "turn:h:3478?transport=udp"]), "u", "p").len(),
+            servers(&urls(&["turn:h", "turn:h:3478?transport=udp"]), "u", "p").len(),
             1
+        );
+        assert_eq!(
+            servers(&urls(&["turn:h", "turn:h?transport=tcp"]), "u", "p").len(),
+            2
         );
     }
 
     #[tokio::test]
     async fn literals_resolve_to_their_family_at_most_max_allocations() {
-        let servers: Vec<TurnServer> = (1..=6)
-            .map(|i| TurnServer {
-                host: format!("192.0.2.{i}"),
-                port: 3478,
-                username: "u".into(),
-                password: "p".into(),
-            })
-            .chain(std::iter::once(TurnServer {
-                host: "2001:db8::1".into(),
-                port: 3478,
-                username: "u".into(),
-                password: "p".into(),
-            }))
+        let entry = |host: String, transport| TurnServer {
+            host,
+            port: 3478,
+            transport,
+            username: "u".into(),
+            password: "p".into(),
+        };
+        let list: Vec<TurnServer> = (1..=MAX_ALLOCATIONS + 2)
+            .map(|i| entry(format!("192.0.2.{i}"), TurnTransport::Udp))
+            .chain(std::iter::once(entry(
+                "2001:db8::1".into(),
+                TurnTransport::Udp,
+            )))
             .collect();
-        let got = crate::testing::bounded(resolve(&servers, true)).await;
+        let got = crate::testing::bounded(resolve(&list, true)).await;
         assert_eq!(got.len(), MAX_ALLOCATIONS);
         assert!(got.iter().all(|r| r.addr.is_ipv4()));
-        let v6 = crate::testing::bounded(resolve(&servers[6..], false)).await;
+        let v6 = crate::testing::bounded(resolve(&list[MAX_ALLOCATIONS + 2..], false)).await;
         assert_eq!(v6.len(), 1);
+        // One address over UDP and over TCP is two allocations.
+        let both = [
+            entry("192.0.2.1".into(), TurnTransport::Udp),
+            entry("192.0.2.1".into(), TurnTransport::Tcp),
+        ];
+        let got = crate::testing::bounded(resolve(&both, true)).await;
+        let kinds: Vec<_> = got.iter().map(|r| r.transport).collect();
+        assert_eq!(kinds, [TurnTransport::Udp, TurnTransport::Tcp]);
     }
 
     /// The per-allocation state the caps bound, before turn-client-proto's
@@ -610,7 +912,8 @@ mod tests {
             let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let local = sock.local_addr().unwrap();
             let resolved = resolve(&[entry], true).await;
-            let mut relays = Relays::new(&resolved, local, Instant::now());
+            let (inbound, _chunks) = mpsc::channel(STREAM_INBOUND);
+            let mut relays = Relays::new(&resolved, local, Instant::now(), &inbound);
             let mut up = Vec::new();
             let mut buf = vec![0u8; crate::peer::RECV_BUF];
             let relayed = loop {
@@ -636,6 +939,68 @@ mod tests {
             assert!(!relays.send(&sock, local, relayed, &[0, 1, 0, 0], Instant::now()));
             relays.close(&sock, Instant::now());
             server.close().await.unwrap();
+        })
+        .await;
+    }
+
+    /// A server over TCP gets its Allocate request on a TCP connection of
+    /// its own, nothing on UDP at the same address; when the server closes
+    /// the connection, the relay ends and its task with it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tcp_relay_allocates_on_its_own_connection() {
+        use tokio::io::AsyncReadExt as _;
+        crate::testing::bounded(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let server = listener.local_addr().unwrap();
+            // A UDP socket at the server's address: the request must not
+            // come here.
+            let same_port_udp = UdpSocket::bind(server).await.unwrap();
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let local = sock.local_addr().unwrap();
+            let resolved = [Resolved {
+                addr: server,
+                transport: TurnTransport::Tcp,
+                username: "u".into(),
+                password: "p".into(),
+            }];
+            let (inbound, mut chunks) = mpsc::channel(STREAM_INBOUND);
+            let mut relays = Relays::new(&resolved, local, Instant::now(), &inbound);
+            let mut up = Vec::new();
+            relays.poll(&sock, "t", Instant::now(), &mut up);
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let mut head = [0u8; 20];
+            conn.read_exact(&mut head).await.unwrap();
+            // An Allocate request (0x0003) with STUN's magic cookie.
+            assert_eq!(&head[..2], &[0x00, 0x03], "{head:02x?}");
+            assert_eq!(&head[4..8], &[0x21, 0x12, 0xa4, 0x42], "{head:02x?}");
+            let len = usize::from(u16::from_be_bytes([head[2], head[3]]));
+            let mut body = vec![0u8; len];
+            conn.read_exact(&mut body).await.unwrap();
+            // REQUESTED-TRANSPORT (0x0019): UDP (17), the relayed address's.
+            assert!(
+                body.windows(5).any(|w| w == [0x00, 0x19, 0x00, 0x04, 17]),
+                "{body:02x?}"
+            );
+            let mut probe = [0u8; 64];
+            let udp = tokio::time::timeout(
+                Duration::from_millis(200),
+                same_port_udp.recv_from(&mut probe),
+            )
+            .await;
+            assert!(udp.is_err(), "the request came over UDP too");
+            drop(conn);
+            let chunk = chunks.recv().await.unwrap();
+            assert!(chunk.data.is_empty(), "{} bytes", chunk.data.len());
+            relays.recv_stream(&chunk, Instant::now(), |_, _, _| {
+                panic!("no remote's data came")
+            });
+            assert!(relays.list[0].done);
+            relays.close(&sock, Instant::now());
+            drop(relays);
+            // With the relays gone the task ends: the queue's last sender
+            // is the test's own.
+            drop(inbound);
+            assert!(chunks.recv().await.is_none());
         })
         .await;
     }

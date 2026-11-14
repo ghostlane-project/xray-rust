@@ -17,6 +17,11 @@
 //
 // startTurnRelay is also what TestServeFakeRoom serves a relay-only room
 // with (OLCRTC_GATE_RUST_RELAY=1), for the gate's fakeroom S0-S5.
+//
+// SaluteJazz's rtc:config lists each TURN host over UDP, over TCP (the same
+// port, ?transport=tcp) and over TLS (turns:, 443); pion and Chrome allocate
+// on all of them. TestRustRelayOnlyJoinsThroughTurnOverTCP hands the client
+// only the TCP URL: a network that drops UDP leaves the client that path.
 
 package salutejazz_test
 
@@ -61,6 +66,10 @@ type turnRelay struct {
 	// allocated and moved through its relayed sockets.
 	allocations, relayedIn, relayedOut atomic.Int64
 
+	// accepted counts the TCP connections the TURN server took (a TCP
+	// relay only).
+	accepted atomic.Int64
+
 	mu         sync.Mutex
 	rewrites   int
 	candidates []string
@@ -79,35 +88,57 @@ func hostIPv4(t testing.TB) net.IP {
 	return c.LocalAddr().(*net.UDPAddr).IP
 }
 
-// startTurnRelay starts a pion TURN server on the host's address and a
-// WebSocket relay to upstream (a fake connector URL) whose rtc:config names
-// that server. Both end with the test.
+// startTurnRelay starts a pion TURN server on the host's address, over UDP,
+// and a WebSocket relay to upstream (a fake connector URL) whose rtc:config
+// names that server. Both end with the test.
 func startTurnRelay(t testing.TB, upstream string) *turnRelay {
+	t.Helper()
+	return startTurnRelayOver(t, upstream, "udp")
+}
+
+// startTurnRelayOver is startTurnRelay with the client reaching the TURN
+// server over transport, "udp" or "tcp" (RFC 8656 section 3.1: STUN and
+// ChannelData framed on one TCP connection); the relayed address is UDP
+// either way.
+func startTurnRelayOver(t testing.TB, upstream, transport string) *turnRelay {
 	t.Helper()
 	ip := hostIPv4(t)
 	x := &turnRelay{}
-	udp, err := net.ListenPacket("udp4", net.JoinHostPort(ip.String(), "0"))
-	if err != nil {
-		t.Fatal(err)
+	gen := countingRelay{
+		RelayAddressGeneratorStatic: &turn.RelayAddressGeneratorStatic{RelayAddress: ip, Address: ip.String()},
+		x:                           x,
 	}
 	key := turn.GenerateAuthKey(relayUser, relayRealm, relayPass)
-	srv, err := turn.NewServer(turn.ServerConfig{
+	cfg := turn.ServerConfig{
 		Realm: relayRealm,
 		AuthHandler: func(ra *turn.RequestAttributes) (string, []byte, bool) {
 			return ra.Username, key, ra.Username == relayUser
 		},
-		PacketConnConfigs: []turn.PacketConnConfig{{
-			PacketConn: udp,
-			RelayAddressGenerator: countingRelay{
-				RelayAddressGeneratorStatic: &turn.RelayAddressGeneratorStatic{RelayAddress: ip, Address: ip.String()},
-				x:                           x,
-			},
-		}},
-	})
+	}
+	var port int
+	switch transport {
+	case "udp":
+		udp, err := net.ListenPacket("udp4", net.JoinHostPort(ip.String(), "0"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		port = udp.LocalAddr().(*net.UDPAddr).Port
+		cfg.PacketConnConfigs = []turn.PacketConnConfig{{PacketConn: udp, RelayAddressGenerator: gen}}
+	case "tcp":
+		ln, err := net.Listen("tcp4", net.JoinHostPort(ip.String(), "0"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		port = ln.Addr().(*net.TCPAddr).Port
+		cfg.ListenerConfigs = []turn.ListenerConfig{{Listener: countingListener{Listener: ln, x: x}, RelayAddressGenerator: gen}}
+	default:
+		t.Fatalf("no TURN transport %q", transport)
+	}
+	srv, err := turn.NewServer(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	turnURL := "turn:" + ip.String() + ":" + strconv.Itoa(udp.LocalAddr().(*net.UDPAddr).Port) + "?transport=udp"
+	turnURL := "turn:" + ip.String() + ":" + strconv.Itoa(port) + "?transport=" + transport
 	servers := `[{"credential":"` + relayPass + `","urls":["` + turnURL + `"],"username":"` + relayUser + `"}]`
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -234,6 +265,20 @@ func (c countingRelay) AllocatePacketConn(conf turn.AllocateListenerConfig) (net
 	return &countingConn{PacketConn: pc, x: c.x}, addr, nil
 }
 
+// countingListener counts the TCP connections the TURN server accepts.
+type countingListener struct {
+	net.Listener
+	x *turnRelay
+}
+
+func (l countingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil {
+		l.x.accepted.Add(1)
+	}
+	return c, err
+}
+
 type countingConn struct {
 	net.PacketConn
 	x *turnRelay
@@ -270,6 +315,38 @@ func TestRustRelayOnlyJoinsThroughTurn(t *testing.T) {
 	tunnel.checkStillUp(t)
 	checkCapture(t, room)
 	relay.check(t, want)
+	for _, line := range []string{iceConnectedLine, pcConnectedLine} {
+		if !tunnel.client.logHas(line) {
+			t.Fatalf("the client never said %q", line)
+		}
+	}
+}
+
+// TestRustRelayOnlyJoinsThroughTurnOverTCP is the relay-only join with the
+// TURN server reachable over TCP only: the client allocates over a TCP
+// connection, trickles the relayed candidate, and a download and an upload
+// move through it at once.
+func TestRustRelayOnlyJoinsThroughTurnOverTCP(t *testing.T) {
+	room := salutejazz.NewFakeRoom(t)
+	relay := startTurnRelayOver(t, room.URL(), "tcp")
+	tunnel := startRustTunnel(t, room, 0, 0, relay.useFor)
+	down := startDownload(t, tunnel.socksAddr, startSource(t))
+	up := startUpload(t, tunnel.socksAddr, startSink(t))
+	const want = 4 << 20
+	eventually(t, 60*time.Second, "4 MiB each way", func() bool { return down.moved() >= want && up.moved() >= want })
+	for what, x := range map[string]*transfer{"download": down, "upload": up} {
+		if bad := x.fault(); bad != nil {
+			t.Fatalf("the %s: %v", what, bad)
+		}
+	}
+	tunnel.checkStillUp(t)
+	checkCapture(t, room)
+	relay.check(t, want)
+	if n := relay.accepted.Load(); n == 0 {
+		t.Fatal("the TURN server accepted no TCP connection")
+	} else {
+		t.Logf("TURN over TCP: %d connections", n)
+	}
 	for _, line := range []string{iceConnectedLine, pcConnectedLine} {
 		if !tunnel.client.logHas(line) {
 			t.Fatalf("the client never said %q", line)

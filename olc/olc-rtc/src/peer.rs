@@ -35,7 +35,7 @@ use tokio::sync::{mpsc, Notify, OwnedSemaphorePermit, Semaphore};
 
 pub use str0m::IceConnectionState;
 
-use crate::turn::{Arrival, RelayEvent, Relays, Resolved, TurnServer};
+use crate::turn::{Arrival, RelayEvent, Relays, Resolved, StreamChunk, TurnServer};
 use crate::{CryptoProvider, DtlsVersion};
 
 /// The driver's one receive buffer: the largest datagram it reads. An SFU
@@ -75,8 +75,8 @@ pub struct PeerConfig {
     /// together (str0m's `sctp_max_buffered_amount`; 128 KiB by default).
     pub sctp_max_buffered: usize,
     /// The TURN servers it allocates on once it gathers ([`Peer::gather`]),
-    /// over UDP from its own socket; at most
-    /// [`crate::turn::MAX_ALLOCATIONS`] are used. Each allocation's relayed
+    /// over UDP from its own socket or over a TCP connection of each
+    /// server's own; at most [`crate::turn::MAX_ALLOCATIONS`] are used. Each allocation's relayed
     /// candidate comes as [`PeerEvent::LocalCandidate`].
     pub turn: Vec<TurnServer>,
     /// Only relayed candidates (WebRTC's `iceTransportPolicy: "relay"`):
@@ -521,11 +521,14 @@ async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
     let mut buf = vec![0u8; RECV_BUF];
     let mut events = Vec::new();
     let mut lines = Vec::new();
-    let mut relays = Relays::new(&[], sh.local, Instant::now());
+    // What the relays' TCP connections read; the driver keeps a sender, so
+    // the queue stays open while it runs.
+    let (stream_tx, mut stream_rx) = mpsc::channel::<StreamChunk>(crate::turn::STREAM_INBOUND);
+    let mut relays = Relays::new(&[], sh.local, Instant::now(), &stream_tx);
     let mut drain_until: Option<Instant> = None;
     let reason: String = 'run: loop {
         if let Some(servers) = lock(&sh.turn_ready).take() {
-            relays = Relays::new(&servers, sh.local, Instant::now());
+            relays = Relays::new(&servers, sh.local, Instant::now(), &stream_tx);
         }
         // New relayed candidates reach str0m before it polls, so its checks
         // from them start now.
@@ -616,6 +619,18 @@ async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
                     | io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) => {}
                 Err(e) => break 'run format!("recv: {e}"),
             },
+            Some(chunk) = stream_rx.recv() => {
+                let now = Instant::now();
+                let mut fed = Ok(());
+                relays.recv_stream(&chunk, now, |relayed, peer, data| {
+                    if fed.is_ok() {
+                        fed = feed(&sh, now, Receive::new(Protocol::Udp, peer, relayed, data));
+                    }
+                });
+                if let Err(e) = fed {
+                    break 'run e;
+                }
+            }
             () = tokio::time::sleep_until(wake.into()) => {
                 let mut rtc = sh.rtc.lock().unwrap_or_else(PoisonError::into_inner);
                 if let Err(e) = rtc.handle_input(Input::Timeout(Instant::now())) {

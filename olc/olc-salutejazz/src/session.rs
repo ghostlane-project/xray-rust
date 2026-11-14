@@ -1292,11 +1292,12 @@ impl Shared {
     }
 
     /// A peer connection's settings, with the generation's ICE servers
-    /// (`rtc:config`) as pion is handed them: their UDP TURN URLs.
+    /// (`rtc:config`) as pion is handed them: their TURN URLs over UDP and
+    /// TCP (`turns:` waits for libwebrtc's TLS hello, M8).
     fn peer_config(&self, gen: &Gen, name: &'static str, buffered: usize) -> PeerConfig {
         let turn = lock(&gen.ice_servers)
             .iter()
-            .flat_map(|s| olc_rtc::turn::udp_servers(&s.urls, &s.username, &s.credential))
+            .flat_map(|s| olc_rtc::turn::servers(&s.urls, &s.username, &s.credential))
             .collect();
         PeerConfig {
             name,
