@@ -3282,17 +3282,42 @@ would fail the handshake, as rustls cannot verify it. In
 Chrome 155, Firefox 148 and QQ passed, which is why upstream moved the default.
 `random` draws from twelve modern names now, `hellochrome_155` included.
 
+Here `chrome`, `hellochrome_auto` and an empty name go one step further: they
+are Chrome 156 (156.0.8078.79) as Chrome itself sends it, on TLS and REALITY
+alike, while `hellochrome_155` keeps uTLS's Chrome 155. Fourteen first flights
+a lab captured from Chrome 156 (`tests/fixtures/chrome156`, lab names and
+throwaway keys only) carry Chrome 155's lists unchanged -- suites, groups, key
+shares, signature algorithms, trust anchor IDs, ECH GREASE -- and
+`crates/xray-transport/tests/chrome156_hello_tests.rs` holds this build's
+hellos to them. Two things differ from the hello uTLS's profile gets here:
+
+- The cipher suites. Chrome lists fifteen behind its GREASE suite, six of them
+  TLS-1.2-only (`0xc013`, `0xc014`, `0x009c`, `0x009d`, `0x002f`, `0x0035`),
+  which rustls does not implement. Every other profile leaves out what this
+  build cannot negotiate; Chrome 156 lists them all, as Chrome does. A server
+  that picks one of the six ends the handshake with a `handshake_failure` alert
+  and `PeerIncompatible::ServerChoseAdvertisedOnlyCipherSuite`, where Chrome
+  would go on. A server that also has an ECDHE AEAD suite or TLS 1.3 prefers
+  those.
+- The extension order. Chrome draws it for every connection with BoringSSL's
+  `ssl_setup_extension_permutation`: the first GREASE extension first, the
+  second last, and every other one in a uniformly drawn order. uTLS's shuffle
+  skips every swap that would move a GREASE extension, which leaves an
+  extension in place twice as often as it should at each step; a few thousand
+  hellos tell the two apart.
+
 Every hello draws what uTLS draws for each connection, on TLS and REALITY
 alike: the GREASE value of each slot (cipher suite, the group that
 supported_groups and the GREASE key share both carry, supported_versions,
 signature_algorithms and the two GREASE extensions, which never agree), from
 sixteen random seed bytes as uTLS reads them, and for the ten Chrome profiles
 whose uTLS spec runs `ShuffleChromeTLSExtensions` — `hellochrome_106_shuffle`
-through `hellochrome_155`, and so `chrome` — the extension order, shuffled
-from the spec's own order with Go's `math/rand` and a fresh seed, the GREASE
-extensions, padding and pre_shared_key staying in place. Other profiles keep
-their fixed order. The Chrome profiles draw their ECH GREASE payload length
-per hello too (see [ECH GREASE](#ech-grease)).
+through `hellochrome_155` — the extension order, shuffled from the spec's own
+order with Go's `math/rand` and a fresh seed, the GREASE extensions, padding
+and pre_shared_key staying in place. Chrome 156 permutes its order as
+BoringSSL does, above. Other profiles keep their fixed order. The Chrome
+profiles draw their ECH GREASE payload length per hello too (see
+[ECH GREASE](#ech-grease)).
 
 A profile with BoringSSL's padding extension pads as BoringSSL does, and uTLS
 with it (`BoringPaddingStyle`): a hello of 256 to 511 bytes before padding is
@@ -3300,16 +3325,17 @@ padded to 512, by a single byte when only the extension's header would fit
 below 512, and any other hello goes out without the extension. What decides
 is the length uTLS's own hello has: shaped-rustls measures each ClientHello as
 it encodes it and adds what uTLS's hello has on top -- the suites this build
-cannot negotiate, less the `supported_versions` rustls adds to a TLS-1.2-era
-hello -- so a padded hello is exactly as long as uTLS's.
+cannot negotiate and leaves out, less the `supported_versions` rustls adds to a
+TLS-1.2-era hello -- so a padded hello is exactly as long as uTLS's.
 
 A HelloRetryRequest is answered as uTLS answers it. A retry that names a
 group gets that group's key share alone, without the GREASE share and any
 other the profile plans for the first flight (RFC 8446 forbids more, and
 OpenSSL and Go's `crypto/tls` refuse it with `illegal_parameter`). A cookie
 goes where uTLS inserts it, anywhere but the last two places of its extension
-list, drawn per connection. The second ClientHello is padded by its own
-length.
+list, drawn per connection; Chrome 156's goes where BoringSSL's permutation put
+it for the connection, anywhere between the two GREASE extensions. The second
+ClientHello keeps the first's order and is padded by its own length.
 
 Those 62 are the union of the three maps Xray's `GetFingerprint` consults --
 `PresetFingerprints`, `ModernFingerprints`, `OtherFingerprints` -- less
