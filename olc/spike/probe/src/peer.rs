@@ -23,6 +23,8 @@ pub struct Peer {
     pub taps: Taps,
     pub tx_bytes: usize,
     pub rx_bytes: usize,
+    /// Datagrams the host refused to send (counted, not fatal).
+    pub send_errors: usize,
 }
 
 /// The str0m configuration every probe uses: RTP mode (str0m hands RTP through untouched,
@@ -60,6 +62,7 @@ impl Peer {
             taps: Taps::default(),
             tx_bytes: 0,
             rx_bytes: 0,
+            send_errors: 0,
         })
     }
 
@@ -82,8 +85,14 @@ impl Peer {
                     self.taps.sent(&t.contents);
                     self.tx_bytes += t.contents.len();
                     if let Err(e) = self.sock.send_to(&t.contents, t.destination) {
+                        // A pair whose path the host refuses (EPERM from a firewall, an
+                        // unreachable network) fails on its own, as in any ICE agent; the
+                        // other pairs go on.
                         if e.kind() != io::ErrorKind::WouldBlock {
-                            return Err(format!("{}: send: {e}", self.name));
+                            self.send_errors += 1;
+                            if self.send_errors <= 3 {
+                                eprintln!("{}: send to {} refused: {e}", self.name, t.destination);
+                            }
                         }
                     }
                 }
