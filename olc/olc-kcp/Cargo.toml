@@ -9,3 +9,9 @@ publish.workspace = true
 description = "KCP as kcp-go v5.6.72 runs it in the olcRTC vp8channel transport, sans-IO"
 
 [dependencies]
+
+[dev-dependencies]
+olc-interop = { path = "../interop/oracle-client" }
+serde_json = { workspace = true }
+socket2 = "0.6"
+tokio = { workspace = true }

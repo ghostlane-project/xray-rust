@@ -1596,6 +1596,12 @@ dependencies = [
 [[package]]
 name = "olc-kcp"
 version = "0.1.0"
+dependencies = [
+ "olc-interop",
+ "serde_json",
+ "socket2",
+ "tokio",
+]
 
 [[package]]
 name = "olc-muxconn"

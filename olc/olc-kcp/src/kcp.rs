@@ -1081,6 +1081,41 @@ impl Kcp {
         self.counters
     }
 
+    /// The state fields by kcp-go's names (`kcp.go:166-200`), for comparison
+    /// with what the engine leaves in kcp-go (the `vp8/kcp-settings.json`
+    /// vectors). Not `updated`, `ts_flush` or `ts_probe`: Go's session timer
+    /// writes those from its first tick.
+    #[must_use]
+    pub fn settings(&self) -> Vec<(&'static str, i64)> {
+        vec![
+            ("conv", i64::from(self.conv)),
+            ("mtu", i64::from(self.mtu)),
+            ("mss", i64::from(self.mss)),
+            ("state", i64::from(self.state)),
+            ("snd_una", i64::from(self.snd_una)),
+            ("snd_nxt", i64::from(self.snd_nxt)),
+            ("rcv_nxt", i64::from(self.rcv_nxt)),
+            ("ssthresh", i64::from(self.ssthresh)),
+            ("rx_rttvar", i64::from(self.rx_rttvar)),
+            ("rx_srtt", i64::from(self.rx_srtt)),
+            ("rx_rto", i64::from(self.rx_rto)),
+            ("rx_minrto", i64::from(self.rx_minrto)),
+            ("snd_wnd", i64::from(self.snd_wnd)),
+            ("rcv_wnd", i64::from(self.rcv_wnd)),
+            ("rmt_wnd", i64::from(self.rmt_wnd)),
+            ("cwnd", i64::from(self.cwnd)),
+            ("incr", i64::from(self.incr)),
+            ("probe", i64::from(self.probe)),
+            ("probe_wait", i64::from(self.probe_wait)),
+            ("interval", i64::from(self.interval)),
+            ("nodelay", i64::from(self.nodelay)),
+            ("dead_link", i64::from(self.dead_link)),
+            ("fastresend", i64::from(self.fastresend)),
+            ("nocwnd", i64::from(self.nocwnd)),
+            ("stream", i64::from(self.stream)),
+        ]
+    }
+
     /// Segments held per queue: (snd_queue, snd_buf, rcv_buf, rcv_queue).
     #[must_use]
     pub fn queue_lens(&self) -> (usize, usize, usize, usize) {

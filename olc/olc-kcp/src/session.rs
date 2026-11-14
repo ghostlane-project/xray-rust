@@ -425,6 +425,18 @@ impl Session {
         self.stats
     }
 
+    /// [`Kcp::settings`] and the session's own, by kcp-go's names
+    /// (`ackNoDelay`, `writeDelay`; `headerSize` is 0 with no FEC and no
+    /// cipher).
+    #[must_use]
+    pub fn settings(&self) -> Vec<(&'static str, i64)> {
+        let mut v = self.kcp.settings();
+        v.push(("ackNoDelay", i64::from(self.ack_no_delay)));
+        v.push(("writeDelay", i64::from(self.write_delay)));
+        v.push(("headerSize", 0));
+        v
+    }
+
     /// Bytes this session holds: segment buffers (at capacity), the free
     /// pool, the output queue and the read buffer.
     #[must_use]
