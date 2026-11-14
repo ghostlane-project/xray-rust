@@ -36,6 +36,9 @@ enum Mode {
     Hold,
     /// Answers every TCP request and echoes the stream.
     Echo,
+    /// Answers every TCP request, then, once the client sends a byte, writes
+    /// until the client stops the stream.
+    Stream,
 }
 
 struct Mock {
@@ -144,14 +147,14 @@ impl Mock {
                         .unwrap();
                     send.finish().unwrap();
                 }
-            } else if matches!(mode, Mode::Hold | Mode::Echo) {
+            } else if matches!(mode, Mode::Hold | Mode::Echo | Mode::Stream) {
                 let mut streams = tokio::task::JoinSet::new();
                 while let Ok((send, recv)) = connection.accept_bi().await {
-                    if matches!(mode, Mode::Hold) {
-                        streams.spawn(hold(send, recv, held_tx.clone()));
-                    } else {
-                        streams.spawn(echo(send, recv));
-                    }
+                    match mode {
+                        Mode::Hold => streams.spawn(hold(send, recv, held_tx.clone())),
+                        Mode::Stream => streams.spawn(stream_out(send, recv)),
+                        _ => streams.spawn(echo(send, recv)),
+                    };
                 }
             }
             connection.closed().await;
@@ -307,6 +310,15 @@ async fn echo(mut send: quinn::SendStream, mut recv: quinn::RecvStream) {
     answer_tcp(&mut send, &mut recv).await;
     tokio::io::copy(&mut recv, &mut send).await.unwrap();
     send.finish().unwrap();
+}
+
+/// Writes for as long as the client reads: unlike [`hold`], a write that
+/// waits for credit does not end the stream.
+async fn stream_out(mut send: quinn::SendStream, mut recv: quinn::RecvStream) {
+    answer_tcp(&mut send, &mut recv).await;
+    recv.read_exact(&mut [0; 1]).await.unwrap();
+    let chunk = [0; 64 * 1024];
+    while send.write_all(&chunk).await.is_ok() {}
 }
 
 fn target() -> Target {
@@ -876,7 +888,7 @@ fn phone_budget(config: &mut HysteriaConfig) {
 /// Mbit/s of `flows` downloads of `each` bytes at once, through a 120 ms
 /// round trip with a phone's windows.
 async fn download_at_120ms(flows: usize, each: usize) -> f64 {
-    let (server, tls) = Mock::start(Mode::Hold);
+    let (server, tls) = Mock::start(Mode::Stream);
     let mut config = server.config_on(MemoryClass::Constrained);
     phone_budget(&mut config);
     let (relay, _relay) = delay_relay(config.remote_addr, Duration::from_millis(60)).await;
