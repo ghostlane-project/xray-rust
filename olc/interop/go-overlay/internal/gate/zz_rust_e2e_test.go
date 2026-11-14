@@ -35,6 +35,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -75,57 +76,77 @@ func (e *e2eEnv) key() string {
 	return k
 }
 
+// childLifetime bounds every process the scenarios start: longer than the
+// whole of TestRustE2E, short enough that nothing outlives a stuck run.
+const childLifetime = 10 * time.Minute
+
 // server runs the pinned server in ep's room with ring; allowPrivate lifts
-// its egress policy, as every gate cell does.
+// its egress policy, as every gate cell does. The server is started here, not
+// by the gate's startServer, so that its end is certain however the test
+// ends:
+//   - t.Cleanup kills its process group and waits for it, on a pass, a
+//     failure or a t.Fatal before the scenario stops it itself;
+//   - Pdeathsig kills it when the test process dies (a panic, -timeout, a
+//     kill), where no cleanup runs;
+//   - its context carries childLifetime.
+//
+// The returned stop is idempotent: SIGTERM to the group (the server says
+// goodbye), SIGKILL to whatever is left after stopGrace, then the wait.
 func (e *e2eEnv) server(ep Endpoint, ring []string, allowPrivate bool) func() {
-	e.t.Helper()
-	ctx := context.Background()
-	if allowPrivate {
-		stop, err := e.target.startServer(ctx, ep, ring, e.t.TempDir(), OpenOptions{})
-		if err != nil {
-			e.t.Fatal(err)
-		}
-		return stop
-	}
-	binary, err := e.target.build(ctx)
+	t := e.t
+	t.Helper()
+	binary, err := e.target.build(context.Background())
 	if err != nil {
-		e.t.Fatal(err)
+		t.Fatal(err)
 	}
-	dir := e.t.TempDir()
+	dir := t.TempDir()
 	cfgPath, logPath := filepath.Join(dir, "srv.yaml"), filepath.Join(dir, serverLogName)
 	logFile, err := createPrivate(cfgPath, interopServerConfig(ep, ring), logPath)
 	if err != nil {
-		e.t.Fatal(err)
+		t.Fatal(err)
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	cmd := exec.CommandContext(runCtx, binary, cfgPath)
+	ctx, cancel := context.WithTimeout(context.Background(), childLifetime)
+	cmd := exec.CommandContext(ctx, binary, cfgPath)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
-	env := []string{}
+	env := []string{bridgeDelayEnv + "=0s"}
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, privateTargetsEnv+"=") {
+		if !strings.HasPrefix(kv, privateTargetsEnv+"=") && !strings.HasPrefix(kv, bridgeDelayEnv+"=") {
 			env = append(env, kv)
 		}
 	}
-	cmd.Env = env
-	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
-	cmd.WaitDelay = stopGrace
-	if err := cmd.Start(); err != nil {
-		cancel()
-		e.t.Fatal(err)
+	if allowPrivate {
+		env = append(env, privateTargetsEnv+"=1")
 	}
+	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
+	cmd.WaitDelay = stopGrace
+	err = cmd.Start()
 	_ = logFile.Close()
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
 	exited := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
 		close(exited)
 	}()
+	var once sync.Once
 	stop := func() {
-		cancel()
-		<-exited
+		once.Do(func() {
+			cancel()
+			select {
+			case <-exited:
+			case <-time.After(stopGrace + time.Second):
+			}
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			<-exited
+		})
 	}
+	t.Cleanup(stop)
 	if err := waitForLine(logPath, linkedLine, linkBudget, exited); err != nil {
-		stop()
-		e.t.Fatal(err)
+		t.Fatal(err)
 	}
 	return stop
 }
@@ -133,7 +154,9 @@ func (e *e2eEnv) server(ep Endpoint, ring []string, allowPrivate bool) func() {
 // client starts the Rust client on ep and waits for its SOCKS address.
 func (e *e2eEnv) client(ep Endpoint, extra func(*rustConfig)) (string, *rustChild) {
 	e.t.Helper()
-	child, err := startRust(context.Background(), *gateRustBin, ep, extra)
+	ctx, cancel := context.WithTimeout(context.Background(), childLifetime)
+	e.t.Cleanup(cancel)
+	child, err := startRust(ctx, *gateRustBin, ep, extra)
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -240,11 +263,13 @@ func TestRustE2E(t *testing.T) {
 		}
 		_, other := env.room(outside)
 		defer env.server(other, []string{k1, k2}, true)()
-		child, err := startRust(context.Background(), *gateRustBin, other, nil)
+		ctx, cancel := context.WithTimeout(context.Background(), childLifetime)
+		t.Cleanup(cancel)
+		child, err := startRust(ctx, *gateRustBin, other, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer child.halt(stopBudget, nil)
+		t.Cleanup(func() { child.halt(stopBudget, nil) })
 		select {
 		case addr := <-child.ready:
 			t.Fatalf("a key outside the ring paired and listens on %s", addr)
