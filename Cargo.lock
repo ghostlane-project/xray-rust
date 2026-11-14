@@ -1999,7 +1999,7 @@ dependencies = [
 [[package]]
 name = "rustls"
 version = "0.23.40"
-source = "git+https://github.com/ghostlane-project/shaped-rustls?rev=db373dbd70ba1cafba7d7b763c36fb6f88cec7e4#db373dbd70ba1cafba7d7b763c36fb6f88cec7e4"
+source = "git+https://github.com/ghostlane-project/shaped-rustls?rev=b0dc21a75980bc575ff4666f3bd90be64bd8c0d4#b0dc21a75980bc575ff4666f3bd90be64bd8c0d4"
 dependencies = [
  "aws-lc-rs",
  "brotli",
