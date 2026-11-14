@@ -104,8 +104,8 @@ impl DtlsProvider for BoringDtlsProvider {
         let (min, max) = match dtls_version {
             DtlsVersion::Dtls12 => (SslVersion::DTLS1_2, SslVersion::DTLS1_2),
             DtlsVersion::Dtls13 => (SslVersion::DTLS1_3, SslVersion::DTLS1_3),
-            // Chrome: 1.2 to 1.3, the peer decides.
-            DtlsVersion::Auto => (SslVersion::DTLS1_2, SslVersion::DTLS1_3),
+            // Chrome: 1.2 to 1.3, the peer decides (and so any version str0m adds later).
+            _ => (SslVersion::DTLS1_2, SslVersion::DTLS1_3),
         };
         Ok(Box::new(BoringDtls::new(cert, min, max).map_err(boring_err)?))
     }
@@ -130,8 +130,10 @@ pub fn chrome_certificate() -> Result<DtlsCert, boring::error::ErrorStack> {
     b.set_serial_number(serial.to_asn1_integer()?.as_ref())?;
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let day = 24 * 3600;
-    b.set_not_before(&Asn1Time::from_unix((now - day) as libc::time_t)?)?;
-    b.set_not_after(&Asn1Time::from_unix((now + 30 * day) as libc::time_t)?)?;
+    let not_before = Asn1Time::from_unix((now - day) as libc::time_t)?;
+    let not_after = Asn1Time::from_unix((now + 30 * day) as libc::time_t)?;
+    b.set_not_before(&not_before)?;
+    b.set_not_after(&not_after)?;
     let mut name = X509NameBuilder::new()?;
     name.append_entry_by_text("CN", "WebRTC")?;
     let name = name.build();
