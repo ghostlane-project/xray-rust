@@ -645,7 +645,8 @@ pub(crate) async fn handle_socks_connect<const SOCKS_REPLY: bool>(
     runtime_logger: RuntimeLogger,
     connection_registry: Arc<ConnectionRegistry>,
 ) {
-    let source = runtime_logger.is_enabled().then(|| {
+    // Only access lines name the source.
+    let source = runtime_logger.access_enabled().then(|| {
         inbound
             .peer_addr()
             .map_or_else(|_| "unknown".to_owned(), |addr| addr.to_string())
@@ -740,7 +741,7 @@ pub(crate) async fn handle_socks_connect<const SOCKS_REPLY: bool>(
     let mut connection_close = connection.close_receiver();
     let connection_traffic = connection.traffic();
 
-    if runtime_logger.is_enabled() {
+    if runtime_logger.debug_enabled() {
         let selected_outbound = match &selected.outbound {
             TcpSessionOutbound::Transport(outbound) => {
                 crate::debug_log::tcp_outbound_label(outbound)

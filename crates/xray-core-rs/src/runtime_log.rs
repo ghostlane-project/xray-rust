@@ -186,6 +186,14 @@ impl RuntimeLogger {
             .is_some_and(|inner| inner.writes(RuntimeLogKind::Debug))
     }
 
+    /// Whether access lines are written, for callers that do work only to
+    /// produce them.
+    pub fn access_enabled(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(|inner| inner.writes(RuntimeLogKind::Access))
+    }
+
     pub fn dropped_lines(&self) -> u64 {
         self.inner
             .as_ref()
@@ -953,6 +961,7 @@ mod tests {
 
         assert!(logger.is_enabled());
         assert!(!logger.debug_enabled());
+        assert!(logger.access_enabled());
         logger.debug(|| {
             evaluated.store(true, Ordering::SeqCst);
             "a debug line".to_owned()
@@ -996,6 +1005,8 @@ mod tests {
         let logger =
             RuntimeLogger::new(RuntimeLogConfig::directory(&dir).with_log(LogConfig::default()))
                 .unwrap();
+        assert!(!logger.access_enabled());
+        assert!(!logger.debug_enabled());
         logger.access(|| "from tun accepted <redacted-domain>:443".to_owned());
         logger.error(|| "an error line".to_owned());
         drop(logger);
