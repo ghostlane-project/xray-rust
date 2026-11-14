@@ -22,7 +22,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use async_compression::tokio::bufread::GzipDecoder;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use futures_util::task::AtomicWaker;
 use http::{header, HeaderName, HeaderValue, Method, Request, Version};
 use rand::{rngs::OsRng, RngCore};
@@ -34,17 +34,17 @@ use tokio::time::Instant;
 use xray_routing::Target;
 
 use super::super::http_headers::HeaderMap as XhttpHeaderMap;
-use super::config::{XhttpConfig, XhttpEndpoint, XhttpMode, XhttpRange};
+use super::config::{XhttpConfig, XhttpEndpoint, XhttpMode, XhttpRange, XhttpUplinkDataPlacement};
 use super::h1::{start_chunked_request, start_fixed_request, H1Error, H1Request, H1ResponseBody};
 use super::h2::{connect_h2_with_window, H2Client, H2Error, H2ReceiveWindow, H2ResponseBody};
 use super::h3::{
     connect_h3_candidates, H3Client, H3ConnectConfig, H3Error, H3QuicConfig, H3ResponseBody,
 };
-use super::packet_pipe::{packet_pipe, PacketPipeReader};
+use super::packet_pipe::{packet_pipe, PacketPayload, PacketPipeReader};
 use super::padding::draw_range;
 use super::request::{
-    compose_packet_request, compose_stream_request, XhttpRequest, XhttpRequestBody,
-    XhttpRequestError, XhttpStreamBody,
+    compose_packet_request_from, compose_stream_request_from, XhttpRequest, XhttpRequestBase,
+    XhttpRequestBody, XhttpRequestError, XhttpStreamBody,
 };
 use super::session::{generate_session_id, XhttpSessionIdError};
 use crate::{
@@ -88,6 +88,18 @@ struct PreparedRequest {
     /// relevant: an explicit non-empty caller header must never trigger
     /// transparent response decoding.
     auto_gzip: bool,
+}
+
+/// A packet POST ready to send. Its chunks are kept beside the request
+/// rather than in [`PreparedRequest`], which the opening futures hold across
+/// awaits (`future_layout_tests` in xray-core-rs bound their size).
+#[derive(Debug)]
+struct PreparedPacket {
+    prepared: PreparedRequest,
+    /// The payload when it is sent from the pipe's chunks as they are
+    /// (HTTP/2 and HTTP/3, in the body); `prepared.request.body` is then
+    /// empty.
+    chunks: Option<PacketPayload>,
 }
 
 struct PacketWorkerContext {
@@ -242,6 +254,8 @@ pub struct XhttpTransport {
     h3_quic: Arc<H3QuicConfig>,
     rng: Arc<StdMutex<Box<dyn RngCore + Send>>>,
     xmux: Arc<XmuxManager>,
+    /// What every request starts from, built once for the config and endpoint.
+    template: Arc<RequestTemplate>,
 }
 
 impl fmt::Debug for XhttpTransport {
@@ -305,6 +319,7 @@ impl XhttpTransport {
             clock,
             HTTP_MULTIPLEXED_IDLE_TIMEOUT,
         )?);
+        let template = Arc::new(RequestTemplate::new(&config, &endpoint));
         Ok(Self {
             config: Arc::new(config),
             endpoint,
@@ -312,6 +327,7 @@ impl XhttpTransport {
             h3_quic: Arc::new(h3_quic),
             rng,
             xmux,
+            template,
         })
     }
 
@@ -379,6 +395,22 @@ impl XhttpTransport {
     #[doc(hidden)]
     pub fn endpoint(&self) -> &XhttpEndpoint {
         &self.endpoint
+    }
+
+    /// The HTTP/2 request of one packet-up POST of `payload`, composed and
+    /// converted exactly as the packet worker does it for an H2 upload.
+    /// Seam for the allocation-count tests; the payload is dropped.
+    #[doc(hidden)]
+    pub fn h2_packet_request_for_test(
+        &self,
+        session: &str,
+        sequence: i64,
+        payload: Vec<u8>,
+    ) -> Result<Request<()>, XhttpTransportError> {
+        let mut packet =
+            self.compose_packet(session, &sequence.to_string(), PacketPayload::from(payload))?;
+        let body = take_packet_payload(&mut packet)?;
+        self.h2_request(&packet.prepared.request, Some(body.remaining()))
     }
 
     #[doc(hidden)]
@@ -678,7 +710,7 @@ impl XhttpTransport {
             }
             XhttpHttpVersion::Http2 => {
                 let checkout = client.h2_client(dial.stream()?).await?;
-                let request = h2_request(&prepared.request, &self.endpoint, None)?;
+                let request = self.h2_request(&prepared.request, None)?;
                 let (upload, pending) = checkout.client.start_streaming(request).await?;
                 let opening: OpenReadFuture = Box::pin(async move {
                     let response = pending.open().await?;
@@ -692,7 +724,7 @@ impl XhttpTransport {
             }
             XhttpHttpVersion::Http3 => {
                 let checkout = client.h3_client(dial.http3()?).await?;
-                let request = h3_request(&prepared.request, &self.endpoint, None)?;
+                let request = self.h3_request(&prepared.request, None)?;
                 let (upload, pending) = checkout.client.start_streaming(request).await?;
                 let opening: OpenReadFuture = Box::pin(async move {
                     let response = pending.open().await?;
@@ -766,7 +798,7 @@ impl XhttpTransport {
             XhttpHttpVersion::Http2 => {
                 let monitor_client = Arc::clone(&client);
                 let checkout = client.h2_client(dial.stream()?).await?;
-                let request = h2_request(&prepared.request, &self.endpoint, None)?;
+                let request = self.h2_request(&prepared.request, None)?;
                 let (upload, pending) = checkout.client.start_streaming(request).await?;
                 let monitor_failure = Arc::clone(&failure);
                 let monitor = tokio::spawn(async move {
@@ -789,7 +821,7 @@ impl XhttpTransport {
             XhttpHttpVersion::Http3 => {
                 let monitor_client = Arc::clone(&client);
                 let checkout = client.h3_client(dial.http3()?).await?;
-                let request = h3_request(&prepared.request, &self.endpoint, None)?;
+                let request = self.h3_request(&prepared.request, None)?;
                 let (upload, pending) = checkout.client.start_streaming(request).await?;
                 let monitor_failure = Arc::clone(&failure);
                 let monitor = tokio::spawn(async move {
@@ -905,7 +937,7 @@ impl XhttpTransport {
             }
             XhttpHttpVersion::Http2 => {
                 let checkout = client.h2_client(dial.stream()?).await?;
-                let request = h2_request(&prepared.request, &self.endpoint, None)?;
+                let request = self.h2_request(&prepared.request, None)?;
                 let pending = checkout.client.start_fixed(request, Bytes::new()).await?;
                 let opening: OpenReadFuture = Box::pin(async move {
                     let response = pending.open().await?;
@@ -915,7 +947,7 @@ impl XhttpTransport {
             }
             XhttpHttpVersion::Http3 => {
                 let checkout = client.h3_client(dial.http3()?).await?;
-                let request = h3_request(&prepared.request, &self.endpoint, None)?;
+                let request = self.h3_request(&prepared.request, None)?;
                 let pending = checkout.client.start_fixed(request, Bytes::new()).await?;
                 let opening: OpenReadFuture = Box::pin(async move {
                     let response = pending.open().await?;
@@ -942,8 +974,8 @@ impl XhttpTransport {
         } = context;
 
         // Each POST's payload is taken from the pipe as it stands: everything
-        // waiting, at most one POST, in one allocation of its own size that
-        // the request owns until it is sent. Nothing between POSTs stays
+        // waiting, at most one POST, in the chunks it was written into, which
+        // the request owns until each is sent. Nothing between POSTs stays
         // allocated, so an idle flow holds no buffer at all.
         let mut sequence = 0_i64;
         let mut last_request = None;
@@ -954,19 +986,20 @@ impl XhttpTransport {
         let mut rotated_upload_usage = None;
         match self.http_version {
             XhttpHttpVersion::Http1 => loop {
-                let Some(payload) = input.take().await else {
+                let Some(payload) = input.take_payload().await else {
                     return Ok(());
                 };
                 self.wait_packet_interval(&mut last_request).await?;
                 self.rotate_packet_client_if_needed(&mut upload_client, &mut rotated_upload_usage)
                     .await?;
-                let request = self.compose_packet(&session, &sequence.to_string(), payload)?;
+                let packet = self.compose_packet(&session, &sequence.to_string(), payload)?;
                 sequence = sequence.wrapping_add(1);
                 // The upstream H1 raw pool writes one request, then consumes
                 // its response before that same connection can be checked out
                 // again. Waiting here preserves that ordering and is what
-                // makes returning a socket to our safe pool possible.
-                self.send_h1_packet(&upload_client, dial.stream()?, request)
+                // makes returning a socket to our safe pool possible. HTTP/1
+                // gets the payload joined, in the request's body.
+                self.send_h1_packet(&upload_client, dial.stream()?, packet.prepared)
                     .await?;
             },
             XhttpHttpVersion::Http2 | XhttpHttpVersion::Http3 => {
@@ -1137,7 +1170,7 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpModeDial,
-        request: PreparedRequest,
+        request: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), StoredFailure> {
         match self.http_version {
@@ -1163,7 +1196,7 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpDial,
-        request: PreparedRequest,
+        request: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), StoredFailure> {
         let result = self
@@ -1182,10 +1215,11 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpDial,
-        mut prepared: PreparedRequest,
+        mut packet: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), XhttpTransportError> {
-        let body = Bytes::from(take_packet_body(&mut prepared.request)?);
+        let body = take_packet_payload(&mut packet)?;
+        let prepared = packet.prepared;
         let auto_gzip = prepared.auto_gzip;
         let exchange = async {
             let mut force_fresh = false;
@@ -1195,7 +1229,7 @@ impl XhttpTransport {
                 } else {
                     client.h2_client(Arc::clone(&dial)).await?
                 };
-                let request = h2_request(&prepared.request, &self.endpoint, Some(body.len()))?;
+                let request = self.h2_request(&prepared.request, Some(body.remaining()))?;
                 match checkout.client.start_streaming(request).await {
                     Ok((upload, pending)) => return Ok((checkout, upload, pending)),
                     Err(error)
@@ -1277,7 +1311,7 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpH3Dial,
-        request: PreparedRequest,
+        request: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), StoredFailure> {
         let result = self
@@ -1296,10 +1330,11 @@ impl XhttpTransport {
         &self,
         client: Arc<XmuxClient>,
         dial: XhttpH3Dial,
-        mut prepared: PreparedRequest,
+        mut packet: PreparedPacket,
         uploaded: oneshot::Sender<Result<(), StoredFailure>>,
     ) -> Result<(), XhttpTransportError> {
-        let body = take_packet_body(&mut prepared.request)?;
+        let mut body = take_packet_payload(&mut packet)?;
+        let prepared = packet.prepared;
         let auto_gzip = prepared.auto_gzip;
         let checkout = match client.h3_client(dial).await {
             Ok(checkout) => checkout,
@@ -1308,7 +1343,7 @@ impl XhttpTransport {
                 return Err(error);
             }
         };
-        let request = match h3_request(&prepared.request, &self.endpoint, Some(body.len())) {
+        let request = match self.h3_request(&prepared.request, Some(body.remaining())) {
             Ok(request) => request,
             Err(error) => {
                 let _ = uploaded.send(Err(StoredFailure::from_error(&error)));
@@ -1326,8 +1361,9 @@ impl XhttpTransport {
 
         let mut uploaded = Some(uploaded);
         let mut upload_future = Box::pin(async move {
+            // Chunk by chunk, each freed once it is written.
             upload
-                .write_all(&body)
+                .write_all_buf(&mut body)
                 .await
                 .map_err(XhttpTransportError::Io)?;
             upload.shutdown().await.map_err(XhttpTransportError::Io)
@@ -1384,8 +1420,13 @@ impl XhttpTransport {
         body: XhttpStreamBody,
     ) -> Result<PreparedRequest, XhttpTransportError> {
         let mut rng = self.rng_guard()?;
-        let mut request =
-            compose_stream_request(&self.config, &self.endpoint, session, body, &mut **rng)?;
+        let mut request = compose_stream_request_from(
+            &self.template.base,
+            &self.config,
+            session,
+            body,
+            &mut **rng,
+        )?;
         if self.http_version == XhttpHttpVersion::Http1 {
             request.headers.set("Connection", "close");
         }
@@ -1397,15 +1438,30 @@ impl XhttpTransport {
         &self,
         session: &str,
         sequence: &str,
-        payload: Vec<u8>,
-    ) -> Result<PreparedRequest, XhttpTransportError> {
+        payload: PacketPayload,
+    ) -> Result<PreparedPacket, XhttpTransportError> {
+        // HTTP/2 and HTTP/3 send a payload that goes in the body from the
+        // pipe's chunks as they are, and the request is composed around an
+        // empty body: that placement draws nothing and reads none of its
+        // bytes. HTTP/1 writes the body as one slice, and the header and
+        // cookie placements encode one, so they get the chunks joined.
+        let from_chunks = self.http_version != XhttpHttpVersion::Http1
+            && matches!(
+                self.config.uplink_data.placement,
+                XhttpUplinkDataPlacement::Auto | XhttpUplinkDataPlacement::Body
+            );
+        let (composed, chunks) = if from_chunks {
+            (Vec::new(), Some(payload))
+        } else {
+            (payload.into_vec(), None)
+        };
         let mut rng = self.rng_guard()?;
-        let mut request = compose_packet_request(
+        let mut request = compose_packet_request_from(
+            &self.template.base,
             &self.config,
-            &self.endpoint,
             session,
             sequence,
-            payload,
+            composed,
             &mut **rng,
         )?;
         // Xray's H1 packet uploader calls Request.Write directly, bypassing
@@ -1413,7 +1469,38 @@ impl XhttpTransport {
         // pass through their transports and therefore receive auto-gzip.
         let auto_gzip =
             prepare_auto_gzip(&mut request, self.http_version != XhttpHttpVersion::Http1);
-        Ok(PreparedRequest { request, auto_gzip })
+        Ok(PreparedPacket {
+            prepared: PreparedRequest { request, auto_gzip },
+            chunks,
+        })
+    }
+
+    /// `request` as an HTTP/2 request, its base's headers converted once.
+    fn h2_request(
+        &self,
+        request: &XhttpRequest,
+        content_length: Option<usize>,
+    ) -> Result<Request<()>, XhttpTransportError> {
+        h2_request_with(
+            request,
+            &self.endpoint,
+            content_length,
+            Some(&self.template),
+        )
+    }
+
+    /// `request` as an HTTP/3 request, its base's headers converted once.
+    fn h3_request(
+        &self,
+        request: &XhttpRequest,
+        content_length: Option<usize>,
+    ) -> Result<Request<()>, XhttpTransportError> {
+        h3_request_with(
+            request,
+            &self.endpoint,
+            content_length,
+            Some(&self.template),
+        )
     }
 
     fn draw(&self, range: super::config::NormalizedRange) -> Result<u32, XhttpTransportError> {
@@ -1451,7 +1538,7 @@ fn prepare_auto_gzip(request: &mut XhttpRequest, enabled: bool) -> bool {
 
     // An explicit empty Accept-Encoding has the same `Header.Get == ""`
     // result as an absent field in Go, so Transport replaces it with gzip.
-    set_header_ci(&mut request.headers, "Accept-Encoding", "gzip");
+    request.headers.set_ignoring_case("Accept-Encoding", "gzip");
     true
 }
 
@@ -1460,25 +1547,6 @@ fn header_value_ci<'a>(headers: &'a XhttpHeaderMap, name: &str) -> Option<&'a st
         .iter()
         .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
         .map(|(_, value)| value)
-}
-
-fn set_header_ci(headers: &mut XhttpHeaderMap, name: &str, value: &str) {
-    let mut rebuilt = XhttpHeaderMap::new();
-    let mut replaced = false;
-    for (candidate, candidate_value) in headers.iter() {
-        if candidate.eq_ignore_ascii_case(name) {
-            if !replaced {
-                rebuilt.set(name, value);
-                replaced = true;
-            }
-        } else {
-            rebuilt.add(candidate, candidate_value);
-        }
-    }
-    if !replaced {
-        rebuilt.set(name, value);
-    }
-    *headers = rebuilt;
 }
 
 fn spawn_deferred_reader(
@@ -1522,8 +1590,18 @@ fn fixed_packet_body(request: &XhttpRequest) -> Result<&[u8], XhttpTransportErro
 }
 
 /// Moves a packet POST's payload out of its request, which keeps its target
-/// and headers for a retry. The payload is not copied, and it is freed once
+/// and headers for a retry: the pipe's chunks when it is sent from them,
+/// else the composed body. Nothing is copied, and each chunk is freed once
 /// its last byte is handed to the connection, not when the response ends.
+fn take_packet_payload(packet: &mut PreparedPacket) -> Result<PacketPayload, XhttpTransportError> {
+    let composed = take_packet_body(&mut packet.prepared.request)?;
+    Ok(match packet.chunks.take() {
+        Some(chunks) => chunks,
+        None => PacketPayload::from(composed),
+    })
+}
+
+/// Moves a composed packet body out of its request.
 fn take_packet_body(request: &mut XhttpRequest) -> Result<Vec<u8>, XhttpTransportError> {
     match std::mem::replace(&mut request.body, XhttpRequestBody::None) {
         XhttpRequestBody::None => Ok(Vec::new()),
@@ -1697,10 +1775,67 @@ fn h1_request<'a>(request: &'a XhttpRequest, endpoint: &'a XhttpEndpoint) -> H1R
     }
 }
 
+/// What every request of one transport shares (R14): the request base, and
+/// its headers as [`multiplexed_request`] converts them for HTTP/2 and
+/// HTTP/3. A request whose first fields are the base's starts from the
+/// converted copy; any other is converted field by field, as before.
+#[derive(Debug)]
+struct RequestTemplate {
+    base: XhttpRequestBase,
+    /// `None` when a base field does not convert: every request then takes
+    /// the field-by-field path, which reports the error.
+    multiplexed: Option<MultiplexedHeaders>,
+}
+
+#[derive(Debug)]
+struct MultiplexedHeaders {
+    headers: http::HeaderMap,
+    /// Whether the base sent a User-Agent, or dropped an empty one: later
+    /// User-Agent fields are skipped, and the default is not added.
+    saw_user_agent: bool,
+}
+
+impl RequestTemplate {
+    fn new(config: &XhttpConfig, endpoint: &XhttpEndpoint) -> Self {
+        let base = XhttpRequestBase::new(config, endpoint);
+        let mut headers = http::HeaderMap::new();
+        let mut saw_user_agent = false;
+        let multiplexed =
+            append_multiplexed_headers(&mut headers, base.headers().iter(), &mut saw_user_agent)
+                .ok()
+                .map(|()| MultiplexedHeaders {
+                    headers,
+                    saw_user_agent,
+                });
+        Self { base, multiplexed }
+    }
+}
+
+/// The field-by-field conversion, without a template: the reference the
+/// template's output is held to.
+#[cfg(test)]
 fn h2_request(
     request: &XhttpRequest,
     endpoint: &XhttpEndpoint,
     content_length: Option<usize>,
+) -> Result<Request<()>, XhttpTransportError> {
+    h2_request_with(request, endpoint, content_length, None)
+}
+
+#[cfg(test)]
+fn h3_request(
+    request: &XhttpRequest,
+    endpoint: &XhttpEndpoint,
+    content_length: Option<usize>,
+) -> Result<Request<()>, XhttpTransportError> {
+    h3_request_with(request, endpoint, content_length, None)
+}
+
+fn h2_request_with(
+    request: &XhttpRequest,
+    endpoint: &XhttpEndpoint,
+    content_length: Option<usize>,
+    template: Option<&RequestTemplate>,
 ) -> Result<Request<()>, XhttpTransportError> {
     multiplexed_request(
         request,
@@ -1708,14 +1843,16 @@ fn h2_request(
         content_length,
         Version::HTTP_2,
         "Go-http-client/2.0",
+        template,
     )
     .map_err(XhttpTransportError::InvalidHttp2Request)
 }
 
-fn h3_request(
+fn h3_request_with(
     request: &XhttpRequest,
     endpoint: &XhttpEndpoint,
     content_length: Option<usize>,
+    template: Option<&RequestTemplate>,
 ) -> Result<Request<()>, XhttpTransportError> {
     multiplexed_request(
         request,
@@ -1723,6 +1860,7 @@ fn h3_request(
         content_length,
         Version::HTTP_3,
         "quic-go HTTP/3",
+        template,
     )
     .map_err(XhttpTransportError::InvalidHttp3Request)
 }
@@ -1733,6 +1871,7 @@ fn multiplexed_request(
     content_length: Option<usize>,
     version: Version,
     default_user_agent: &'static str,
+    template: Option<&RequestTemplate>,
 ) -> Result<Request<()>, String> {
     let method =
         Method::from_bytes(request.method.as_bytes()).map_err(|error| error.to_string())?;
@@ -1749,8 +1888,48 @@ fn multiplexed_request(
         .body(())
         .map_err(|error| error.to_string())?;
 
+    // The conversion is a fold over the fields, so the base's fields folded
+    // once give what folding them again would.
     let mut saw_user_agent = false;
-    for (name, value) in request.headers.iter() {
+    let mut converted = 0;
+    let cached = template
+        .and_then(|template| Some((template.base.headers(), template.multiplexed.as_ref()?)))
+        .filter(|(base, _)| request.headers.starts_with(base));
+    if let Some((base, multiplexed)) = cached {
+        *output.headers_mut() = multiplexed.headers.clone();
+        saw_user_agent = multiplexed.saw_user_agent;
+        converted = base.field_count();
+    }
+    append_multiplexed_headers(
+        output.headers_mut(),
+        request.headers.iter().skip(converted),
+        &mut saw_user_agent,
+    )?;
+    if !saw_user_agent {
+        output.headers_mut().insert(
+            header::USER_AGENT,
+            HeaderValue::from_static(default_user_agent),
+        );
+    }
+    if let Some(content_length) =
+        content_length.filter(|length| should_send_content_length(&method, *length))
+    {
+        output
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
+    }
+    Ok(output)
+}
+
+/// Appends XHTTP header fields as HTTP/2 and HTTP/3 carry them: without the
+/// connection-specific fields, one User-Agent at most (an empty one dropped),
+/// and each cookie a field of its own.
+fn append_multiplexed_headers<'a>(
+    output: &mut http::HeaderMap,
+    fields: impl Iterator<Item = (&'a str, &'a str)>,
+    saw_user_agent: &mut bool,
+) -> Result<(), String> {
+    for (name, value) in fields {
         if name.eq_ignore_ascii_case("host")
             || name.eq_ignore_ascii_case("content-length")
             || name.eq_ignore_ascii_case("connection")
@@ -1762,10 +1941,10 @@ fn multiplexed_request(
             continue;
         }
         if name.eq_ignore_ascii_case("user-agent") {
-            if saw_user_agent {
+            if *saw_user_agent {
                 continue;
             }
-            saw_user_agent = true;
+            *saw_user_agent = true;
             if value.is_empty() {
                 continue;
             }
@@ -1775,28 +1954,15 @@ fn multiplexed_request(
             for cookie in split_cookie_header(value) {
                 let value = HeaderValue::from_bytes(cookie.as_bytes())
                     .map_err(|error| error.to_string())?;
-                output.headers_mut().append(header::COOKIE, value);
+                output.append(header::COOKIE, value);
             }
         } else {
             let value =
                 HeaderValue::from_bytes(value.as_bytes()).map_err(|error| error.to_string())?;
-            output.headers_mut().append(name, value);
+            output.append(name, value);
         }
     }
-    if !saw_user_agent {
-        output.headers_mut().insert(
-            header::USER_AGENT,
-            HeaderValue::from_static(default_user_agent),
-        );
-    }
-    if let Some(content_length) =
-        content_length.filter(|length| should_send_content_length(&method, *length))
-    {
-        let value = HeaderValue::from_bytes(content_length.to_string().as_bytes())
-            .map_err(|error| error.to_string())?;
-        output.headers_mut().insert(header::CONTENT_LENGTH, value);
-    }
-    Ok(output)
+    Ok(())
 }
 
 fn should_send_content_length(method: &Method, content_length: usize) -> bool {
@@ -1878,10 +2044,10 @@ async fn join_packet_response(
 async fn take_packet_input(
     input: &mut PacketPipeReader,
     responses: &mut JoinSet<Result<(), StoredFailure>>,
-) -> Result<Option<Vec<u8>>, XhttpTransportError> {
+) -> Result<Option<PacketPayload>, XhttpTransportError> {
     loop {
         if responses.is_empty() {
-            return Ok(input.take().await);
+            return Ok(input.take_payload().await);
         }
         tokio::select! {
             response = responses.join_next() => {
@@ -1892,7 +2058,7 @@ async fn take_packet_input(
                 })?;
                 packet_response_result(response)?;
             }
-            payload = input.take() => {
+            payload = input.take_payload() => {
                 return Ok(payload);
             }
         }
@@ -3284,5 +3450,304 @@ mod xmux_reservation_tests {
         drop((first_usage, second_usage));
         assert_eq!(first_client.open_usage.load(Ordering::Acquire), 0);
         assert_eq!(second_client.open_usage.load(Ordering::Acquire), 0);
+    }
+}
+
+#[cfg(test)]
+mod request_template_tests {
+    use super::super::config::{
+        XhttpConfigInput, XhttpMetadataPlacement, XhttpModeSelection, XhttpPaddingPlacement,
+        XhttpRange, XhttpScheme, XhttpUplinkDataPlacement,
+    };
+    use super::super::request::{compose_packet_request, compose_stream_request};
+    use super::*;
+    use rand::rngs::mock::StepRng;
+
+    fn endpoint() -> XhttpEndpoint {
+        XhttpEndpoint::new(XhttpScheme::Https, "example.com:8443").expect("test endpoint")
+    }
+
+    /// Method, URI, version and every field, in order.
+    type Wire = (String, String, Version, Vec<(String, Vec<u8>)>);
+
+    /// Everything of a converted request that goes on the wire, in order.
+    fn wire(request: &Request<()>) -> Wire {
+        (
+            request.method().to_string(),
+            request.uri().to_string(),
+            request.version(),
+            request
+                .headers()
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.as_bytes().to_vec()))
+                .collect(),
+        )
+    }
+
+    fn fields(request: &XhttpRequest) -> Vec<(String, String)> {
+        request
+            .headers
+            .iter()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect()
+    }
+
+    /// Configs whose per-request fields land after the base's, replace a
+    /// base field in place, or join a base cookie; payloads in headers and
+    /// cookies; a configured gzip, Range and an empty User-Agent.
+    fn configs() -> Vec<(&'static str, XhttpConfigInput, bool)> {
+        let packet_up = || XhttpConfigInput {
+            mode: XhttpModeSelection::PacketUp,
+            path: "/api".to_owned(),
+            ..XhttpConfigInput::default()
+        };
+
+        let chrome = packet_up();
+
+        let mut plain = packet_up();
+        plain.headers.set("User-Agent", "plain-test");
+        plain.headers.set("X-Static", "kept");
+        plain.headers.add("X-Static", "twice");
+
+        let mut colliding = XhttpConfigInput {
+            path: "/api?static=1".to_owned(),
+            x_padding_obfs_mode: true,
+            x_padding_key: "pad".to_owned(),
+            x_padding_header: "Referer".to_owned(),
+            x_padding_placement: XhttpPaddingPlacement::Header,
+            session_placement: XhttpMetadataPlacement::Cookie,
+            session_key: "sid".to_owned(),
+            seq_placement: XhttpMetadataPlacement::Query,
+            seq_key: "seq".to_owned(),
+            ..packet_up()
+        };
+        colliding
+            .headers
+            .set("Referer", "https://example.com/static");
+        colliding.headers.set("Cookie", "static=1; other=2");
+        colliding.headers.set("accept-encoding", "");
+
+        let mut in_headers = XhttpConfigInput {
+            x_padding_obfs_mode: true,
+            x_padding_key: "pad".to_owned(),
+            x_padding_placement: XhttpPaddingPlacement::Cookie,
+            session_placement: XhttpMetadataPlacement::Header,
+            session_key: "X-Session".to_owned(),
+            seq_placement: XhttpMetadataPlacement::Header,
+            seq_key: "X-Seq".to_owned(),
+            ..packet_up()
+        };
+        in_headers.headers.set("X-Session", "static");
+        in_headers.headers.set("User-Agent", "");
+
+        let data_in_headers = XhttpConfigInput {
+            uplink_data_placement: XhttpUplinkDataPlacement::Header,
+            uplink_chunk_size: XhttpRange::exact(40),
+            ..packet_up()
+        };
+        let data_in_cookies = XhttpConfigInput {
+            uplink_data_placement: XhttpUplinkDataPlacement::Cookie,
+            uplink_chunk_size: XhttpRange::exact(40),
+            ..packet_up()
+        };
+
+        let mut gzip_and_range = packet_up();
+        gzip_and_range.headers.set("Accept-Encoding", "br");
+        gzip_and_range.headers.set("Range", "bytes=0-");
+
+        let mut firefox = packet_up();
+        firefox.headers.set("User-Agent", "firefox");
+
+        // (name, config, whether its requests start with the base's fields)
+        vec![
+            ("chrome", chrome, true),
+            ("plain", plain, true),
+            ("colliding", colliding, false),
+            ("in-headers", in_headers, false),
+            ("data-in-headers", data_in_headers, true),
+            ("data-in-cookies", data_in_cookies, true),
+            ("gzip-and-range", gzip_and_range, true),
+            ("firefox", firefox, true),
+        ]
+    }
+
+    /// A request composed from the transport's template and converted from
+    /// its converted fields is the request composed and converted from
+    /// scratch, field for field and in order, for HTTP/2 and HTTP/3.
+    #[test]
+    fn a_request_from_the_template_is_the_request_composed_from_scratch() {
+        for (name, input, shares_base) in configs() {
+            let config = XhttpConfig::normalize(input).expect("test config");
+            let template = RequestTemplate::new(&config, &endpoint());
+            assert!(template.multiplexed.is_some(), "{name}: the base converts");
+
+            for (sequence, payload_len) in [(0_u64, 0_usize), (1, 1), (41, 300)] {
+                let sequence = sequence.to_string();
+                let payload = vec![0x5a; payload_len];
+                // The two sides draw the same numbers in the same order.
+                let mut reference_rng = StepRng::new(7, 13);
+                let mut template_rng = StepRng::new(7, 13);
+                let mut cases = Vec::new();
+                let reference = compose_packet_request(
+                    &config,
+                    &endpoint(),
+                    "session-id",
+                    &sequence,
+                    payload.clone(),
+                    &mut reference_rng,
+                )
+                .expect("reference packet");
+                let composed = compose_packet_request_from(
+                    &template.base,
+                    &config,
+                    "session-id",
+                    &sequence,
+                    payload,
+                    &mut template_rng,
+                )
+                .expect("template packet");
+                cases.push(("packet", reference, composed, Some(payload_len)));
+
+                for body in [XhttpStreamBody::None, XhttpStreamBody::Streaming] {
+                    let reference = compose_stream_request(
+                        &config,
+                        &endpoint(),
+                        "session-id",
+                        body,
+                        &mut reference_rng,
+                    )
+                    .expect("reference stream");
+                    let composed = compose_stream_request_from(
+                        &template.base,
+                        &config,
+                        "session-id",
+                        body,
+                        &mut template_rng,
+                    )
+                    .expect("template stream");
+                    cases.push(("stream", reference, composed, None));
+                }
+
+                for (kind, mut reference, mut composed, content_length) in cases {
+                    let what = format!("{name} {kind} sequence {sequence}");
+                    assert_eq!(
+                        prepare_auto_gzip(&mut reference, true),
+                        prepare_auto_gzip(&mut composed, true),
+                        "{what}: auto-gzip"
+                    );
+                    assert_eq!(reference.method, composed.method, "{what}: method");
+                    assert_eq!(reference.target, composed.target, "{what}: target");
+                    assert_eq!(fields(&reference), fields(&composed), "{what}: fields");
+                    assert_eq!(reference.body, composed.body, "{what}: body");
+                    assert_eq!(
+                        composed.headers.starts_with(template.base.headers()),
+                        shares_base,
+                        "{what}: whether the template's converted fields are used"
+                    );
+
+                    let endpoint = endpoint();
+                    assert_eq!(
+                        wire(&h2_request(&reference, &endpoint, content_length).unwrap()),
+                        wire(
+                            &h2_request_with(&composed, &endpoint, content_length, Some(&template))
+                                .unwrap()
+                        ),
+                        "{what}: HTTP/2"
+                    );
+                    assert_eq!(
+                        wire(&h3_request(&reference, &endpoint, content_length).unwrap()),
+                        wire(
+                            &h3_request_with(&composed, &endpoint, content_length, Some(&template))
+                                .unwrap()
+                        ),
+                        "{what}: HTTP/3"
+                    );
+                }
+            }
+        }
+    }
+
+    /// How auto-gzip set its field before: by rebuilding the map field by
+    /// field.
+    fn rebuilt_with(headers: &XhttpHeaderMap, name: &str, value: &str) -> XhttpHeaderMap {
+        let mut rebuilt = XhttpHeaderMap::new();
+        let mut replaced = false;
+        for (candidate, candidate_value) in headers.iter() {
+            if candidate.eq_ignore_ascii_case(name) {
+                if !replaced {
+                    rebuilt.set(name, value);
+                    replaced = true;
+                }
+            } else {
+                rebuilt.add(candidate, candidate_value);
+            }
+        }
+        if !replaced {
+            rebuilt.set(name, value);
+        }
+        rebuilt
+    }
+
+    #[test]
+    fn setting_a_field_in_place_is_rebuilding_the_map() {
+        let maps: [&[(&str, &str)]; 5] = [
+            &[],
+            &[("X-Foo", "1")],
+            &[("accept-encoding", "")],
+            &[
+                ("X-Foo", "first"),
+                ("Accept-Encoding", ""),
+                ("X-Foo", "second"),
+                ("ACCEPT-ENCODING", "br"),
+                ("Z", "last"),
+            ],
+            &[("Accept-Encoding", "a"), ("Accept-Encoding", "b")],
+        ];
+        for fields in maps {
+            let mut map = XhttpHeaderMap::new();
+            for (name, value) in fields {
+                map.add(name, value);
+            }
+            let expected: Vec<_> = rebuilt_with(&map, "Accept-Encoding", "gzip")
+                .iter()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect();
+            map.set_ignoring_case("Accept-Encoding", "gzip");
+            let got: Vec<_> = map
+                .iter()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect();
+            assert_eq!(got, expected, "{fields:?}");
+        }
+    }
+
+    /// A base field that HTTP/2 cannot carry leaves the template without
+    /// converted fields, and every request reports the error as before.
+    #[test]
+    fn a_base_that_does_not_convert_reports_the_error_per_request() {
+        let mut input = XhttpConfigInput {
+            mode: XhttpModeSelection::PacketUp,
+            path: "/api".to_owned(),
+            ..XhttpConfigInput::default()
+        };
+        input.headers.set("Bad Name", "value");
+        let config = XhttpConfig::normalize(input).expect("test config");
+        let template = RequestTemplate::new(&config, &endpoint());
+        assert!(template.multiplexed.is_none());
+
+        let mut rng = StepRng::new(7, 13);
+        let request = compose_packet_request_from(
+            &template.base,
+            &config,
+            "session-id",
+            "1",
+            vec![1],
+            &mut rng,
+        )
+        .expect("composed");
+        let reference = h2_request(&request, &endpoint(), Some(1)).unwrap_err();
+        let templated =
+            h2_request_with(&request, &endpoint(), Some(1), Some(&template)).unwrap_err();
+        assert_eq!(reference.to_string(), templated.to_string());
     }
 }

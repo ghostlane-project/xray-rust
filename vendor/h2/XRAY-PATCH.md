@@ -1,4 +1,4 @@
-# h2 0.4.20: Go's stream WINDOW_UPDATE policy, Xray's MASQUE client and Go's request headers
+# h2 0.4.20: Go's stream WINDOW_UPDATE policy, Xray's MASQUE client, Go's request headers and the read side's memory
 
 Source: the complete unchanged-version crates.io `h2` **0.4.20** archive,
 SHA256 `7d29020232d6aa3fb1daca64c1127cf662cf97f254ae16c18c05b8ab635fc118`.
@@ -73,3 +73,59 @@ unconditionally; upstream allows it only with the `unstable` feature. Cargo caps
 the lints of registry crates, but this copy is a path dependency, so its
 `deny(missing_docs)` applies, and cargo-fuzz's `--cfg fuzzing` build failed on
 the undocumented bridge. Behavior is unchanged.
+
+## Frames read into allocations of their own size
+
+`codec::FramedRead` reads each frame by itself: its 9-byte header into an
+inline array, then the frame into a `Vec` sized from the length the header
+gives, handed to the decoder whole. A frame up to 16,384 B of payload (the
+protocol's default maximum) is one allocation of exactly its size; a larger one
+starts at 16,393 B and doubles each time it is full of bytes that have arrived,
+ending at exactly its size, so while it is read it holds at most
+max(16,393 B, 2 × the bytes arrived). Nothing is allocated before the header is
+in and its length checked. Between frames the reader holds no heap. A DATA
+frame's payload is that allocation, shared with nothing.
+
+The cost is reads. The reader never reads past the frame it is reading (at most
+the header, then at most the rest of the frame), so a frame with a payload
+takes at least two reads, where upstream's one read into its buffer's spare
+room could take the end of one frame and the start of the next. Over TLS
+(XHTTP, and gRPC over TLS or REALITY) those reads copy out of rustls's
+decrypted record, and rustls makes the socket reads itself, so the recv(2)
+calls are upstream's. Over cleartext HTTP/2 (gRPC with `security: none`) each
+read is a recv(2): about two a 16 KiB DATA frame where upstream made about one,
+and two a frame where one 8 KiB read used to take a run of small frames. A
+small inline read-ahead would help only small frames: a bulk frame would still
+need its second read, since `AsyncRead` cannot read into the frame and a
+read-ahead at once. Ghostlane's lines do not use cleartext HTTP/2, so the cost
+is taken for the bound.
+
+The handoff `BytesMut::from(Bytes::from(vec))` copies nothing when the `Vec` is
+full, and `From<Bytes> for BytesMut` needs `bytes` 1.7.0 or later. The manifest
+still says `bytes = "1"`, as upstream's does; both lockfiles pin 1.12.1.
+
+Upstream read through tokio-util's `FramedRead` and `LengthDelimitedCodec`: one
+`BytesMut` that reserved each frame's length, was never shrunk, and handed
+frames out with `split_to`. A frame queued in a stream then kept alive the
+allocation it was cut from, with the bytes of its neighbours, and an
+allocation grew to the largest frame, twice its size while another frame was
+held. XHTTP's client advertises Go's 1 MiB SETTINGS_MAX_FRAME_SIZE, which the
+server sees and which stays; only how the client stores what it reads changes.
+
+Behavior is otherwise upstream's: a length above SETTINGS_MAX_FRAME_SIZE is a
+FRAME_SIZE_ERROR as soon as the length's three bytes are in, EOF inside a frame
+is the I/O error "bytes remaining on stream", EOF between frames ends the
+stream, and after a read error the next poll ends it. Unit tests in
+`codec/framed_read.rs` cover each, frames cut at every size, a padded DATA
+frame and a HEADERS + CONTINUATION block cut at every byte, the largest frame
+the protocol allows (16,777,215 B), a read error inside a frame, a change of
+SETTINGS_MAX_FRAME_SIZE between frames, and the allocation sizes.
+
+## Drained frame buffers give their slots back
+
+`proto::streams::buffer::Buffer`, the slab that queues frames for every stream
+of a connection (received DATA waiting for its reader, DATA and HEADERS waiting
+to be sent), kept every slot it had grown to: one per frame queued at once, 512
+for a 4 MiB window of 8 KiB frames. Once it is empty it now keeps at most 4 KiB
+of slots, and gives the rest back. A unit test in `buffer.rs` covers both
+sides of that bound.
