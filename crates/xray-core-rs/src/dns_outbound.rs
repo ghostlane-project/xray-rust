@@ -1,7 +1,8 @@
 use bytes::Bytes;
 use thiserror::Error;
 use xray_config::{
-    DnsOutboundRule, DnsOutboundRuleAction, DnsOutboundSettings, DnsQTypeRange, DomainMatcherSet,
+    DnsForwardTarget, DnsOutboundRule, DnsOutboundRuleAction, DnsOutboundSettings, DnsQTypeRange,
+    DomainMatcherSet,
 };
 
 const DNS_HEADER_LEN: usize = 12;
@@ -148,6 +149,12 @@ pub enum DnsOutboundDecision {
     Return(u16),
     Hijack,
     HijackUnsafe(DnsHijackUnsafe),
+    /// Send the query unchanged to the server of the `forward` rule at this
+    /// index, through the outbound that rule names
+    /// ([`CompiledDnsOutboundPolicy::forward_target`]).
+    Forward {
+        rule: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -215,19 +222,35 @@ impl CompiledDnsOutboundPolicy {
         decision_for_action(action, r_code, query)
     }
 
-    fn selected_action(&self, qtype: u16, domain: &str) -> (DnsOutboundRuleAction, u16) {
+    /// The server and outbound of the `forward` rule at `rule`, the index a
+    /// [`DnsOutboundDecision::Forward`] carries.
+    pub fn forward_target(&self, rule: usize) -> Option<&DnsForwardTarget> {
+        self.rules.get(rule)?.forward.as_ref()
+    }
+
+    fn selected_action(&self, qtype: u16, domain: &str) -> (SelectedAction, u16) {
         self.rules
             .iter()
-            .find(|rule| rule.matches(qtype, domain))
+            .enumerate()
+            .find(|(_, rule)| rule.matches(qtype, domain))
             .map_or_else(
                 || {
                     if is_address_qtype(qtype) {
-                        (DnsOutboundRuleAction::Hijack, 0)
+                        (SelectedAction::Hijack, 0)
                     } else {
-                        (DnsOutboundRuleAction::Return, 0)
+                        (SelectedAction::Return, 0)
                     }
                 },
-                |rule| (rule.action, rule.r_code),
+                |(index, rule)| {
+                    let action = match rule.action {
+                        RuleKind::Direct => SelectedAction::Direct,
+                        RuleKind::Drop => SelectedAction::Drop,
+                        RuleKind::Return => SelectedAction::Return,
+                        RuleKind::Hijack => SelectedAction::Hijack,
+                        RuleKind::Forward => SelectedAction::Forward(index),
+                    };
+                    (action, rule.r_code)
+                },
             )
     }
 
@@ -235,9 +258,9 @@ impl CompiledDnsOutboundPolicy {
     ///
     /// Own-link traffic bypasses parsing, matching Xray's recursion guard: the
     /// original bytes must be forwarded directly even when the local resolver
-    /// would not understand them. Direct, Drop, and Return deliberately require
-    /// only the first question; full RR and EDNS validation is deferred until a
-    /// query is actually selected for Hijack.
+    /// would not understand them. Direct, Drop, Return and Forward deliberately
+    /// require only the first question; full RR and EDNS validation is deferred
+    /// until a query is actually selected for Hijack.
     pub fn decide_message(
         &self,
         message: &[u8],
@@ -249,7 +272,7 @@ impl CompiledDnsOutboundPolicy {
 
         let mut query = parse_dns_query_prefix(message)?;
         let (action, r_code) = self.selected_action(query.qtype, &query.domain);
-        if action != DnsOutboundRuleAction::Hijack {
+        if action != SelectedAction::Hijack {
             return Ok(decision_for_action(action, r_code, &query));
         }
         if !is_address_qtype(query.qtype) {
@@ -261,28 +284,51 @@ impl CompiledDnsOutboundPolicy {
     }
 }
 
+/// The action a matching rule, or the implicit policy, selected; a
+/// `forward` rule by its index, so the decision stays `Copy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectedAction {
+    Direct,
+    Drop,
+    Return,
+    Hijack,
+    Forward(usize),
+}
+
 fn decision_for_action(
-    action: DnsOutboundRuleAction,
+    action: SelectedAction,
     r_code: u16,
     query: &DnsOutboundQuery,
 ) -> DnsOutboundDecision {
     match action {
-        DnsOutboundRuleAction::Direct => DnsOutboundDecision::Direct,
-        DnsOutboundRuleAction::Drop => DnsOutboundDecision::Drop,
-        DnsOutboundRuleAction::Return => DnsOutboundDecision::Return(r_code),
-        DnsOutboundRuleAction::Hijack if !is_address_qtype(query.qtype) => {
+        SelectedAction::Direct => DnsOutboundDecision::Direct,
+        SelectedAction::Drop => DnsOutboundDecision::Drop,
+        SelectedAction::Return => DnsOutboundDecision::Return(r_code),
+        SelectedAction::Forward(rule) => DnsOutboundDecision::Forward { rule },
+        SelectedAction::Hijack if !is_address_qtype(query.qtype) => {
             DnsOutboundDecision::Return(r_code)
         }
-        DnsOutboundRuleAction::Hijack => query.hijack_unsafe().map_or(
+        SelectedAction::Hijack => query.hijack_unsafe().map_or(
             DnsOutboundDecision::Hijack,
             DnsOutboundDecision::HijackUnsafe,
         ),
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuleKind {
+    Direct,
+    Drop,
+    Return,
+    Hijack,
+    Forward,
+}
+
 #[derive(Debug)]
 struct CompiledDnsOutboundRule {
-    action: DnsOutboundRuleAction,
+    action: RuleKind,
+    /// The server and outbound of a `forward` rule; `None` for the others.
+    forward: Option<DnsForwardTarget>,
     r_code: u16,
     all_qtypes: bool,
     qtype_ranges: Box<[(u16, u16)]>,
@@ -292,8 +338,16 @@ struct CompiledDnsOutboundRule {
 
 impl CompiledDnsOutboundRule {
     fn new(rule: &DnsOutboundRule) -> Self {
+        let (action, forward) = match &rule.action {
+            DnsOutboundRuleAction::Direct => (RuleKind::Direct, None),
+            DnsOutboundRuleAction::Drop => (RuleKind::Drop, None),
+            DnsOutboundRuleAction::Return => (RuleKind::Return, None),
+            DnsOutboundRuleAction::Hijack => (RuleKind::Hijack, None),
+            DnsOutboundRuleAction::Forward(target) => (RuleKind::Forward, Some(target.clone())),
+        };
         Self {
-            action: rule.action,
+            action,
+            forward,
             r_code: rule.r_code,
             all_qtypes: rule.qtype_ranges.is_empty(),
             qtype_ranges: compile_qtype_ranges(&rule.qtype_ranges),
@@ -1095,6 +1149,105 @@ mod tests {
         assert_eq!(
             &response[DNS_HEADER_LEN..],
             &message[DNS_HEADER_LEN..parsed.question_section_end]
+        );
+    }
+
+    fn forward_to(address: [u8; 4], outbound_tag: &str) -> DnsOutboundRuleAction {
+        DnsOutboundRuleAction::Forward(DnsForwardTarget {
+            address: std::net::IpAddr::from(address),
+            port: 53,
+            outbound_tag: outbound_tag.to_owned(),
+        })
+    }
+
+    #[test]
+    fn a_forward_rule_decides_forward_and_names_its_own_target() {
+        let policy = CompiledDnsOutboundPolicy::new(&settings(vec![
+            rule(
+                forward_to([10, 0, 0, 1], "direct"),
+                vec![],
+                vec![DomainMatcher::Suffix("ru".into())],
+            ),
+            rule(
+                DnsOutboundRuleAction::Return,
+                vec![DnsQTypeRange::single(65)],
+                vec![],
+            ),
+            rule(
+                forward_to([1, 1, 1, 1], "out"),
+                vec![
+                    DnsQTypeRange::new(2, 27).unwrap(),
+                    DnsQTypeRange::new(29, 64).unwrap(),
+                    DnsQTypeRange::new(66, u16::MAX).unwrap(),
+                ],
+                vec![],
+            ),
+        ]));
+
+        let decide = |domain, qtype| {
+            policy
+                .decide_message(&query(1, domain, qtype, DNS_FLAG_RD), false)
+                .unwrap()
+        };
+        assert_eq!(
+            decide("example.ru", 16),
+            DnsOutboundDecision::Forward { rule: 0 }
+        );
+        assert_eq!(
+            decide("example.ru", DNS_TYPE_A),
+            DnsOutboundDecision::Forward { rule: 0 }
+        );
+        assert_eq!(
+            decide("example.com", 16),
+            DnsOutboundDecision::Forward { rule: 2 }
+        );
+        assert_eq!(
+            decide("_xmpp-client._tcp.example.com", 33),
+            DnsOutboundDecision::Forward { rule: 2 }
+        );
+        assert_eq!(decide("example.com", 65), DnsOutboundDecision::Return(0));
+        // A and AAAA match no rule and keep the implicit fake address.
+        assert_eq!(
+            decide("example.com", DNS_TYPE_A),
+            DnsOutboundDecision::Hijack
+        );
+        assert_eq!(
+            decide("example.com", DNS_TYPE_AAAA),
+            DnsOutboundDecision::Hijack
+        );
+
+        let target = |rule| policy.forward_target(rule).cloned();
+        assert_eq!(
+            target(0).map(|target| (target.address, target.outbound_tag)),
+            Some((std::net::IpAddr::from([10, 0, 0, 1]), "direct".to_owned()))
+        );
+        assert_eq!(
+            target(2).map(|target| (target.address, target.outbound_tag)),
+            Some((std::net::IpAddr::from([1, 1, 1, 1]), "out".to_owned()))
+        );
+        assert_eq!(target(1), None, "a return rule has no target");
+        assert_eq!(target(3), None, "past the rules");
+    }
+
+    #[test]
+    fn forward_like_direct_reads_only_the_first_question() {
+        let policy = CompiledDnsOutboundPolicy::new(&settings(vec![rule(
+            forward_to([1, 1, 1, 1], "out"),
+            vec![],
+            vec![],
+        )]));
+        let mut message = query(1, "example.com", 16, 0);
+        message[10..12].copy_from_slice(&1_u16.to_be_bytes());
+        message.push(0); // OPT owner without the fixed resource-record fields.
+
+        assert_eq!(
+            policy.decide_message(&message, false).unwrap(),
+            DnsOutboundDecision::Forward { rule: 0 }
+        );
+        assert_eq!(
+            policy.decide_message(&message, true).unwrap(),
+            DnsOutboundDecision::Direct,
+            "own-link traffic still goes direct"
         );
     }
 

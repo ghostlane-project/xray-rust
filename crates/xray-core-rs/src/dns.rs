@@ -733,7 +733,7 @@ fn canonical_socket_addr(address: SocketAddr) -> SocketAddr {
     }
 }
 
-fn is_forbidden_dns_server(server: SocketAddr, forbidden: &[SocketAddr]) -> bool {
+pub(crate) fn is_forbidden_dns_server(server: SocketAddr, forbidden: &[SocketAddr]) -> bool {
     let server_ip = canonical_ip(server.ip());
     forbidden.iter().any(|candidate| {
         (candidate.port() == 0 || candidate.port() == server.port())
@@ -779,7 +779,10 @@ fn direct_dns_udp_attempt_timeout(remaining: Duration, remaining_candidates: usi
     candidate_share.min(DNS_DIRECT_UDP_ATTEMPT_TIMEOUT)
 }
 
-async fn exchange_correlated_dns_tcp_message<S>(stream: &mut S, query: &[u8]) -> io::Result<Vec<u8>>
+pub(crate) async fn exchange_correlated_dns_tcp_message<S>(
+    stream: &mut S,
+    query: &[u8],
+) -> io::Result<Vec<u8>>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + ?Sized,
 {
@@ -940,7 +943,7 @@ impl DnsQueryTransport for RoutedDnsQueryTransport {
     }
 }
 
-async fn exchange_freedom_udp(
+pub(crate) async fn exchange_freedom_udp(
     server: SocketAddr,
     query: &[u8],
     socket_protector: Option<&dyn xray_transport::SocketProtector>,
@@ -966,7 +969,7 @@ async fn exchange_freedom_udp(
 
 /// A query through a freedom outbound under `finalmask.udp`: its socket
 /// goes through the masks, as the one Xray-core's freedom dials does.
-async fn exchange_masked_freedom_udp(
+pub(crate) async fn exchange_masked_freedom_udp(
     freedom: &crate::outbound::FreedomOutbound,
     server: SocketAddr,
     query: &[u8],
@@ -1032,7 +1035,7 @@ async fn read_dns_udp_response(
     }
 }
 
-fn direct_dns_response_matches_query(query: &[u8], response: &[u8]) -> bool {
+pub(crate) fn direct_dns_response_matches_query(query: &[u8], response: &[u8]) -> bool {
     let (Some(query_header), Some(response_header)) = (query.get(..12), response.get(..12)) else {
         return false;
     };

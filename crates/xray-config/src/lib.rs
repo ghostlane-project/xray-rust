@@ -10,6 +10,7 @@ mod xray_uuid;
 pub use xray_vless_encryption::Encryption as VlessEncryption;
 
 pub use diagnostic::{Diagnostic, DiagnosticSeverity};
+pub use model::DnsForwardTarget;
 pub use model::{
     compile_dns_domain_matchers, compile_domain_matchers, deciding_final_rule, go_lowercase,
     mux_tcp_concurrency, AddressFamilies, AddressPortRecords, AddressPortStrategy,

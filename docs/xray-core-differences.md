@@ -1349,6 +1349,29 @@ Deliberate differences, source-derived:
 - The fixed TUN FakeDNS mode (`dns.fakeIp` without a DNS outbound) does not
   read `dns.hosts`, for IP values as for `"#N"`.
 
+## DNS outbound `forward` rule
+
+A DNS outbound rule may take `"action": "forward"` with an `address`, a
+`port` (53 when absent) and an `outboundTag`
+([details](config-compatibility.md#dns-outbound)): the query goes unchanged to
+that server through that outbound, as a new flow, and its answer is returned
+unchanged. Xray-core v26.10.31 has no such action: its `dns_proxy.go` refuses
+an unknown action, so a config that uses this one fails to load there instead
+of sending its queries somewhere else.
+
+Why it exists: with FakeDNS, a DNS outbound answers A and AAAA itself, and
+the other types can only be refused, answered empty, or sent Direct to the
+rewrite target. On a tunnel, Direct leaves the line. Xray-core chains the
+DNS outbound through the line with `sockopt.dialerProxy`; this core refuses
+that chain over REALITY ("REALITY over a preconnected stream is
+unsupported"). The rule gets there without the chain: it opens a flow
+through the line as any routed flow is opened, so every carrier the outbound
+supports carries it.
+
+Deliberate scope: the flow is not routed and not entered in the connection
+registry or its traffic counts, as the managed `dns.servers` exchanges are not.
+Each query opens its own flow; there is no session reuse across queries.
+
 ## UDP-hop modes
 
 The `udphop` UDP mask reads Xray-core v26.10.31's `intervalLocal`,

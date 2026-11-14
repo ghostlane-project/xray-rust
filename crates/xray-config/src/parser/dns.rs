@@ -1,8 +1,16 @@
 //! DNS selection, static hosts, fake IP and DNS outbound configuration.
 use super::*;
+use crate::DnsForwardTarget;
+use xray_routing::canonicalize_ip;
 
 /// DNS RCODE values that fit the 4-bit header field without an EDNS OPT record.
 const MAX_DNS_HOST_RCODE: u8 = 15;
+
+/// The fields only a DNS outbound `forward` rule takes.
+const DNS_FORWARD_FIELDS: [&str; 3] = ["address", "port", "outboundTag"];
+
+/// Where a `forward` rule asks when it names no port, as a DNS server does.
+const DNS_FORWARD_DEFAULT_PORT: u16 = 53;
 
 fn is_special_dns_server(address: &str) -> bool {
     address.eq_ignore_ascii_case("localhost") || address.eq_ignore_ascii_case("fakedns")
@@ -1327,6 +1335,10 @@ impl Parser<'_> {
             Some(Value::String(action)) if action.eq_ignore_ascii_case("hijack") => {
                 (DnsOutboundRuleAction::Hijack, false)
             }
+            Some(Value::String(action)) if action.eq_ignore_ascii_case("forward") => (
+                DnsOutboundRuleAction::Forward(self.parse_dns_forward_target(rule, rule_path)?),
+                false,
+            ),
             Some(Value::String(action)) => {
                 self.error(
                     action_path,
@@ -1343,6 +1355,17 @@ impl Parser<'_> {
                 return None;
             }
         };
+        if !matches!(action, DnsOutboundRuleAction::Forward(_)) {
+            for field in DNS_FORWARD_FIELDS {
+                if rule.get(field).is_some_and(|value| !value.is_null()) {
+                    self.error(
+                        format!("{rule_path}.{field}"),
+                        format!("dns outbound rule field `{field}` belongs to a forward rule"),
+                    );
+                    return None;
+                }
+            }
+        }
 
         let canonical_qtype = rule.get("qType").filter(|value| !value.is_null());
         let legacy_qtype = rule.get("qtype").filter(|value| !value.is_null());
@@ -1376,6 +1399,112 @@ impl Parser<'_> {
             qtype_ranges,
             domain_matchers,
         })
+    }
+
+    /// A `forward` rule's server and outbound: `address`, an IP address
+    /// (a name would need a lookup before the query could leave); `port`,
+    /// 53 when absent or `null`; `outboundTag`, checked against the
+    /// outbounds once they are all read ([`Self::validate_dns_forward_targets`]).
+    fn parse_dns_forward_target(
+        &mut self,
+        rule: &Value,
+        rule_path: &str,
+    ) -> Option<DnsForwardTarget> {
+        let address_path = format!("{rule_path}.address");
+        let address = match rule.get("address") {
+            Some(Value::String(address)) => normalize_xray_address_text(address)
+                .parse::<IpAddr>()
+                .ok()
+                .map(canonicalize_ip),
+            None | Some(Value::Null) => {
+                self.error(address_path, "dns forward rule requires an address");
+                return None;
+            }
+            Some(_) => None,
+        };
+        let Some(address) = address else {
+            self.error(address_path, "dns forward address must be an IP address");
+            return None;
+        };
+        if is_tun_reserved_ip(address) {
+            self.error(
+                address_path,
+                "dns forward address cannot point at a tunnel-local DNS address",
+            );
+            return None;
+        }
+
+        let port_path = format!("{rule_path}.port");
+        let port = match rule.get("port") {
+            None | Some(Value::Null) => DNS_FORWARD_DEFAULT_PORT,
+            Some(_) => match self.nullable_u16_at(rule, "port", port_path.clone())? {
+                0 => {
+                    self.error(port_path, "dns forward port must be greater than zero");
+                    return None;
+                }
+                port => port,
+            },
+        };
+
+        let tag_path = format!("{rule_path}.outboundTag");
+        let outbound_tag = match rule.get("outboundTag") {
+            Some(Value::String(tag)) if !tag.is_empty() => tag.clone(),
+            Some(Value::String(_)) | None | Some(Value::Null) => {
+                self.error(tag_path, "dns forward rule requires an outboundTag");
+                return None;
+            }
+            Some(_) => {
+                self.error(tag_path, "field `outboundTag` must be a string");
+                return None;
+            }
+        };
+
+        Some(DnsForwardTarget {
+            address,
+            port,
+            outbound_tag,
+        })
+    }
+
+    /// Every `forward` rule names an outbound that carries a flow: the first
+    /// outbound with its tag, as routing reads tags, and not a DNS, blackhole
+    /// or loopback outbound. Runs once all outbounds are read, so `outbounds`
+    /// holds them all in their configured order.
+    pub(super) fn validate_dns_forward_targets(&mut self, outbounds: &[OutboundConfig]) {
+        for (index, outbound) in outbounds.iter().enumerate() {
+            let OutboundSettings::Dns(settings) = &outbound.settings else {
+                continue;
+            };
+            for (rule_index, rule) in settings.rules.iter().enumerate() {
+                let DnsOutboundRuleAction::Forward(target) = &rule.action else {
+                    continue;
+                };
+                let path = format!("$.outbounds[{index}].settings.rules[{rule_index}].outboundTag");
+                let named = outbounds
+                    .iter()
+                    .find(|outbound| outbound.tag.as_deref() == Some(target.outbound_tag.as_str()));
+                let refusal = match named.map(|outbound| &outbound.settings) {
+                    None => "names no outbound",
+                    Some(OutboundSettings::Dns(_)) => {
+                        "names a DNS outbound, which answers queries and carries none"
+                    }
+                    Some(OutboundSettings::Blackhole(_)) => {
+                        "names a blackhole outbound, which carries nothing"
+                    }
+                    Some(OutboundSettings::Loopback(_)) => {
+                        "names a loopback outbound, which routes again rather than carries"
+                    }
+                    Some(_) => continue,
+                };
+                self.error(
+                    path,
+                    format!(
+                        "dns forward outboundTag {:?} {refusal}",
+                        target.outbound_tag
+                    ),
+                );
+            }
+        }
     }
 
     /// A rule's `qType`, Xray-core's `PortList`. The rule then answers the

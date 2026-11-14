@@ -865,8 +865,9 @@ pub(super) fn udp_action(
         return match outbound.policy().decide_message(&packet.payload, false) {
             Ok(crate::DnsOutboundDecision::Drop) => DnsUdpAction::Drop,
             Ok(
-                decision
-                @ (crate::DnsOutboundDecision::Direct | crate::DnsOutboundDecision::Hijack),
+                decision @ (crate::DnsOutboundDecision::Direct
+                | crate::DnsOutboundDecision::Hijack
+                | crate::DnsOutboundDecision::Forward { .. }),
             ) => DnsUdpAction::Outbound { outbound, decision },
             Ok(crate::DnsOutboundDecision::Return(r_code)) => {
                 crate::build_return_response(&packet.payload, r_code)
@@ -6682,15 +6683,16 @@ mod tests {
             target: anchor,
             payload: Bytes::from(dns_a_query(0x7778, "admission.example")),
         };
-        let outbound_for = |action| {
+        let outbound_for = |action: xray_config::DnsOutboundRuleAction| {
+            let r_code = if action == xray_config::DnsOutboundRuleAction::Return {
+                5
+            } else {
+                0
+            };
             DnsOutbound::new(xray_config::DnsOutboundSettings {
                 rules: vec![xray_config::DnsOutboundRule {
                     action,
-                    r_code: if action == xray_config::DnsOutboundRuleAction::Return {
-                        5
-                    } else {
-                        0
-                    },
+                    r_code,
                     qtype_ranges: Vec::new(),
                     domain_matchers: None,
                 }],
