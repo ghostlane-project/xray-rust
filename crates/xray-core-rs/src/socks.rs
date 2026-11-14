@@ -1,6 +1,6 @@
 mod datagram;
-mod udp_scratch;
 pub(crate) mod tproxy;
+mod udp_scratch;
 
 use std::collections::HashMap;
 use std::future::Future;

@@ -1,3 +1,10 @@
+// Size lints (clippy.toml, memory model 05 T9) guard the app's paths. Test code
+// is off them: a test's stack is not a tunnel worker's and a test's future
+// is never a flow's.
+#![cfg_attr(
+    test,
+    allow(clippy::large_futures, clippy::large_stack_arrays)
+)]
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -37,6 +44,8 @@ mod policy;
 mod reverse;
 mod runtime_log;
 mod runtime_stats_log;
+#[cfg(test)]
+mod size_guard;
 mod sniffing;
 mod socks;
 mod startup_probe;
@@ -44,8 +53,6 @@ mod tun;
 mod tun_admission;
 mod tun_fd;
 mod udp_ingress;
-#[cfg(test)]
-mod size_guard;
 
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]

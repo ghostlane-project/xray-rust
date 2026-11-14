@@ -22,9 +22,8 @@ const CONNECT_FUTURE_MAX: usize = 5_120;
 #[test]
 #[cfg_attr(debug_assertions, ignore = "sizes are release-mode sizes")]
 fn udp_flow_future_stays_under_one_page() {
-    let size = size_of_returned(|| {
-        bridge_socks_udp_flow(never(), never(), never(), never(), never())
-    });
+    let size =
+        size_of_returned(|| bridge_socks_udp_flow(never(), never(), never(), never(), never()));
     assert!(
         size <= UDP_FLOW_FUTURE_MAX,
         "bridge_socks_udp_flow future is {size} B, ceiling {UDP_FLOW_FUTURE_MAX} B"
@@ -81,4 +80,3 @@ fn socks_connect_future_stays_within_model_ceiling() {
         "handle_socks_connect future is {size} B, ceiling {CONNECT_FUTURE_MAX} B"
     );
 }
-
