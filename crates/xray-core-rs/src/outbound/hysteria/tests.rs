@@ -2,6 +2,7 @@ use super::*;
 use async_trait::async_trait;
 use std::sync::atomic::AtomicUsize;
 use tokio::sync::Notify;
+use xray_transport::MemoryClass;
 
 fn configured() -> OutboundConfig {
     xray_config::parse_xray_json(include_str!(
@@ -199,7 +200,7 @@ fn an_xdns_mask_reaches_the_carrier() {
 
 #[test]
 fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
-    let (quic, receive) = hysteria_quic_config(None).unwrap();
+    let (quic, receive) = hysteria_quic_config(None, MemoryClass::Standard).unwrap();
     assert_eq!(quic.max_idle_timeout, Duration::from_secs(30));
     assert_eq!(quic.congestion, H3Congestion::BbrStandard);
     assert_eq!(quic.keep_alive_interval, None);
@@ -239,13 +240,14 @@ fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
             congestion,
             ..base.clone()
         };
-        let (quic, receive) = hysteria_quic_config(Some(&settings)).unwrap();
+        let (quic, receive) = hysteria_quic_config(Some(&settings), MemoryClass::Standard).unwrap();
         assert_eq!(quic.congestion, expected, "{congestion:?}");
         assert_eq!(receive, 2_500_000, "brutalDown is announced in every mode");
     }
 
     // Without its own rate the client stays on BBR.
-    let (quic, _) = hysteria_quic_config(Some(&QuicParamsSettings::default())).unwrap();
+    let (quic, _) =
+        hysteria_quic_config(Some(&QuicParamsSettings::default()), MemoryClass::Standard).unwrap();
     assert_eq!(quic.congestion, H3Congestion::BbrStandard);
 
     // The profile chooses the BBR, directly or when the server announces no
@@ -271,14 +273,14 @@ fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
                 bbr_profile: profile,
                 ..QuicParamsSettings::default()
             };
-            let (quic, _) = hysteria_quic_config(Some(&settings)).unwrap();
+            let (quic, _) = hysteria_quic_config(Some(&settings), MemoryClass::Standard).unwrap();
             assert_eq!(quic.congestion, bbr, "{congestion:?} {profile:?}");
         }
         let settings = QuicParamsSettings {
             bbr_profile: profile,
             ..base.clone()
         };
-        let (quic, _) = hysteria_quic_config(Some(&settings)).unwrap();
+        let (quic, _) = hysteria_quic_config(Some(&settings), MemoryClass::Standard).unwrap();
         assert_eq!(
             quic.congestion,
             H3Congestion::Brutal {
@@ -288,17 +290,20 @@ fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
         );
     }
 
-    let (quic, _) = hysteria_quic_config(Some(&QuicParamsSettings {
-        init_stream_receive_window: 8 * 1024 * 1024,
-        max_stream_receive_window: 16 * 1024 * 1024,
-        init_connection_receive_window: 20 * 1024 * 1024,
-        max_idle_timeout_secs: 60,
-        keep_alive_period_secs: 10,
-        max_incoming_streams: 64,
-        disable_gso: true,
-        brutal_disable_loss_compensation: true,
-        ..QuicParamsSettings::default()
-    }))
+    let (quic, _) = hysteria_quic_config(
+        Some(&QuicParamsSettings {
+            init_stream_receive_window: 8 * 1024 * 1024,
+            max_stream_receive_window: 16 * 1024 * 1024,
+            init_connection_receive_window: 20 * 1024 * 1024,
+            max_idle_timeout_secs: 60,
+            keep_alive_period_secs: 10,
+            max_incoming_streams: 64,
+            disable_gso: true,
+            brutal_disable_loss_compensation: true,
+            ..QuicParamsSettings::default()
+        }),
+        MemoryClass::Standard,
+    )
     .unwrap();
     assert_eq!(
         quic.initial_stream_receive_window,
@@ -320,7 +325,93 @@ fn hysteria_quic_params_follow_xrays_hysteria_dialer() {
         debug: true,
         ..QuicParamsSettings::default()
     };
-    assert!(hysteria_quic_config(Some(&debug)).is_err());
+    assert!(hysteria_quic_config(Some(&debug), MemoryClass::Standard).is_err());
+}
+
+#[test]
+fn unset_hysteria_windows_and_stream_limits_follow_the_memory_class() {
+    const MIB: u64 = 1024 * 1024;
+    let without_parrot = QuicParamsSettings {
+        disable_chrome_parrot: true,
+        ..QuicParamsSettings::default()
+    };
+    for (class, stream, connection) in [
+        (MemoryClass::Standard, 2 * MIB, 3 * MIB),
+        (MemoryClass::Constrained, MIB, 3 * MIB),
+    ] {
+        for settings in [None, Some(&without_parrot)] {
+            let (quic, _) = hysteria_quic_config(settings, class).unwrap();
+            assert_eq!(
+                (
+                    quic.initial_stream_receive_window,
+                    quic.initial_connection_receive_window
+                ),
+                (stream, connection),
+                "{class:?} {settings:?}"
+            );
+            assert_eq!(quic.chrome_parrot, settings.is_none());
+        }
+    }
+
+    // A window the configuration sets is kept on any host; only the other
+    // one follows the class.
+    let (quic, _) = hysteria_quic_config(
+        Some(&QuicParamsSettings {
+            init_stream_receive_window: 8 * MIB,
+            ..without_parrot.clone()
+        }),
+        MemoryClass::Constrained,
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            quic.initial_stream_receive_window,
+            quic.initial_connection_receive_window
+        ),
+        (8 * MIB, 3 * MIB)
+    );
+    let (quic, _) = hysteria_quic_config(
+        Some(&QuicParamsSettings {
+            max_connection_receive_window: 20 * MIB,
+            ..without_parrot
+        }),
+        MemoryClass::Constrained,
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            quic.initial_stream_receive_window,
+            quic.initial_connection_receive_window
+        ),
+        (MIB, 20 * MIB)
+    );
+
+    let unset = crate::HysteriaStreamLimits::default();
+    let standard = unset.transport_limits(MemoryClass::Standard);
+    let constrained = unset.transport_limits(MemoryClass::Constrained);
+    assert_eq!(
+        (standard.max_tcp_streams, standard.max_udp_sessions),
+        (64, 32)
+    );
+    assert_eq!(
+        (constrained.max_tcp_streams, constrained.max_udp_sessions),
+        (48, 32)
+    );
+    assert_eq!(
+        (standard.max_send_window, constrained.max_send_window),
+        (10_000_000, 4 * MIB)
+    );
+    // Limits the host sets are kept on any host; the send window is not one.
+    let set = crate::HysteriaStreamLimits::new(64, 32).unwrap();
+    for class in [MemoryClass::Standard, MemoryClass::Constrained] {
+        let limits = set.transport_limits(class);
+        assert_eq!((limits.max_tcp_streams, limits.max_udp_sessions), (64, 32));
+    }
+    assert_eq!(
+        set.transport_limits(MemoryClass::Constrained)
+            .max_send_window,
+        4 * MIB
+    );
 }
 
 #[tokio::test]
@@ -433,8 +524,9 @@ async fn hysteria_stream_budgets_reject_overflow_and_release_slots_without_recon
             crate::HysteriaStreamLimits::new(80, 48).unwrap(),
         ] {
             let outbound = HysteriaOutbound::with_stream_limits(&config, limits).unwrap();
+            let limits = outbound.inner.limits;
             let mut streams = Vec::new();
-            for _ in 0..limits.max_tcp_streams() {
+            for _ in 0..limits.max_tcp_streams {
                 streams.push(outbound.open_tcp(&target, &dns, &dialer).await.unwrap());
             }
             assert!(matches!(
@@ -444,7 +536,7 @@ async fn hysteria_stream_budgets_reject_overflow_and_release_slots_without_recon
             drop(streams.pop());
             streams.push(outbound.open_tcp(&target, &dns, &dialer).await.unwrap());
             let mut sessions = Vec::new();
-            for _ in 0..limits.max_udp_sessions() {
+            for _ in 0..limits.max_udp_sessions {
                 sessions.push(outbound.open_udp(&dns, &dialer).await.unwrap());
             }
             assert!(matches!(
@@ -458,10 +550,7 @@ async fn hysteria_stream_budgets_reject_overflow_and_release_slots_without_recon
             streams[0].read_exact(&mut reply).await.unwrap();
             assert_eq!(&reply, b"still live");
             let client = outbound.client(&dns, &dialer).await.unwrap();
-            assert_eq!(
-                client.active_udp_sessions(),
-                limits.max_udp_sessions() as usize
-            );
+            assert_eq!(client.active_udp_sessions(), limits.max_udp_sessions);
             outbound.close();
             assert!(!client.is_live());
         }

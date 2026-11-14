@@ -151,8 +151,14 @@ The idle timeout defaults to 30 seconds and, as in Xray, there is no keepalive
 unless `keepAlivePeriod` sets one. quic-go grows the receive windows from their
 initial value to the maximum, while quinn keeps a Hysteria connection's windows
 fixed, so the larger of the two is the window. Without either, the 2 MiB stream
-and 3 MiB connection windows remain; Xray's Hysteria dialer defaults to 8 MiB
-and 20 MiB. `disableGSO` turns off segmentation offload. `maxIncomingStreams`
+and 3 MiB connection windows remain, or 1 MiB and 3 MiB on a constrained host,
+no more than the 2 MiB and 3 MiB quic-go starts a connection with; Xray's
+Hysteria dialer defaults to 8 MiB and 20 MiB, as sing-box's Hysteria2 client
+does. ChromeParrot replaces both with Chrome's on any host. A constrained host
+also grows its send window to 4 MiB instead of 10 MB and opens at most 48 TCP
+streams on a connection unless the host sets its
+[stream limits](ffi.md#hysteria-concurrency-limits). `disableGSO` turns off
+segmentation offload. `maxIncomingStreams`
 has no effect, as in Xray's dialer, and `disableStatelessReset` only affects
 Xray-core's servers. `debug: true` fails before the outbound starts.
 
@@ -280,8 +286,8 @@ With ChromeParrot on, a dial:
   and `maxIncomingStreams`, and a configured window maximum below the pinned
   start is raised to it. Hysteria advertises 65,536-byte DATAGRAM frames
   instead of its usual 1,200, as Xray's client then does. A constrained host,
-  which otherwise holds the windows at their start, starts them at 6 and 15 MiB
-  too;
+  which otherwise holds the windows at their start (on Hysteria 1 and 3 MiB),
+  starts them at 6 and 15 MiB too;
 - packs its Initial packets as quic-go's ChromeParrot does: 1,250-byte
   datagrams numbered from 1, from zero-length source connection IDs to an
   8-byte first destination ID, a ClientHello too large for one packet sent

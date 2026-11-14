@@ -691,31 +691,41 @@ pub(crate) const QUIC_SEND_WINDOW_SAMPLE_BYTES: usize = 1024 * 1024;
 
 /// One connection's send window, grown toward twice its congestion window.
 #[derive(Debug)]
-pub(crate) struct QuicSendWindow(AtomicU64);
+pub(crate) struct QuicSendWindow {
+    window: AtomicU64,
+    ceiling: u64,
+}
 
 impl QuicSendWindow {
-    pub(crate) fn new() -> Self {
-        Self(AtomicU64::new(QUIC_INITIAL_SEND_WINDOW))
+    /// Starts at [`QUIC_INITIAL_SEND_WINDOW`] and grows to at most `ceiling`,
+    /// which is never taken below that start.
+    pub(crate) fn new(ceiling: u64) -> Self {
+        Self {
+            window: AtomicU64::new(QUIC_INITIAL_SEND_WINDOW),
+            ceiling: ceiling.max(QUIC_INITIAL_SEND_WINDOW),
+        }
     }
 
     /// Called after another sample of uploaded bytes, never from an idle
     /// timer, so a quiet connection keeps its small window.
     pub(crate) fn grow(&self, connection: &quinn::Connection) {
-        let current = self.0.load(Ordering::Relaxed);
-        if current == QUIC_MAX_SEND_WINDOW {
+        let current = self.window.load(Ordering::Relaxed);
+        if current == self.ceiling {
             return;
         }
-        let target = connection
-            .stats()
-            .path
-            .cwnd
-            .saturating_mul(2)
-            .clamp(QUIC_INITIAL_SEND_WINDOW, QUIC_MAX_SEND_WINDOW);
+        let target = quic_send_window(connection.stats().path.cwnd, self.ceiling);
         if target > current {
             connection.set_send_window(target);
-            self.0.store(target, Ordering::Relaxed);
+            self.window.store(target, Ordering::Relaxed);
         }
     }
+}
+
+/// Twice the congestion window `cwnd`, from [`QUIC_INITIAL_SEND_WINDOW`] up
+/// to `ceiling`.
+fn quic_send_window(cwnd: u64, ceiling: u64) -> u64 {
+    cwnd.saturating_mul(2)
+        .clamp(QUIC_INITIAL_SEND_WINDOW, ceiling)
 }
 
 /// Bytes the send windows of uploading XHTTP H3 connections share: eight
@@ -2570,6 +2580,20 @@ mod send_window_tests {
         assert_eq!(window(0, 32), 512 * 1024);
         assert_eq!(window(u64::MAX, 32), 512 * 1024);
         assert_eq!(window(u64::MAX, 1000), XHTTP_MIN_SEND_WINDOW);
+    }
+
+    #[test]
+    fn a_quic_send_window_grows_to_its_ceiling() {
+        assert_eq!(quic_send_window(64 * 1024, QUIC_MAX_SEND_WINDOW), 2 * MIB);
+        assert_eq!(quic_send_window(3_000_000, QUIC_MAX_SEND_WINDOW), 6_000_000);
+        assert_eq!(
+            quic_send_window(u64::MAX, QUIC_MAX_SEND_WINDOW),
+            QUIC_MAX_SEND_WINDOW
+        );
+        assert_eq!(quic_send_window(3_000_000, 4 * MIB), 4 * MIB);
+        assert_eq!(quic_send_window(64 * 1024, 4 * MIB), 2 * MIB);
+        // A ceiling below the start keeps the start.
+        assert_eq!(QuicSendWindow::new(MIB).ceiling, QUIC_INITIAL_SEND_WINDOW);
     }
 
     #[test]

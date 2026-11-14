@@ -3,7 +3,8 @@ use super::*;
 use std::sync::atomic::AtomicBool;
 use tokio::sync::Mutex as AsyncMutex;
 use xray_transport::hysteria::{
-    GeckoPacketSize, HysteriaClient, HysteriaConfig, HysteriaError, HysteriaUdpSession,
+    GeckoPacketSize, HysteriaClient, HysteriaConfig, HysteriaError, HysteriaReceiveWindows,
+    HysteriaUdpSession,
 };
 
 #[derive(Clone, Debug)]
@@ -129,8 +130,10 @@ impl HysteriaOutbound {
                 .map(super::carrier::xicmp_config),
             ..Default::default()
         };
+        // Set before the core builds any outbound; connections keep it.
+        let class = xray_transport::memory_class();
         let (quic, receive_bytes_per_second) =
-            hysteria_quic_config(config.stream.quic_params.as_ref())?;
+            hysteria_quic_config(config.stream.quic_params.as_ref(), class)?;
         if let Some(quic) = &config.stream.quic_params {
             let hop = &quic.udp_hop;
             let interval = |value: i32| -> Result<Duration, CoreError> {
@@ -177,7 +180,7 @@ impl HysteriaOutbound {
                 socket_options: socket_options::compile(&config.stream),
                 address_port: super::carrier::address_port_strategy(&config.stream),
                 socket_dialer: Mutex::new(None),
-                limits: limits.transport_limits(),
+                limits: limits.transport_limits(class),
                 carrier,
                 quic,
                 receive_bytes_per_second,
@@ -409,9 +412,12 @@ impl HysteriaOutbound {
 /// announced rate once both are nonzero, otherwise BBR. quic-go grows a
 /// connection's receive windows from the initial value to the maximum, while
 /// quinn keeps a Hysteria connection's windows fixed, so the larger of the two
-/// is the window. UDP hop travels in the Hysteria carrier instead.
+/// is the window. A window `quicParams` leaves unset follows the host's memory
+/// `class` ([`HysteriaReceiveWindows`]). UDP hop travels in the Hysteria
+/// carrier instead.
 pub(super) fn hysteria_quic_config(
     settings: Option<&QuicParamsSettings>,
+    class: xray_transport::MemoryClass,
 ) -> Result<(H3QuicConfig, u64), CoreError> {
     let mut quic = super::xhttp::xhttp_h3_quic_config(settings)
         .map_err(|_| CoreError::UnsupportedOutboundNetwork)?;
@@ -427,6 +433,17 @@ pub(super) fn hysteria_quic_config(
     quic.initial_connection_receive_window = quic
         .initial_connection_receive_window
         .max(quic.max_connection_receive_window.take().unwrap_or(0));
+    let windows = HysteriaReceiveWindows::for_class(class);
+    if settings
+        .is_none_or(|s| s.init_stream_receive_window == 0 && s.max_stream_receive_window == 0)
+    {
+        quic.initial_stream_receive_window = windows.stream;
+    }
+    if settings.is_none_or(|s| {
+        s.init_connection_receive_window == 0 && s.max_connection_receive_window == 0
+    }) {
+        quic.initial_connection_receive_window = windows.connection;
+    }
     quic.udp_hop = H3UdpHopConfig::default();
     if let Some(settings) = settings {
         let negotiates = matches!(

@@ -130,21 +130,15 @@ impl TunMtu {
     }
 }
 
-/// Bounded concurrent streams per Hysteria connection. Existing defaults are
-/// retained; increasing the limits admits more flows, not larger per-flow queues.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Bounded concurrent streams per Hysteria connection. Until the host sets
+/// them they follow the memory class of the runtime profile, as
+/// `xray_transport::hysteria::HysteriaLimits::for_class` says: 64 TCP streams
+/// and 32 UDP sessions, or 48 TCP streams on a constrained host. Increasing
+/// the limits admits more flows, not larger per-flow queues.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct HysteriaStreamLimits {
-    max_tcp_streams: u32,
-    max_udp_sessions: u32,
-}
-
-impl Default for HysteriaStreamLimits {
-    fn default() -> Self {
-        Self {
-            max_tcp_streams: 64,
-            max_udp_sessions: 32,
-        }
-    }
+    /// TCP streams and UDP sessions the host set, if it did.
+    host: Option<(u32, u32)>,
 }
 
 impl HysteriaStreamLimits {
@@ -153,24 +147,31 @@ impl HysteriaStreamLimits {
             return Err(xray_transport::hysteria::HysteriaError::Configuration.into());
         }
         Ok(Self {
-            max_tcp_streams,
-            max_udp_sessions,
+            host: Some((max_tcp_streams, max_udp_sessions)),
         })
     }
 
+    /// The limit of an outbound built now, on the current memory class.
     pub fn max_tcp_streams(self) -> u32 {
-        self.max_tcp_streams
+        self.transport_limits(xray_transport::memory_class())
+            .max_tcp_streams as u32
     }
+    /// The limit of an outbound built now, on the current memory class.
     pub fn max_udp_sessions(self) -> u32 {
-        self.max_udp_sessions
+        self.transport_limits(xray_transport::memory_class())
+            .max_udp_sessions as u32
     }
 
-    pub(crate) fn transport_limits(self) -> xray_transport::hysteria::HysteriaLimits {
-        xray_transport::hysteria::HysteriaLimits {
-            max_tcp_streams: self.max_tcp_streams as usize,
-            max_udp_sessions: self.max_udp_sessions as usize,
-            ..Default::default()
+    pub(crate) fn transport_limits(
+        self,
+        class: xray_transport::MemoryClass,
+    ) -> xray_transport::hysteria::HysteriaLimits {
+        let mut limits = xray_transport::hysteria::HysteriaLimits::for_class(class);
+        if let Some((tcp, udp)) = self.host {
+            limits.max_tcp_streams = tcp as usize;
+            limits.max_udp_sessions = udp as usize;
         }
+        limits
     }
 }
 

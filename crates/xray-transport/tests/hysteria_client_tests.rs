@@ -16,7 +16,7 @@ use tokio::time::timeout;
 use xray_proxy::hysteria::{decode_tcp_request, decode_udp_message};
 use xray_routing::{Network, Target, TargetAddr};
 use xray_transport::hysteria::{HysteriaClient, HysteriaConfig, HysteriaError};
-use xray_transport::{SocketHandle, SocketProtector, TlsConnector};
+use xray_transport::{set_memory_class, MemoryClass, SocketHandle, SocketProtector, TlsConnector};
 
 #[derive(Clone, Copy)]
 enum Mode {
@@ -30,6 +30,11 @@ enum Mode {
     TcpRejected,
     TcpMalformed,
     Udp,
+    /// Answers every TCP request, then, once the client sends a byte, writes
+    /// until the client's flow control stops it and reports how much it wrote.
+    Hold,
+    /// Answers every TCP request and echoes the stream.
+    Echo,
 }
 
 struct Mock {
@@ -37,6 +42,7 @@ struct Mock {
     driver: tokio::task::JoinHandle<()>,
     accepted: mpsc::Receiver<quinn::Connection>,
     tcp_cancelled: Arc<AtomicBool>,
+    held: mpsc::UnboundedReceiver<usize>,
 }
 
 impl Drop for Mock {
@@ -54,6 +60,7 @@ impl Mock {
         let (tx, accepted) = mpsc::channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
         let tcp_cancelled = Arc::clone(&cancelled);
+        let (held_tx, held) = mpsc::unbounded_channel();
         let driver = tokio::spawn(async move {
             let Ok(connection) = accepting.accept().await.unwrap().await else {
                 return;
@@ -136,6 +143,15 @@ impl Mock {
                         .unwrap();
                     send.finish().unwrap();
                 }
+            } else if matches!(mode, Mode::Hold | Mode::Echo) {
+                let mut streams = tokio::task::JoinSet::new();
+                while let Ok((send, recv)) = connection.accept_bi().await {
+                    if matches!(mode, Mode::Hold) {
+                        streams.spawn(hold(send, recv, held_tx.clone()));
+                    } else {
+                        streams.spawn(echo(send, recv));
+                    }
+                }
             }
             connection.closed().await;
             drop(http3);
@@ -146,6 +162,7 @@ impl Mock {
                 driver,
                 accepted,
                 tcp_cancelled,
+                held,
             },
             identity.connector,
         )
@@ -247,6 +264,41 @@ async fn disabled_udp_last_clone_and_explicit_close_release_connection() {
     .expect("closed connection releases socket while client handle remains");
 }
 
+/// Reads one TCP request and answers it with success.
+async fn answer_tcp(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream) {
+    let mut wire = Vec::new();
+    while decode_tcp_request(&wire).is_err() {
+        let mut bytes = [0; 1024];
+        let n = recv.read(&mut bytes).await.unwrap().unwrap();
+        wire.extend_from_slice(&bytes[..n]);
+    }
+    send.write_all(b"\x00\x00\x00").await.unwrap();
+}
+
+async fn hold(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    held: mpsc::UnboundedSender<usize>,
+) {
+    answer_tcp(&mut send, &mut recv).await;
+    recv.read_exact(&mut [0; 1]).await.unwrap();
+    // A write takes what flow control allows at once, and waits for credit
+    // only when there is none.
+    let chunk = [0; 64 * 1024];
+    let mut written = 0;
+    while let Ok(Ok(n)) = timeout(Duration::from_millis(500), send.write(&chunk)).await {
+        written += n;
+    }
+    let _ = held.send(written);
+    pending::<()>().await;
+}
+
+async fn echo(mut send: quinn::SendStream, mut recv: quinn::RecvStream) {
+    answer_tcp(&mut send, &mut recv).await;
+    tokio::io::copy(&mut recv, &mut send).await.unwrap();
+    send.finish().unwrap();
+}
+
 fn target() -> Target {
     Target::new(TargetAddr::Domain("example.com".into()), 443, Network::Tcp)
 }
@@ -336,6 +388,99 @@ async fn tcp_half_close_keeps_the_receive_direction_open() {
         .unwrap()
         .unwrap();
     assert_eq!(output, b"reply after FIN");
+}
+
+#[tokio::test]
+async fn a_constrained_host_holds_less_unread_and_still_moves_more_than_its_windows() {
+    const MIB: usize = 1024 * 1024;
+    set_memory_class(Some(MemoryClass::Standard));
+    let (mut standard, standard_tls) = Mock::start(Mode::Hold);
+    let standard_config = standard.config();
+    set_memory_class(Some(MemoryClass::Constrained));
+    let (mut held, held_tls) = Mock::start(Mode::Hold);
+    let mut held_config = held.config();
+    let (echo, echo_tls) = Mock::start(Mode::Echo);
+    let echo_config = echo.config();
+    set_memory_class(None);
+    assert_eq!(
+        (
+            held_config.quic.initial_stream_receive_window,
+            held_config.quic.initial_connection_receive_window,
+            held_config.limits.max_tcp_streams,
+            held_config.limits.max_udp_sessions,
+        ),
+        (MIB as u64, 3 * MIB as u64, 48, 32)
+    );
+
+    // The server can send a stream the client does not read its window less
+    // the 3-byte response: 2 MiB on a standard host, 1 MiB on a constrained
+    // one, where three such streams use up the 3 MiB of the connection.
+    let client = HysteriaClient::connect(standard_config, &standard_tls)
+        .await
+        .unwrap();
+    let mut stream = client.open_tcp(&target()).await.unwrap();
+    stream.write_all(b"g").await.unwrap();
+    let written = timeout(DEADLINE, standard.held.recv()).await.unwrap();
+    assert_eq!(written, Some(2 * MIB - 3));
+    client.close();
+
+    held_config.limits.operation_timeout = Duration::from_secs(2);
+    let client = HysteriaClient::connect(held_config, &held_tls)
+        .await
+        .unwrap();
+    let mut streams = Vec::new();
+    let mut written = Vec::new();
+    for _ in 0..3 {
+        let mut stream = client.open_tcp(&target()).await.unwrap();
+        stream.write_all(b"g").await.unwrap();
+        written.push(timeout(DEADLINE, held.held.recv()).await.unwrap().unwrap());
+        streams.push(stream);
+    }
+    // The connection's 3 MiB also carried the authentication's HTTP/3
+    // frames, so the third stream gets that much less.
+    assert_eq!(written[..2], [MIB - 3; 2]);
+    let http3 = 3 * MIB - 3 * 3 - written.iter().sum::<usize>();
+    assert!((1..1024).contains(&http3), "{written:?}");
+    assert_eq!(
+        client.open_tcp(&target()).await.err(),
+        Some(HysteriaError::Timeout),
+        "a fourth response finds no connection credit"
+    );
+    client.close();
+
+    // Echoed through those windows, four streams of 4 MiB come back whole.
+    let client = HysteriaClient::connect(echo_config, &echo_tls)
+        .await
+        .unwrap();
+    let mut transfers = tokio::task::JoinSet::new();
+    for seed in 0..4u8 {
+        let stream = client.open_tcp(&target()).await.unwrap();
+        transfers.spawn(async move {
+            let data: Vec<u8> = (0..4 * MIB).map(|i| (i % 251) as u8 ^ seed).collect();
+            let (mut reader, mut writer) = tokio::io::split(stream);
+            let sent = data.clone();
+            let writing = async move {
+                writer.write_all(&sent).await.unwrap();
+                writer.shutdown().await.unwrap();
+            };
+            let mut echoed = Vec::new();
+            let ((), read) = tokio::join!(writing, reader.read_to_end(&mut echoed));
+            read.unwrap();
+            assert!(
+                echoed == data,
+                "stream {seed} came back with {} of {} bytes",
+                echoed.len(),
+                data.len()
+            );
+        });
+    }
+    timeout(Duration::from_secs(60), async {
+        while let Some(transfer) = transfers.join_next().await {
+            transfer.unwrap();
+        }
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

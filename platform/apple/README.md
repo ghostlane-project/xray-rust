@@ -127,8 +127,9 @@ final class PacketTunnelProvider: XrayPacketTunnelProvider {
 }
 ```
 
-The default hooks return `nil`: Hysteria2 retains 64 TCP streams / 32 UDP
-sessions per QUIC session, and admission remains disabled with no callbacks or
+The default hooks return `nil`: Hysteria2 keeps the profile's 64 TCP streams /
+32 UDP sessions per QUIC session, or 48 / 32 on a constrained profile such as
+`.mobile`, and admission remains disabled with no callbacks or
 additional packet-loop work. Explicit Hysteria2 limits accept 1...256 TCP and
 1...128 UDP (ABI 1.10+); admission requires ABI 1.11+. Neither changes the wire
 protocol or creates extra QUIC sessions.

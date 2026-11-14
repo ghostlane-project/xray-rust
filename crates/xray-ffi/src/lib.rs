@@ -2300,7 +2300,8 @@ unsafe fn xray_core_set_tun_collect_tcp_timings_inner(
 }
 
 /// Sets per-outbound Hysteria concurrency before config load (ABI 1.10).
-/// TCP must be 1..=256 and UDP 1..=128. Defaults remain 64/32. Rejection
+/// TCP must be 1..=256 and UDP 1..=128. Unset, they follow the runtime
+/// profile's memory class: 64/32, or 48/32 on a constrained host. Rejection
 /// preserves previous settings; no sockets or sessions are created here.
 ///
 /// # Safety
@@ -4482,7 +4483,8 @@ mod tests {
             assert!(!handle.is_null());
             assert_eq!(
                 (*handle).tun_runtime_options.hysteria_stream_limits,
-                xray_core_rs::HysteriaStreamLimits::new(64, 32).unwrap()
+                xray_core_rs::HysteriaStreamLimits::default(),
+                "unset until the host sets them"
             );
             assert_eq!(set(handle, 256, 128, &mut error), XrayStatus::Ok);
             let selected = (*handle).tun_runtime_options.hysteria_stream_limits;

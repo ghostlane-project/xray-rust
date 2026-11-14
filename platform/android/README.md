@@ -468,7 +468,8 @@ actual binding/routing, request outcomes and independently measured traffic.
 To increase Hysteria concurrency, pass
 `hysteriaStreamLimits = XrayHysteriaStreamLimits(maxTcpStreams = 128, maxUdpSessions = 64)`
 to `XrayCore.create`. This requires ABI 1.10 plus `HysteriaStreamLimits` capability.
-The defaults remain 64/32; bounds are 1..256 and 1..128. Limits are shared by
+Unset, they are 64/32, or 48/32 under a constrained runtime profile such as
+`XrayTunRuntimeProfile.Mobile`; bounds are 1..256 and 1..128. Limits are shared by
 all inbounds using one outbound. TUN admission limits remain separate: choose
 an appropriate runtime profile for large simultaneous connection bursts.
 Higher concurrency can consume more memory; per-flow queues and the Xray wire
