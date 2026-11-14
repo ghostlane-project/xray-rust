@@ -36,6 +36,9 @@
 pub mod dtls_boring;
 pub mod ice;
 pub mod peer;
+#[cfg(feature = "boring")]
+#[allow(unsafe_code)]
+pub mod tls_boring;
 pub mod turn;
 
 use std::sync::Arc;

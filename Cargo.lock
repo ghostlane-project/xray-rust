@@ -1916,6 +1916,7 @@ version = "0.10.0"
 dependencies = [
  "boring",
  "boring-sys",
+ "brotli-decompressor",
  "foreign-types",
  "is",
  "libc",

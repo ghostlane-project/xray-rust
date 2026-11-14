@@ -16,8 +16,10 @@ str0m-aws-lc-rs = "=0.7.0"
 thiserror.workspace = true
 tokio.workspace = true
 turn-client-proto = { version = "=0.8.0", default-features = false, features = ["std"] }
-# The `boring` feature: BoringSSL for the DTLS part (dtls_boring).
+# The `boring` feature: BoringSSL for the DTLS part (dtls_boring) and TURN
+# over TLS's (tls_boring, whose certificate compression is brotli).
 boring = { version = "=5.5.0", optional = true }
+brotli-decompressor = { version = "=5.0.3", optional = true }
 boring-sys = { version = "=5.5.0", optional = true }
 foreign-types = { version = "0.5", optional = true }
 libc = { workspace = true, optional = true }
@@ -25,10 +27,11 @@ str0m-proto = { version = "=0.8.0", default-features = false, features = ["dtls"
 
 [features]
 # DTLS from BoringSSL, configured as libwebrtc configures it, so the
-# ClientHello and the certificate are Chrome's (port plan section 8, X2-X4).
+# ClientHello and the certificate are Chrome's (port plan section 8, X2-X4);
+# and the TLS of TURN over TLS, configured as Chrome's network stack's.
 # Building it needs cmake and libclang, which the build box does not have:
 # it is built and tested on a GitHub runner (ghostlane lab/olc-rtc).
-boring = ["dep:boring", "dep:boring-sys", "dep:foreign-types", "dep:libc", "dep:str0m-proto"]
+boring = ["dep:boring", "dep:boring-sys", "dep:brotli-decompressor", "dep:foreign-types", "dep:libc", "dep:str0m-proto"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
