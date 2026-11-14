@@ -353,9 +353,9 @@ fn ok_response() -> Response<()> {
 /// has arrived (the clients have read every DATA frame's bytes from their
 /// pipes, and then the heap has settled), as on a phone whose readers lag
 /// the network: the 32 MiB wait in h2's queues (the stream windows, 4 MiB,
-/// and the connection windows, 16 MiB for about 11 flows, let all of it
-/// in), so the peak is what a queued byte costs, and it does not depend on
-/// how the readers are timed.
+/// and the connection windows, 16 MiB for the 11 flows placed on each, let
+/// all of it in), so the peak is what a queued byte costs, and it does not
+/// depend on how the readers are timed.
 /// With every download queued, every frame is checked to be in an
 /// allocation of exactly its own size: the reader's, 8,201 B with its
 /// header, for the frame a response passes straight to its queue, or the
@@ -366,6 +366,23 @@ const BURST_DOWN_EACH: usize = 1 << 20;
 const GO_SERVER_FRAME: usize = 8 * 1024;
 /// Bytes the server may have in flight on one connection's pipe.
 const BURST_PIPE: usize = 8 << 20;
+/// The xmux connections the burst's 33 flows (the warm-up's and 32) use.
+const BURST_CONNECTIONS: usize = 3;
+/// Flows a connection is given: xmux's `maxConcurrency`, so the flows fill
+/// one connection after another, ceil(33 / 3) = 11 each. With
+/// `maxConnections` 3 instead, each flow after the first three draws its
+/// connection at random, and one burst in 22 (the chance that a draw puts
+/// 17 of the 32 on one connection) asked a connection to hold more unread
+/// downloads than its window: its server stopped at 16 MiB, waiting for
+/// credit that only a reader gives back, and no reader runs until all has
+/// arrived.
+const BURST_FLOWS_PER_CONNECTION: usize = (BURST + 1).div_ceil(BURST_CONNECTIONS);
+/// The client's HTTP/2 connection receive window
+/// (`H2_CONNECTION_RECEIVE_WINDOW`).
+const CLIENT_CONNECTION_WINDOW: usize = 16 << 20;
+// A connection's flows, the warm-up's counted as if still unread, fit in its
+// window: 11 × 1 MiB <= 16 MiB.
+const _: () = assert!(BURST_FLOWS_PER_CONNECTION * BURST_DOWN_EACH <= CLIENT_CONNECTION_WINDOW);
 /// The DATA frames the burst queues: 32 × 1 MiB / 8 KiB = 4,096.
 const BURST_FRAMES: usize = BURST * BURST_DOWN_EACH / GO_SERVER_FRAME;
 /// A frame read into an allocation of its own size: its 9-byte header and
@@ -393,7 +410,7 @@ fn a_burst_of_32_queued_downloads_keeps_each_frame_in_its_own_allocation() {
 async fn download_burst() {
     let server = Arc::new(Server::new(BURST_DOWN_EACH, GO_SERVER_FRAME));
     let dial = server_dial(Arc::clone(&server), BURST_PIPE, None);
-    let transport = app_shaped_transport(None);
+    let transport = burst_transport();
 
     // The peak counts from before the first connection: what the warm-up
     // left behind (h2's tables, a queue's slots, a read buffer) is heap the
@@ -475,13 +492,17 @@ async fn open_unread_flow(transport: &XhttpTransport, dial: &XhttpDial) -> Boxed
 
 /// Waits until the clients have read `bytes` from their pipes in all.
 async fn wait_for_client_read(bytes: usize) {
-    timeout(DEADLINE, async {
+    let arrived = timeout(DEADLINE, async {
         while client_read() < bytes {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
     })
-    .await
-    .expect("the clients did not read every download's bytes");
+    .await;
+    assert!(
+        arrived.is_ok(),
+        "the clients read {} B from their pipes, not the {bytes} B awaited",
+        client_read()
+    );
 }
 
 /// The live heap once it has stopped moving: five 20 ms rounds in a row
@@ -655,10 +676,34 @@ fn app_shaped_transport(headers: Option<HeaderMap>) -> XhttpTransport {
     transport_for(config, 3, pinned)
 }
 
+/// [`app_shaped_transport`] with its flows placed
+/// [`BURST_FLOWS_PER_CONNECTION`] to a connection.
+fn burst_transport() -> XhttpTransport {
+    let config = XhttpConfig::normalize(XhttpConfigInput {
+        mode: XhttpModeSelection::PacketUp,
+        path: "/api".to_owned(),
+        sc_max_each_post_bytes: XhttpRange::exact(200_000),
+        ..XhttpConfigInput::default()
+    })
+    .unwrap();
+    xmux_transport(config, BURST_FLOWS_PER_CONNECTION as i32, 0, false)
+}
+
 fn transport_for(config: XhttpConfig, connections: i32, pinned_rng: bool) -> XhttpTransport {
+    xmux_transport(config, 0, connections, pinned_rng)
+}
+
+/// A transport whose xmux has `maxConcurrency` `concurrency` and
+/// `maxConnections` `connections` (0: no limit).
+fn xmux_transport(
+    config: XhttpConfig,
+    concurrency: i32,
+    connections: i32,
+    pinned_rng: bool,
+) -> XhttpTransport {
     let endpoint = XhttpEndpoint::new(XhttpScheme::Https, "example.com").unwrap();
     let xmux = XhttpXmuxPolicy {
-        max_concurrency: XhttpRange::exact(0),
+        max_concurrency: XhttpRange::exact(concurrency),
         max_connections: XhttpRange::exact(connections),
         c_max_reuse_times: XhttpRange::exact(0),
         h_max_request_times: XhttpRange::exact(0),
