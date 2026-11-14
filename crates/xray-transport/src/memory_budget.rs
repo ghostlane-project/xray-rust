@@ -564,11 +564,27 @@ impl Drop for Settling {
 /// listed gate and keeps those that still hold credit back; it ends once
 /// none does, and a gate listed later starts it again. A round runs when
 /// bytes come back while `B` has room, so it never runs on the relays'
-/// path, and it waits for nothing: one runtime worker serves it.
+/// path; it waits for nothing and goes back to the scheduler between any
+/// two rounds: one runtime worker serves it, and no chain of rounds holds
+/// one.
 async fn settle_withheld(running: Settling) {
     let budget = running.0;
+    let mut settled = false;
     loop {
-        poll_fn(|cx| budget.poll_settle_due(cx)).await;
+        // Waiting for a round gives the worker back. A round due already
+        // when the last ends, as gives on other workers during it make one,
+        // yields first: a chain of them never holds the worker, and a
+        // settler with nothing due costs no extra poll.
+        let mut first_poll = true;
+        let waited = poll_fn(|cx| {
+            let first = std::mem::take(&mut first_poll);
+            budget.poll_settle_due(cx).map(|()| !first)
+        })
+        .await;
+        if settled && !waited {
+            tokio::task::yield_now().await;
+        }
+        settled = true;
         let gates: Vec<Arc<dyn WithheldCredit>> = budget
             .lock_withheld()
             .gates
@@ -1327,6 +1343,62 @@ mod tests {
             "which hands the credit back"
         );
         gate.close();
+    }
+
+    /// A gate that has the next round made due while it is settled, as gives
+    /// on other workers do while a round runs, for `rounds` rounds.
+    struct RearmingGate {
+        budget: &'static ByteBudget,
+        settled: AtomicUsize,
+        rounds: usize,
+    }
+
+    impl WithheldCredit for RearmingGate {
+        fn settle(&self) {
+            if self.settled.fetch_add(1, Ordering::SeqCst) + 1 < self.rounds {
+                self.budget.settle_soon();
+            }
+        }
+
+        fn still_withheld(&self) -> bool {
+            self.settled.load(Ordering::SeqCst) < self.rounds
+        }
+    }
+
+    /// Rounds due one after another give the worker back between them: on a
+    /// runtime of one thread, a chain of them leaves the other tasks their
+    /// turns rather than run to its end in one poll.
+    #[tokio::test]
+    async fn the_settler_gives_its_worker_back_after_every_round() {
+        const ROUNDS: usize = 1000;
+        let budget: &'static ByteBudget = Box::leak(Box::new(budget(64 * KIB, 4 * KIB)));
+        let gate = Arc::new(RearmingGate {
+            budget,
+            settled: AtomicUsize::new(0),
+            rounds: ROUNDS,
+        });
+        let weak: Weak<RearmingGate> = Arc::downgrade(&gate);
+        budget.list_withheld(weak as Weak<dyn WithheldCredit>);
+        tokio::task::yield_now().await;
+        let settled = gate.settled.load(Ordering::SeqCst);
+        assert!(
+            (1..ROUNDS).contains(&settled),
+            "the settler ran {settled} of the {ROUNDS} rounds due before this task's next turn"
+        );
+        // A guard, not a measure: a chain that never ends fails here.
+        for _ in 0..4 * ROUNDS {
+            let settling = budget.lock_withheld().settling;
+            if !settling {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            gate.settled.load(Ordering::SeqCst),
+            ROUNDS,
+            "every round due ran"
+        );
+        assert!(!budget.lock_withheld().settling, "the settler ended");
     }
 
     #[test]
