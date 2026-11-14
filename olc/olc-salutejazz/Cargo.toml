@@ -18,5 +18,9 @@ tokio.workspace = true
 tokio-util = { version = "0.7.19", default-features = false }
 uuid.workspace = true
 
+[features]
+# olc-rtc's DTLS from BoringSSL, shaped as Chrome's.
+boring = ["olc-rtc/boring"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
