@@ -1073,8 +1073,8 @@ impl Core {
     /// its listeners:
     ///
     /// - the connections kept for later flows are let go, and no later flow
-    ///   is handed one dialed before the call: the HTTP/2 connections of gRPC
-    ///   and XHTTP (HTTP/1.1 and HTTP/2), an HTTP proxy's shared HTTP/2
+    ///   is handed one dialed before the call: gRPC's HTTP/2 connection,
+    ///   XHTTP's HTTP/1.1 and HTTP/2 slots, an HTTP proxy's shared HTTP/2
     ///   connection, Mux.Cool parents and VLESS `testpre` connections;
     /// - the core's own DNS caches forget their answers, so the next lookup
     ///   asks on the new network; FakeDNS mappings are kept;

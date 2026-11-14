@@ -62,8 +62,11 @@ impl Default for NetworkResets {
 impl NetworkResets {
     /// Starts a new generation. Nonblocking: the pools that follow it let
     /// their connections go on their own tasks, and every other holder
-    /// checks the generation before its next use. Returns how many pooled
-    /// connections and slots follow it, not how many were let go.
+    /// checks the generation before its next use. Returns how many followers
+    /// were told, as [`NetworkChanges::notify`] counts them: one per gRPC
+    /// connection pooled or being dialed, and one per XHTTP transport over
+    /// TCP however many slots it keeps. It is not a count of connections let
+    /// go.
     pub fn reset(&self) -> u64 {
         self.0
             .send_modify(|generation| *generation = generation.wrapping_add(1));

@@ -128,8 +128,8 @@ ABI 1.18 adds `xray_core_reset_network(handle, closed, error)` for a host whose
 device moved to another network, the case sing-box's `resetNetwork` serves. Without
 stopping the core or its listeners, it:
 
-- lets go of the connections kept for later flows: the HTTP/2 connections of
-  gRPC and XHTTP over HTTP/1.1 and HTTP/2, an HTTP proxy's shared HTTP/2
+- lets go of the connections kept for later flows: gRPC's HTTP/2 connection,
+  XHTTP's HTTP/1.1 and HTTP/2 slots, an HTTP proxy's shared HTTP/2
   connection, Mux.Cool parents and VLESS `testpre` connections. A pooled
   connection belongs to the reset generation its dial started in, so no flow
   after the call is handed one dialed before it, even if the dial was still
