@@ -100,4 +100,4 @@ h3 = { path = "vendor/h3" }
 h3-quinn = { path = "vendor/h3-quinn" }
 quinn-proto = { path = "vendor/quinn-proto" }
 h2 = { path = "vendor/h2" }
-rustls = { git = "https://github.com/aimalygin/shaped-rustls", rev = "ca91d48c385f7d16ad3993ecaf26fa9b84882dbc" }
+rustls = { git = "https://github.com/ghostlane-project/shaped-rustls", rev = "db373dbd70ba1cafba7d7b763c36fb6f88cec7e4" }
