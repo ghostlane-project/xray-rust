@@ -79,13 +79,17 @@ type member struct {
 	conn net.Conn
 	room string
 	tag  string // what the JOIN named after "@", for traces
-	out  chan frame
-	done chan struct{}
-	once sync.Once
-	seq  uint64        // join order in the hub; under hub.mu
-	hold chan struct{} // while set, nothing is read from conn; under hub.mu
-	last time.Time     // when the last reliable frame is due; the writer's
-	held *frame        // a datagram held back to be reordered; the writer's
+	// peers is a participant in peer mode (KindJoinPeers), told its id and
+	// handed what it is sent with the sender's.
+	peers bool
+	id    string // "p" and seq: what peer mode names it
+	out   chan frame
+	done  chan struct{}
+	once  sync.Once
+	seq   uint64        // join order in the hub; under hub.mu
+	hold  chan struct{} // while set, nothing is read from conn; under hub.mu
+	last  time.Time     // when the last reliable frame is due; the writer's
+	held  *frame        // a datagram held back to be reordered; the writer's
 }
 
 type frame struct {
@@ -224,6 +228,16 @@ func (h *Hub) Cut(room string) {
 	}
 }
 
+// CutTag drops the connections of the participants that joined a room as
+// "room@tag"; their engines rejoin, and the others stay.
+func (h *Hub) CutTag(room, tag string) {
+	for _, m := range h.snapshot(room, nil) {
+		if m.tag == tag {
+			m.stop()
+		}
+	}
+}
+
 // End tells every participant of a room that the conference ended.
 func (h *Hub) End(room, reason string) {
 	for _, m := range h.snapshot(room, nil) {
@@ -266,12 +280,15 @@ func (h *Hub) serve(conn net.Conn) {
 	defer h.members.Done()
 	br := bufio.NewReaderSize(conn, MaxPayload+5)
 	kind, payload, err := ReadFrame(br)
-	if err != nil || kind != KindJoin || len(payload) == 0 {
+	if err != nil || (kind != KindJoin && kind != KindJoinPeers) || len(payload) == 0 {
 		_ = conn.Close()
 		return
 	}
 	room, tag, _ := strings.Cut(string(payload), "@")
-	m := &member{hub: h, conn: conn, room: room, tag: tag, out: make(chan frame, memberQueue), done: make(chan struct{})}
+	m := &member{
+		hub: h, conn: conn, room: room, tag: tag, peers: kind == KindJoinPeers,
+		out: make(chan frame, memberQueue), done: make(chan struct{}),
+	}
 	h.mu.Lock()
 	if h.closed {
 		h.mu.Unlock()
@@ -283,6 +300,7 @@ func (h *Hub) serve(conn net.Conn) {
 	}
 	h.joins++
 	m.seq = h.joins
+	m.id = fmt.Sprintf("p%d", m.seq)
 	h.rooms[m.room][m] = struct{}{}
 	n := len(h.rooms[m.room])
 	h.mu.Unlock()
@@ -290,6 +308,9 @@ func (h *Hub) serve(conn net.Conn) {
 		tr(fmt.Sprintf("join %s (%d in the room)", m.name(), n))
 	}
 	go m.write()
+	if m.peers {
+		m.enqueue(frame{kind: KindSelf, payload: []byte(m.id), at: time.Now()}, true)
+	}
 	h.announce(m.room)
 	for {
 		h.waitHeld(m)
@@ -297,8 +318,17 @@ func (h *Hub) serve(conn net.Conn) {
 		if err != nil {
 			break
 		}
-		if kind == KindData || kind == KindDgram {
-			h.relay(m, kind, payload)
+		switch kind {
+		case KindData, KindDgram:
+			h.relay(m, kind, "", payload)
+		case KindDataTo, KindDgramTo:
+			base := KindData
+			if kind == KindDgramTo {
+				base = KindDgram
+			}
+			if to, msg, ok := SplitAddressed(payload); ok {
+				h.relay(m, base, to, msg)
+			}
 		}
 	}
 	m.stop()
@@ -321,8 +351,10 @@ func (h *Hub) announce(room string) {
 	}
 }
 
-// relay hands a frame to the room's other participants under the chaos.
-func (h *Hub) relay(from *member, kind byte, payload []byte) {
+// relay hands a frame (KindData or KindDgram) to the room's other
+// participants, or to the one whose id is to, under the chaos. A participant
+// in peer mode gets it with the sender's id.
+func (h *Hub) relay(from *member, kind byte, to string, payload []byte) {
 	h.mu.Lock()
 	if h.black[from.room] {
 		h.mu.Unlock()
@@ -342,10 +374,16 @@ func (h *Hub) relay(from *member, kind byte, payload []byte) {
 		return
 	}
 	at := time.Now().Add(c.Delay + jitter)
-	to := h.snapshot(from.room, from)
+	all := h.snapshot(from.room, from)
+	targets := all[:0]
+	for _, m := range all {
+		if to == "" || m.id == to {
+			targets = append(targets, m)
+		}
+	}
 	if tr := h.tracer(from.room); tr != nil && kind == KindData {
-		names := make([]string, 0, len(to))
-		for _, m := range to {
+		names := make([]string, 0, len(targets))
+		for _, m := range targets {
 			select {
 			case <-m.done:
 				names = append(names, m.name()+" (cut)")
@@ -355,20 +393,31 @@ func (h *Hub) relay(from *member, kind byte, payload []byte) {
 		}
 		tr(fmt.Sprintf("data %s -> %v, %d bytes", from.name(), names, len(payload)))
 	}
-	for _, m := range to {
-		f := frame{kind: kind, payload: payload, at: at}
+	for _, m := range targets {
+		k, p := kind, payload
+		if m.peers {
+			k, p = KindDataFrom, Addressed(from.id, payload)
+			if kind == KindDgram {
+				k = KindDgramFrom
+			}
+		}
+		f := frame{kind: k, payload: p, at: at}
 		if reorder {
-			f.kind = kindHeld
+			f.kind |= heldBit
 		}
 		m.enqueue(f, kind == KindData)
 		if dup {
-			m.enqueue(frame{kind: kind, payload: payload, at: at}, kind == KindData)
+			m.enqueue(frame{kind: k, payload: p, at: at}, kind == KindData)
 		}
 	}
 }
 
-// kindHeld marks a datagram the writer holds back and sends after the next.
-const kindHeld byte = 0x80 | KindDgram
+// heldBit marks a datagram the writer holds back and sends after the next.
+const heldBit byte = 0x80
+
+func reliableKind(kind byte) bool { return kind == KindData || kind == KindDataFrom }
+
+func lossyKind(kind byte) bool { return kind == KindDgram || kind == KindDgramFrom }
 
 // enqueue queues a frame for the participant: waiting for room when reliable,
 // dropping it when the queue is full otherwise.
@@ -405,19 +454,18 @@ func (m *member) write() {
 		case <-m.done:
 			return
 		}
-		if f.kind == KindData && f.at.Before(m.last) {
+		if reliableKind(f.kind) && f.at.Before(m.last) {
 			f.at = m.last
 		}
-		if f.kind == KindData {
+		if reliableKind(f.kind) {
 			m.last = f.at
 		}
-		if f.kind == kindHeld {
+		if f.kind&heldBit != 0 {
+			f.kind &^= heldBit
 			if m.held == nil {
-				f.kind = KindDgram
 				m.held = &f
 				continue
 			}
-			f.kind = KindDgram
 		}
 		if wait := time.Until(f.at); wait > 0 {
 			select {
@@ -448,7 +496,7 @@ func (m *member) write() {
 			m.stop()
 			return
 		}
-		if m.held != nil && f.kind == KindDgram {
+		if m.held != nil && lossyKind(f.kind) {
 			held := m.held
 			m.held = nil
 			if WriteFrame(m.conn, held.kind, held.payload) != nil {

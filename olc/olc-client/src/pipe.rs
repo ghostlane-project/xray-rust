@@ -125,6 +125,9 @@ pub struct PipeLink {
     shut: CancellationToken,
     /// Taken by [`PipeLink::close`]: the client's event queue ends with it.
     events: Mutex<Option<mpsc::Sender<LinkEvent>>>,
+    /// Tests: every send fails with this while the reads go on.
+    #[cfg(test)]
+    refuse: Mutex<Option<io::ErrorKind>>,
 }
 
 impl std::fmt::Debug for PipeLink {
@@ -178,6 +181,8 @@ impl PipeLink {
             peer,
             shut: CancellationToken::new(),
             events: Mutex::new(Some(events)),
+            #[cfg(test)]
+            refuse: Mutex::new(None),
         });
         let (read, cut) = link.join().await.map_err(LinkError::Join)?;
         tokio::spawn(link.clone().read_loop(read, cut));
@@ -284,6 +289,10 @@ impl PipeLink {
     /// One frame at a time, as Go's `wmu` (zz_pipe.go:290): the write has
     /// no deadline there either, and ends with its connection.
     async fn send_kind(&self, kind: u8, payload: &[u8]) -> io::Result<()> {
+        #[cfg(test)]
+        if let Some(kind) = *locked(&self.refuse) {
+            return Err(io::Error::new(kind, "pipe double: send refused"));
+        }
         let mut guard = self.writer.lock().await;
         let Some(w) = guard.as_mut() else {
             return Err(io::ErrorKind::NotConnected.into());
@@ -480,6 +489,12 @@ impl PipeLink {
     /// Marks the room joined or not without touching the connection.
     pub(crate) fn set_ready(&self, ready: bool) {
         self.ready.send_replace(ready);
+    }
+
+    /// Makes every send fail with `kind` (or none again) while the room
+    /// stays joined and the reads go on: a far end that still delivers.
+    pub(crate) fn refuse_sends(&self, kind: Option<io::ErrorKind>) {
+        *locked(&self.refuse) = kind;
     }
 }
 
