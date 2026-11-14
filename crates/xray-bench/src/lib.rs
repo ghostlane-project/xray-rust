@@ -8686,6 +8686,7 @@ fn dns_outbound_decision_name(decision: DnsOutboundDecision) -> &'static str {
         DnsOutboundDecision::Return(_) => "return",
         DnsOutboundDecision::Hijack => "hijack",
         DnsOutboundDecision::HijackUnsafe(_) => "hijack-unsafe",
+        DnsOutboundDecision::Forward { .. } => "forward",
     }
 }
 

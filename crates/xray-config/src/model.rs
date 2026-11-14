@@ -1601,7 +1601,7 @@ impl DnsOutboundSettings {
                         DnsOutboundRuleAction::Return
                     }
                 },
-                |rule| rule.action,
+                |rule| rule.action.clone(),
             )
     }
 }
@@ -1639,12 +1639,26 @@ fn normalize_dns_qname(domain: &str) -> String {
     domain.trim_end_matches('.').to_ascii_lowercase()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DnsOutboundRuleAction {
     Direct,
     Drop,
     Return,
     Hijack,
+    /// Sends the query unchanged to the rule's own server, through the
+    /// outbound it names, as a new flow. This core's addition: Xray-core has
+    /// no such action and refuses a config that uses one.
+    Forward(DnsForwardTarget),
+}
+
+/// Where a `forward` rule sends a query: `address`:`port`, reached through
+/// the outbound tagged `outbound_tag`, which is never a DNS, blackhole or
+/// loopback outbound.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DnsForwardTarget {
+    pub address: IpAddr,
+    pub port: u16,
+    pub outbound_tag: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

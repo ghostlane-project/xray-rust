@@ -24,7 +24,7 @@ use crate::dns::{
 };
 use crate::dns_outbound::{parse_dns_query, parse_dns_query_prefix, DnsOutboundQuery};
 use crate::fake_dns::{FakeIpLookup, FakeIpMapper};
-use crate::{DnsOutbound, DnsOutboundDecision};
+use crate::{DnsOutbound, DnsOutboundDecision, OutboundRouter};
 
 const DNS_PORT: u16 = 53;
 const DNS_HEADER_LEN: usize = 12;
@@ -557,6 +557,21 @@ impl DnsDirectExecutor {
         }
     }
 
+    /// The resolver for outbound server names, never the routed one.
+    pub(crate) fn bootstrap(&self) -> &dyn DnsResolver {
+        self.bootstrap.as_ref()
+    }
+
+    pub(crate) fn dialer(&self) -> &TransportDialer {
+        self.dialer.as_ref()
+    }
+
+    /// Whether `server` is one of the runtime's own DNS addresses, which no
+    /// exchange may dial.
+    pub(crate) fn refuses_server(&self, server: SocketAddr) -> bool {
+        crate::dns::is_forbidden_dns_server(server, &self.forbidden_servers)
+    }
+
     async fn open_managed_session(
         &self,
         outbound: &DnsOutbound,
@@ -692,6 +707,9 @@ pub(crate) struct DnsOutboundRuntime {
     fake_ip_mapper: Option<Arc<Mutex<FakeIpMapper>>>,
     static_hosts: Arc<DomainHostIndex<DnsHostTarget>>,
     operation_permits: Arc<Semaphore>,
+    /// The outbounds a `forward` rule sends its queries through; without it
+    /// such a query is answered SERVFAIL.
+    forward_router: Option<Arc<OutboundRouter>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -749,7 +767,14 @@ impl DnsOutboundRuntime {
             fake_ip_mapper,
             static_hosts,
             operation_permits: Arc::new(Semaphore::new(max_concurrent_operations.max(1))),
+            forward_router: None,
         }
+    }
+
+    /// Lets `forward` rules send queries through the outbounds of `router`.
+    pub(crate) fn with_forward_router(mut self, router: Arc<OutboundRouter>) -> Self {
+        self.forward_router = Some(router);
+        self
     }
 
     pub(crate) fn static_host_target(&self, domain: &str) -> Option<DnsHostTarget> {
@@ -867,33 +892,43 @@ impl DnsOutboundRuntime {
                     self.exchange_direct(outbound, original_target, &query),
                 )
                 .await;
-                let response = match response {
-                    Ok(Ok(response)) => response,
-                    Ok(Err(_)) | Err(_) => {
-                        return dns_reply_or_servfail(&query, None);
-                    }
+                match response {
+                    Ok(Ok(response)) => upstream_reply(&query, response, client_transport),
+                    Ok(Err(_)) | Err(_) => dns_reply_or_servfail(&query, None),
+                }
+            }
+            DnsOutboundDecision::Forward { rule } => {
+                // A zone transfer is a stream of answers; one exchange
+                // carries one.
+                if is_dns_tcp_transfer_query(&query) {
+                    return crate::build_refused_response(&query)
+                        .ok()
+                        .map_or(DnsMessageOutcome::Drop, DnsMessageOutcome::Reply);
+                }
+                let (Some(router), Some(forward)) = (
+                    self.forward_router.as_deref(),
+                    outbound.policy().forward_target(rule),
+                ) else {
+                    return dns_reply_or_servfail(&query, None);
                 };
-                match client_transport {
-                    DnsClientTransport::Tcp => DnsMessageOutcome::Reply(Bytes::from(response)),
-                    DnsClientTransport::Udp { .. } => {
-                        let payload_limit = parse_dns_query(&query)
-                            .or_else(|_| parse_dns_query_prefix(&query))
-                            .ok()
-                            .map_or(DNS_LEGACY_UDP_PAYLOAD_SIZE, |parsed| {
-                                client_transport.response_payload_limit(&parsed)
-                            });
-                        let response = if response.len() <= payload_limit {
-                            Some(Bytes::from(response))
-                        } else {
-                            dns_error_response_with_limit(
-                                &query,
-                                DNS_RCODE_NOERROR,
-                                true,
-                                payload_limit,
-                            )
-                        };
-                        dns_reply_or_servfail(&query, response)
-                    }
+                let Some(_permit) = Arc::clone(&self.operation_permits).try_acquire_owned().ok()
+                else {
+                    return dns_reply_or_servfail(&query, None);
+                };
+                // Boxed: this future lives inside every DNS flow's future,
+                // and most flows never forward.
+                let response = Box::pin(crate::dns_forward::exchange(
+                    router,
+                    &self.direct_executor,
+                    forward,
+                    &query,
+                    matches!(client_transport, DnsClientTransport::Udp { .. }),
+                    Instant::now() + outbound.operation_timeout(),
+                ))
+                .await;
+                match response {
+                    Ok(response) => upstream_reply(&query, response, client_transport),
+                    Err(_) => dns_reply_or_servfail(&query, None),
                 }
             }
         }
@@ -1298,6 +1333,33 @@ fn build_hijack_response(
 
 fn dns_error_response(query: &[u8], rcode: u16, truncated: bool) -> Option<Bytes> {
     dns_error_response_with_limit(query, rcode, truncated, DNS_LEGACY_UDP_PAYLOAD_SIZE)
+}
+
+/// An upstream server's answer to `query`, as the client may take it: whole
+/// over TCP; over UDP whole when it fits the client's payload limit, else an
+/// empty truncated answer that sends the client to TCP.
+fn upstream_reply(
+    query: &[u8],
+    response: Vec<u8>,
+    client_transport: DnsClientTransport,
+) -> DnsMessageOutcome {
+    match client_transport {
+        DnsClientTransport::Tcp => DnsMessageOutcome::Reply(Bytes::from(response)),
+        DnsClientTransport::Udp { .. } => {
+            let payload_limit = parse_dns_query(query)
+                .or_else(|_| parse_dns_query_prefix(query))
+                .ok()
+                .map_or(DNS_LEGACY_UDP_PAYLOAD_SIZE, |parsed| {
+                    client_transport.response_payload_limit(&parsed)
+                });
+            let response = if response.len() <= payload_limit {
+                Some(Bytes::from(response))
+            } else {
+                dns_error_response_with_limit(query, DNS_RCODE_NOERROR, true, payload_limit)
+            };
+            dns_reply_or_servfail(query, response)
+        }
+    }
 }
 
 fn dns_reply_or_servfail(query: &[u8], response: Option<Bytes>) -> DnsMessageOutcome {

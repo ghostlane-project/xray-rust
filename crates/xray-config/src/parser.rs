@@ -1052,6 +1052,7 @@ impl Parser<'_> {
             .collect();
         if parsed.len() == outbounds.len() {
             self.resolve_fragment_dialer_proxies(outbounds, &mut parsed);
+            self.validate_dns_forward_targets(&parsed);
         }
         for (index, outbound) in parsed.iter().enumerate() {
             self.validate_tcp_fragment_scope(outbound, index);

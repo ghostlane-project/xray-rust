@@ -26,6 +26,7 @@ use xray_tun::{TunConfig, TunEndpoint};
 mod connection;
 mod debug_log;
 mod dns;
+mod dns_forward;
 mod dns_outbound;
 mod dns_outbound_runtime;
 mod fake_dns;
@@ -1306,7 +1307,8 @@ impl Core {
                 fake_ip_mapper,
                 Arc::clone(&self.dns_rules.static_hosts),
                 dns_limits.max_concurrent_operations,
-            ),
+            )
+            .with_forward_router(Arc::clone(outbound_router)),
         );
         dns::RuntimeDnsResolvers {
             destination,
