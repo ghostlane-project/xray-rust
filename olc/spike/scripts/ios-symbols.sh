@@ -10,12 +10,13 @@
 set -euo pipefail
 f=${1:?archive or binary}
 # Strong definitions only: a weak one (an inline C++ template BoringSSL's own objects each
-# emit, `weak external` to ld64, W/V to GNU nm) is coalesced by every linker and collides
-# with nothing; it is counted apart.
+# emit, `weak external` or `weak private external` to ld64, W/V to GNU nm) is coalesced by
+# every linker and collides with nothing; it is counted apart.
+weak_re=' weak (private )?external '
 if [ "$(uname)" = Darwin ]; then
   all=$(nm -gU -m "$f" 2>/dev/null | grep -E ' external _' || true)
-  syms=$(printf '%s\n' "$all" | grep -v ' weak external ' | awk '{print $NF}')
-  weak=$(printf '%s\n' "$all" | grep -c ' weak external ' || true)
+  syms=$(printf '%s\n' "$all" | grep -Ev "$weak_re" | awk '{print $NF}' || true)
+  weak=$(printf '%s\n' "$all" | grep -cE "$weak_re" || true)
 else
   all=$(nm -g --defined-only "$f" 2>/dev/null | awk 'NF==3' || true)
   syms=$(printf '%s\n' "$all" | awk '$2!~/^[WVwv]$/{print $3}')
@@ -34,9 +35,9 @@ printf '%s\n' "$dups" | grep . | head -50 | sed 's/^/DUP /' || true
 # What a duplicate is made of, for the first few: the members that define it.
 if [ "$ndup" -gt 0 ] && [ "$(uname)" = Darwin ]; then
   for s in $(printf '%s\n' "$dups" | head -5); do
-    echo "DUP_MEMBERS $s: $(nm -gU -A -m "$f" 2>/dev/null | grep -F " $s" | grep -v ' weak external ' | awk -F: '{print $1":"$2}' | sort -u | tr '\n' ' ')"
-    # How ld64 sees each definition (its section and binding: a coalesced C++ inline is in
-    # __TEXT,__text as a weak definition, which -all_load accepts).
-    nm -gU -A -m "$f" 2>/dev/null | grep -F " $s" | sed 's/^/DUP_NM /' | head -3
+    echo "DUP_MEMBERS $s: $(nm -gU -A -m "$f" 2>/dev/null | grep -F " $s" | grep -Ev "$weak_re" | awk -F: '{print $1":"$2}' | sort -u | tr '\n' ' ' || true)"
+    # How ld64 sees each definition (its section and binding). `head` closing the pipe is
+    # not a failure of the probe.
+    nm -gU -A -m "$f" 2>/dev/null | grep -F " $s" | sed 's/^/DUP_NM /' | head -3 || true
   done
 fi
