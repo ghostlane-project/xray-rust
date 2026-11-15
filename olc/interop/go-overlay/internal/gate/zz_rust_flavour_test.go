@@ -185,6 +185,9 @@ type rustConfig struct {
 	// MaxJoins caps the joins the client starts on the carrier, rejoins
 	// included (the live step's budget); 0 is no cap.
 	MaxJoins int `json:"max_joins,omitempty"`
+	// Debug turns the client's debug lines on (the live step: the ALPN its
+	// dials were answered with and the DTLS it negotiated).
+	Debug bool `json:"debug,omitempty"`
 }
 
 // rustClient runs the Rust client as a child process; its stderr is the

@@ -65,12 +65,13 @@ pub fn install(fingerprint: &str) -> io::Result<()> {
     set_tls_connector(Some(Arc::new(
         move |tcp: TcpStream, host: String, offer: Offer| -> TlsFuture {
             let tls = tls.clone();
-            let cfg = client_config(host, offer, &normalized);
+            let cfg = client_config(host.clone(), offer, &normalized);
             Box::pin(async move {
                 let (stream, picked) = tls
                     .connect_stream_with_alpn(Box::new(tcp), &cfg)
                     .await
                     .map_err(|e| io::Error::other(e.to_string()))?;
+                crate::debug!("{}", alpn_line(&host, offer, picked.as_deref()));
                 Ok(Dialed {
                     stream: Box::new(stream) as BoxStream,
                     h2: offer == Offer::Fetch && picked.as_deref() == Some(b"h2".as_slice()),
@@ -79,6 +80,19 @@ pub fn install(fingerprint: &str) -> io::Result<()> {
         },
     )));
     Ok(())
+}
+
+/// The debug line a dial writes: the protocol the server picked of the
+/// ones offered.
+fn alpn_line(host: &str, offer: Offer, picked: Option<&[u8]>) -> String {
+    let offered = alpn(offer).join(",");
+    match picked {
+        Some(p) => format!(
+            "tls: {host}: ALPN {} picked of {offered}",
+            String::from_utf8_lossy(p)
+        ),
+        None => format!("tls: {host}: no ALPN picked of {offered}"),
+    }
 }
 
 /// The profile's normalized name, as the connector takes it; `unsafe` (no
@@ -98,6 +112,22 @@ fn xray_utls_name(fingerprint: &str) -> io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dial_says_the_protocol_the_server_picked() {
+        assert_eq!(
+            alpn_line("bk.example", Offer::Fetch, Some(b"h2")),
+            "tls: bk.example: ALPN h2 picked of h2,http/1.1"
+        );
+        assert_eq!(
+            alpn_line("ws.example", Offer::WebSocket, Some(b"http/1.1")),
+            "tls: ws.example: ALPN http/1.1 picked of http/1.1"
+        );
+        assert_eq!(
+            alpn_line("x.example", Offer::Fetch, None),
+            "tls: x.example: no ALPN picked of h2,http/1.1"
+        );
+    }
 
     /// The body of a ClientHello record's extension `kind`.
     fn extension(hello: &[u8], kind: u16) -> Option<&[u8]> {

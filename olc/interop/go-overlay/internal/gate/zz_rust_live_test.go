@@ -68,6 +68,10 @@ func TestGateRustLive(t *testing.T) {
 		extra: func(cfg *rustConfig) {
 			cfg.Provider = providerSaluteJazz
 			cfg.MaxJoins = 1
+			// What the run is for besides the cells: the preconnect's ALPN
+			// (tls: ... picked) and the DTLS line. The gate scrubs the room
+			// and the key from what it keeps.
+			cfg.Debug = true
 		}}}
 	clients := []Client{rust}
 	if !*gateRustOnly {
