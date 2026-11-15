@@ -1,11 +1,12 @@
 use std::cmp;
-use std::io;
+use std::io::{self, IoSlice};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{Buf, BytesMut};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+use super::vision::{FrameHead, FRAME_HEAD_MAX};
 use super::{unpad_vision_block, VisionCommand, VisionError, VisionPadding};
 
 const HEADER_LEN: usize = 5;
@@ -19,6 +20,12 @@ const TLS_13_SUPPORTED_VERSIONS: [u8; 6] = [0x00, 0x2b, 0x00, 0x02, 0x03, 0x04];
 const TLS_HANDSHAKE_TYPE_CLIENT_HELLO: u8 = 0x01;
 const TLS_HANDSHAKE_TYPE_SERVER_HELLO: u8 = 0x02;
 const TLS_AES_128_CCM_8_SHA256: u16 = 0x1305;
+/// Padding goes out of this, a piece at a time: it is zeros.
+const PADDING_ZEROS_LEN: usize = 4 * 1024;
+static PADDING_ZEROS: [u8; PADDING_ZEROS_LEN] = [0; PADDING_ZEROS_LEN];
+/// The slices of one frame write: its head, its payload and its padding,
+/// at most `u16::MAX` zeros.
+const FRAME_SLICES: usize = 2 + MAX_CONTENT_LEN.div_ceil(PADDING_ZEROS_LEN);
 
 /// Whether the bytes a stream has yet to return are a TCP socket's, unchanged.
 ///
@@ -112,12 +119,134 @@ where
     }
 }
 
+/// What a padded frame still has to hand the carrier: the rest of its head,
+/// the payload still to come from the writer and its padding.
+///
+/// No byte of the payload is copied. It goes from the writer's own buffer,
+/// beside the head and the padding, in the one write a frame in a buffer of
+/// its own would have been: gathered when the carrier gathers, so a TLS
+/// session seals the same records. A frame holds 28 bytes however large its
+/// payload, where a copy held the payload and the padding, up to 64 KiB
+/// and as much again, outside the byte budget, for as long as the carrier
+/// waited.
+#[derive(Debug, Clone, Copy)]
+struct FrameTail {
+    head: [u8; FRAME_HEAD_MAX],
+    head_from: u8,
+    head_to: u8,
+    payload: u16,
+    padding: u16,
+}
+
+impl FrameTail {
+    fn new(head: FrameHead, payload: usize) -> Self {
+        let bytes = head.bytes();
+        let mut tail = Self {
+            head: [0; FRAME_HEAD_MAX],
+            head_from: 0,
+            head_to: bytes.len() as u8,
+            payload: payload as u16,
+            padding: head.padding_len,
+        };
+        tail.head[..bytes.len()].copy_from_slice(bytes);
+        tail
+    }
+
+    fn head(&self) -> &[u8] {
+        &self.head[usize::from(self.head_from)..usize::from(self.head_to)]
+    }
+
+    /// Whether any byte of the frame has gone. A head always goes first.
+    fn started(&self) -> bool {
+        self.head_from > 0
+    }
+
+    fn is_done(&self) -> bool {
+        self.head_from == self.head_to && self.payload == 0 && self.padding == 0
+    }
+
+    /// The carrier took `written` bytes of a write of the rest of the head,
+    /// `payload` bytes of payload and `padding` zeros: the payload bytes
+    /// among them.
+    fn advance(&mut self, written: usize, payload: usize, padding: usize) -> io::Result<usize> {
+        let head = self.head().len();
+        if written == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "failed to write vision frame",
+            ));
+        }
+        if written > head + payload + padding {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the carrier took more than the vision frame gave it",
+            ));
+        }
+        let from_head = written.min(head);
+        let from_payload = (written - from_head).min(payload);
+        let from_padding = written - from_head - from_payload;
+        self.head_from += from_head as u8;
+        self.payload -= from_payload as u16;
+        self.padding -= from_padding as u16;
+        Ok(from_payload)
+    }
+}
+
+/// One carrier write of `head`, `payload` and `padding` zeros: the bytes a
+/// frame in a buffer of its own would hold there. A carrier that gathers
+/// gets them as slices; one that does not gets a copy for this call only,
+/// gone before it returns, unless there is one piece to write.
+fn poll_write_parts<S: AsyncWrite + Unpin>(
+    inner: &mut S,
+    cx: &mut Context<'_>,
+    head: &[u8],
+    payload: &[u8],
+    padding: usize,
+) -> Poll<io::Result<usize>> {
+    let pieces = usize::from(!head.is_empty())
+        + usize::from(!payload.is_empty())
+        + usize::from(padding > 0);
+    if pieces <= 1 && padding <= PADDING_ZEROS_LEN {
+        let piece = if !head.is_empty() {
+            head
+        } else if !payload.is_empty() {
+            payload
+        } else {
+            &PADDING_ZEROS[..padding]
+        };
+        return Pin::new(inner).poll_write(cx, piece);
+    }
+    if inner.is_write_vectored() {
+        let mut slices = [IoSlice::new(&[]); FRAME_SLICES];
+        let mut len = 0;
+        for part in [head, payload] {
+            if !part.is_empty() {
+                slices[len] = IoSlice::new(part);
+                len += 1;
+            }
+        }
+        let mut zeros = padding;
+        while zeros > 0 {
+            let piece = zeros.min(PADDING_ZEROS_LEN);
+            slices[len] = IoSlice::new(&PADDING_ZEROS[..piece]);
+            len += 1;
+            zeros -= piece;
+        }
+        return Pin::new(inner).poll_write_vectored(cx, &slices[..len]);
+    }
+    let mut frame = Vec::with_capacity(head.len() + payload.len() + padding);
+    frame.extend_from_slice(head);
+    frame.extend_from_slice(payload);
+    frame.resize(frame.len() + padding, 0);
+    Pin::new(inner).poll_write(cx, &frame)
+}
+
 pub struct VisionStream<S> {
     inner: S,
     user_id: [u8; USER_ID_LEN],
     padding: VisionPadding,
-    pending_write: BytesMut,
-    pending_write_len: usize,
+    /// The padded frame being written.
+    frame: Option<FrameTail>,
     pending_direct_write_mode: bool,
     pending_end_write_mode: bool,
     raw_read: BytesMut,
@@ -142,8 +271,7 @@ impl<S> VisionStream<S> {
             inner,
             user_id,
             padding: VisionPadding::new(user_id, seed),
-            pending_write: BytesMut::new(),
-            pending_write_len: 0,
+            frame: None,
             pending_direct_write_mode: false,
             pending_end_write_mode: false,
             raw_read: BytesMut::new(),
@@ -171,8 +299,9 @@ impl<S> VisionStream<S> {
         &self.inner
     }
 
+    /// Queues a frame with no payload, which the next flush sends.
     pub fn queue_empty_padding_frame(&mut self) -> io::Result<()> {
-        self.queue_padded_write(&[], VisionCommand::Continue, true)
+        self.start_frame(0, VisionCommand::Continue, true)
     }
 
     fn fill_output(&mut self, output: &mut ReadBuf<'_>) -> bool {
@@ -191,15 +320,22 @@ impl<S> VisionStream<S> {
         true
     }
 
-    fn queue_padded_write(
+    /// Starts a padded frame for the next `content_len` bytes written.
+    fn start_frame(
         &mut self,
-        input: &[u8],
+        content_len: usize,
         command: VisionCommand,
         long_padding: bool,
     ) -> io::Result<()> {
-        self.padding
-            .pad_into_with_long_padding(input, command, long_padding, 0, &mut self.pending_write)
-            .map_err(vision_to_io)
+        if self.frame.is_some() {
+            return Err(io::Error::other("a vision frame is still being written"));
+        }
+        let head = self
+            .padding
+            .frame_head(content_len, command, long_padding, 0)
+            .map_err(vision_to_io)?;
+        self.frame = Some(FrameTail::new(head, content_len));
+        Ok(())
     }
 
     fn next_frame_len(&self) -> io::Result<Option<usize>> {
@@ -351,25 +487,74 @@ where
         }
     }
 
-    fn poll_drain_pending(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        while !self.pending_write.is_empty() {
-            let written =
-                std::task::ready!(Pin::new(&mut self.inner).poll_write(cx, &self.pending_write))?;
-            if written == 0 {
-                return Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::WriteZero,
-                    "failed to write vision frame",
-                )));
+    /// Writes the frame with the writer's `input` as its payload: the rest
+    /// of its head, as much of `input` as the frame takes and, with the
+    /// payload's last byte, its padding. Returns the bytes of `input` the
+    /// carrier took, which are 0 only for an empty `input`. A frame done
+    /// switches the stream as its command asks.
+    fn poll_write_frame(&mut self, cx: &mut Context<'_>, input: &[u8]) -> Poll<io::Result<usize>> {
+        loop {
+            let Some(frame) = self.frame.as_mut() else {
+                return Poll::Ready(Ok(0));
+            };
+            let payload = &input[..input.len().min(usize::from(frame.payload))];
+            if payload.is_empty() {
+                return Poll::Ready(Ok(0));
             }
-
-            self.pending_write.advance(written);
+            let padding = if payload.len() == usize::from(frame.payload) {
+                usize::from(frame.padding)
+            } else {
+                0
+            };
+            let written = std::task::ready!(poll_write_parts(
+                &mut self.inner,
+                cx,
+                frame.head(),
+                payload,
+                padding
+            ))?;
+            let took = frame.advance(written, payload.len(), padding)?;
+            if frame.is_done() {
+                self.frame = None;
+                // A switch whose flush waits is finished by the next call.
+                if let Poll::Ready(Err(error)) = self.poll_switch(cx) {
+                    return Poll::Ready(Err(error));
+                }
+            }
+            if took > 0 {
+                return Poll::Ready(Ok(took));
+            }
         }
-        // The frame is written: its copy, up to 64 KiB and its padding, goes
-        // now rather than stay with the flow for its life, whatever its
-        // capacity reads. A frame fills what it reserved, so once written the
-        // buffer reads capacity 0 and still holds the allocation.
-        self.pending_write = BytesMut::new();
+    }
 
+    /// Finishes a frame whose payload has all gone, its head when it has no
+    /// payload and its padding, then switches as its command asks. A frame
+    /// still owed payload waits for the writer.
+    fn poll_finish_frame(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        while let Some(frame) = self.frame.as_mut() {
+            if frame.payload > 0 {
+                return Poll::Ready(Ok(()));
+            }
+            let padding = usize::from(frame.padding);
+            let written = std::task::ready!(poll_write_parts(
+                &mut self.inner,
+                cx,
+                frame.head(),
+                &[],
+                padding
+            ))?;
+            frame.advance(written, 0, padding)?;
+            if frame.is_done() {
+                self.frame = None;
+            }
+        }
+        self.poll_switch(cx)
+    }
+
+    /// Once the frame that ends padding is written: on `Direct`, flushes
+    /// the session that carried it and writes past it from then on; on
+    /// `End`, writes unpadded.
+    fn poll_switch(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         if self.pending_direct_write_mode {
             std::task::ready!(Pin::new(&mut self.inner).poll_flush(cx))?;
             self.padding_write_mode = false;
@@ -459,18 +644,11 @@ where
     ) -> Poll<io::Result<usize>> {
         let this = self.get_mut();
 
-        if !this.pending_write.is_empty()
-            || this.pending_direct_write_mode
-            || this.pending_end_write_mode
-        {
-            std::task::ready!(this.poll_drain_pending(cx))?;
+        // A frame begun is owed the writer's next bytes as its payload.
+        if this.frame.is_some_and(|frame| frame.payload > 0) {
+            return this.poll_write_frame(cx, input);
         }
-
-        if this.pending_write_len != 0 {
-            let accepted_len = this.pending_write_len;
-            this.pending_write_len = 0;
-            return Poll::Ready(Ok(accepted_len));
-        }
+        std::task::ready!(this.poll_finish_frame(cx))?;
 
         if this.direct_write_mode {
             return Pin::new(&mut this.inner).poll_write_direct(cx, input);
@@ -488,30 +666,25 @@ where
         this.filter_tls_packet(input);
         if this.is_tls && is_complete_tls_application_data_records(input) {
             if this.enable_xtls {
-                this.queue_padded_write(input, VisionCommand::Direct, true)?;
+                this.start_frame(accepted_len, VisionCommand::Direct, true)?;
                 this.pending_direct_write_mode = true;
             } else {
-                this.queue_padded_write(input, VisionCommand::End, true)?;
+                this.start_frame(accepted_len, VisionCommand::End, true)?;
                 this.pending_end_write_mode = true;
             }
         } else if !this.is_tls12_or_above && this.packets_to_filter <= 1 {
-            this.queue_padded_write(input, VisionCommand::End, this.is_tls)?;
+            this.start_frame(accepted_len, VisionCommand::End, this.is_tls)?;
             this.pending_end_write_mode = true;
         } else {
-            this.queue_padded_write(input, VisionCommand::Continue, this.is_tls)?;
+            this.start_frame(accepted_len, VisionCommand::Continue, this.is_tls)?;
         }
-        this.pending_write_len = accepted_len;
 
-        std::task::ready!(this.poll_drain_pending(cx))?;
-
-        let accepted_len = this.pending_write_len;
-        this.pending_write_len = 0;
-        Poll::Ready(Ok(accepted_len))
+        this.poll_write_frame(cx, input)
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        std::task::ready!(this.poll_drain_pending(cx))?;
+        std::task::ready!(this.poll_finish_frame(cx))?;
         if this.direct_write_mode {
             Pin::new(&mut this.inner).poll_flush_direct(cx)
         } else {
@@ -521,7 +694,20 @@ where
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let this = self.get_mut();
-        std::task::ready!(this.poll_drain_pending(cx))?;
+        std::task::ready!(this.poll_finish_frame(cx))?;
+        if let Some(frame) = this.frame {
+            // Owed payload the writer never gave: a frame not begun goes,
+            // one begun cannot end.
+            if frame.started() {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "the stream shut down inside a vision frame",
+                )));
+            }
+            this.frame = None;
+            this.pending_direct_write_mode = false;
+            this.pending_end_write_mode = false;
+        }
         if this.direct_write_mode {
             Pin::new(&mut this.inner).poll_shutdown_direct(cx)
         } else {
@@ -570,7 +756,7 @@ mod tests {
     ];
 
     #[tokio::test]
-    async fn a_written_frame_leaves_no_copy_behind() {
+    async fn a_written_frame_leaves_nothing_behind() {
         let (inner, mut peer) = tokio::io::duplex(256 * 1024);
         let mut stream = VisionStream::new(inner, USER_ID, DEFAULT_SEED);
         let payload = vec![7u8; 64 * 1024];
@@ -580,32 +766,58 @@ mod tests {
             .unwrap();
 
         assert!(stream.padding_write_mode, "the frames were padded");
-        assert!(!stream.pending_write.try_reclaim(1));
+        assert!(stream.frame.is_none(), "a written frame is kept");
         let mut written = vec![0; USER_ID_LEN + HEADER_LEN];
         peer.read_exact(&mut written).await.unwrap();
         assert_eq!(&written[..USER_ID_LEN], &USER_ID);
     }
 
+    /// While the carrier waits, a padded write holds its frame's head and
+    /// three counts, and none of the writer's bytes: the stream has no
+    /// buffer to hold them in. The bytes go once the carrier takes them.
     #[tokio::test]
-    async fn a_frame_that_filled_its_reservation_leaves_no_buffer_once_written() {
-        // A frame reserves its exact length, so once it is written the buffer
-        // reads capacity 0 whether or not it still holds the allocation; only
-        // a buffer that holds one can reclaim from it.
-        let (inner, mut peer) = tokio::io::duplex(64 * 1024);
+    async fn a_padded_write_that_waits_holds_none_of_its_bytes() {
+        let (inner, mut peer) = tokio::io::duplex(1024);
         let mut stream = VisionStream::new(inner, USER_ID, DEFAULT_SEED);
+        let payload: Vec<u8> = (0..32 * 1024).map(|at| at as u8).collect();
+        let mut cx = Context::from_waker(std::task::Waker::noop());
 
-        tokio::io::AsyncWriteExt::write_all(&mut stream, &[7u8; 4096])
+        let mut written = 0;
+        while let Poll::Ready(len) = Pin::new(&mut stream).poll_write(&mut cx, &payload[written..])
+        {
+            written += len.unwrap();
+        }
+        let frame = stream.frame.expect("the frame waits for the carrier");
+        assert!(written < payload.len() && frame.started());
+        assert_eq!(
+            usize::from(frame.payload),
+            payload.len() - written,
+            "the frame is owed the bytes the carrier has not taken"
+        );
+
+        let reader = tokio::spawn(async move {
+            let mut wire = Vec::new();
+            peer.read_to_end(&mut wire).await.unwrap();
+            wire
+        });
+        tokio::io::AsyncWriteExt::write_all(&mut stream, &payload[written..])
             .await
             .unwrap();
+        tokio::io::AsyncWriteExt::shutdown(&mut stream)
+            .await
+            .unwrap();
+        drop(stream);
+        let wire = reader.await.unwrap();
+        let block = unpad_vision_block(&wire, &USER_ID).unwrap();
+        assert_eq!(&block.payload[..], &payload[..]);
+    }
 
-        assert!(stream.padding_write_mode, "the frame was padded");
-        assert!(
-            !stream.pending_write.try_reclaim(1),
-            "the written frame's buffer is still held"
-        );
-        let mut written = vec![0; USER_ID_LEN + HEADER_LEN];
-        peer.read_exact(&mut written).await.unwrap();
-        assert_eq!(&written[..USER_ID_LEN], &USER_ID);
+    /// A frame being written costs its stream 30 bytes or so, whatever its
+    /// payload: its head and three counts.
+    #[test]
+    fn a_frame_being_written_holds_its_head_and_counts() {
+        let size = std::mem::size_of::<Option<FrameTail>>();
+        assert!(size <= 32, "a frame being written is {size} B");
     }
 
     #[tokio::test]

@@ -1,8 +1,10 @@
 //! The bytes a Vision stream hands its carrier, pinned for fixed padding
 //! draws: every carrier call in order, with what it was offered and what it
 //! took, every flush and every wait. A TLS session seals each write it takes
-//! into its own records, so the same calls with the same bytes are the same
-//! records on the wire.
+//! into its own records, and a gathered write into the records of the same
+//! bytes written at once (xray-transport's `tls_send` tests,
+//! `a_gathered_write_seals_the_records_of_one_write`), so the same calls
+//! with the same bytes are the same records on the wire.
 //!
 //! The digests were taken from the stream as it was before its padded writes
 //! stopped copying their input (`2c7ade20`, which copied each frame whole

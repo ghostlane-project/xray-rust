@@ -210,6 +210,9 @@ mod tests {
         closed: bool,
         waiting: Option<Waker>,
         taken: usize,
+        /// The length of each write the carrier took. tokio-rustls hands it
+        /// a record a write, as the carrier does not gather.
+        writes: Vec<usize>,
     }
 
     impl Gate {
@@ -230,6 +233,10 @@ mod tests {
 
         fn taken(&self) -> usize {
             self.0.lock().unwrap().taken
+        }
+
+        fn writes(&self) -> Vec<usize> {
+            self.0.lock().unwrap().writes.clone()
         }
 
         /// `Pending` while the gate is closed, remembering `cx` to wake.
@@ -268,7 +275,9 @@ mod tests {
         ) -> Poll<io::Result<usize>> {
             std::task::ready!(self.gate.poll_open(cx));
             let written = std::task::ready!(Pin::new(&mut self.io).poll_write(cx, buf))?;
-            self.gate.0.lock().unwrap().taken += written;
+            let mut gate = self.gate.0.lock().unwrap();
+            gate.taken += written;
+            gate.writes.push(written);
             Poll::Ready(Ok(written))
         }
 
@@ -488,6 +497,58 @@ mod tests {
                         .collect();
                     assert!(arrived == expected, "{case}: the bytes arrived changed");
                 }
+            }
+        }
+    }
+
+    /// A write gathered from slices seals the records the same bytes written
+    /// at once seal: the session takes a gathered write as one run of
+    /// plaintext and cuts its records across the slices' edges. Vision hands
+    /// a padded frame to its session as slices: its head, the writer's bytes
+    /// and its padding out of a block of zeros (xray-proxy's `VisionStream`).
+    #[tokio::test]
+    async fn a_gathered_write_seals_the_records_of_one_write() {
+        // A frame's head and user ID, a payload, and padding in 4 KiB pieces.
+        let frames: [&[usize]; 3] = [&[21, 3], &[21, 20_000, 4_096, 1_303], &[5, 65_535, 4_096]];
+        for path in [Path::Plain, Path::Penetrating] {
+            for pieces in frames {
+                let len: usize = pieces.iter().sum();
+                let bytes: Vec<u8> = (0..len).map(|i| i as u8).collect();
+                let mut records = Vec::new();
+                for gathered in [false, true] {
+                    let (mut client, mut server, gate) = connected(path).await;
+                    let before = gate.writes().len();
+                    if gathered {
+                        let mut slices = Vec::new();
+                        let mut from = 0;
+                        for piece in pieces {
+                            slices.push(IoSlice::new(&bytes[from..from + piece]));
+                            from += piece;
+                        }
+                        let written = client.write_vectored(&slices).await.expect("write");
+                        assert_eq!(written, bytes.len(), "{path:?}: the session took it whole");
+                    } else {
+                        client.write_all(&bytes).await.expect("write");
+                    }
+                    client.flush().await.expect("flush");
+                    records.push(gate.writes()[before..].to_vec());
+                    let mut arrived = vec![0; bytes.len()];
+                    server.read_exact(&mut arrived).await.expect("read");
+                    assert!(
+                        arrived == bytes,
+                        "{path:?}, {pieces:?}: the bytes arrived changed"
+                    );
+                }
+                assert_eq!(
+                    records[1], records[0],
+                    "{path:?}, {pieces:?}: the records of a gathered write"
+                );
+                let sealed: usize = records[0].iter().sum();
+                assert_eq!(
+                    sealed,
+                    records_len(len),
+                    "{path:?}, {pieces:?}: the records' bytes"
+                );
             }
         }
     }

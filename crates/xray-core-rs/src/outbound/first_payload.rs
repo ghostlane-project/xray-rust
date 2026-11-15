@@ -10,8 +10,14 @@
 //! instead gives the first record a fixed, header-only size.
 use super::*;
 use std::future::Future;
+use std::io::IoSlice;
 use std::task::ready;
 use tokio::time::Sleep;
+
+/// The slices a held header gathers behind itself in the first write:
+/// more than a Vision frame's (its head, its payload and its padding in
+/// 4 KiB pieces, 18 at most).
+const HELD_GATHER: usize = 31;
 
 /// Xray-core's VLESS wait for the first payload
 /// (`ReadMultiBufferTimeout(time.Millisecond * 500)`).
@@ -33,6 +39,12 @@ pub(super) const SHADOWSOCKS_2022_FIRST_PAYLOAD_WAIT: Duration = Duration::ZERO;
 /// The header and the first payload are handed to the carrier in a single
 /// `poll_write`, which TLS seals into a single record. A flush or shutdown
 /// before any payload sends the header alone.
+///
+/// A first payload written vectored to a carrier that gathers goes behind
+/// the header as slices of its own, the same bytes in the same write, and
+/// is not copied: until the carrier takes it, the write waits and nothing
+/// of it is held here. Vision writes its padded frames so. A first payload
+/// written whole is copied behind the header and taken at once, as before.
 pub(super) struct HeldHeader {
     inner: BoxedTransportStream,
     pending: Zeroizing<Vec<u8>>,
@@ -60,6 +72,14 @@ impl HeldHeader {
             capture: true,
             ..Self::new(inner, &[])
         }
+    }
+
+    /// The header is handed over: its copy goes, and writes pass through.
+    fn merge_done(&mut self) {
+        self.merged = true;
+        // Wipe the header copy as soon as it has been handed over.
+        self.pending = Zeroizing::new(Vec::new());
+        self.pending_pos = 0;
     }
 
     fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -114,6 +134,56 @@ impl AsyncWrite for HeldHeader {
         }
         ready!(this.poll_drain(cx))?;
         Pin::new(&mut *this.inner).poll_write(cx, input)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        inputs: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        let has_bytes = inputs.iter().any(|input| !input.is_empty());
+        if this.capture || !has_bytes || !this.inner.is_write_vectored() {
+            // What `poll_write` takes of a vectored write: its first slice
+            // with bytes.
+            let first = inputs
+                .iter()
+                .find(|input| !input.is_empty())
+                .map_or(&[][..], |input| &**input);
+            return Pin::new(this).poll_write(cx, first);
+        }
+        if this.merged {
+            ready!(this.poll_drain(cx))?;
+            return Pin::new(&mut *this.inner).poll_write_vectored(cx, inputs);
+        }
+        loop {
+            let header = &this.pending[this.pending_pos..];
+            if header.is_empty() {
+                this.merge_done();
+                return Pin::new(&mut *this.inner).poll_write_vectored(cx, inputs);
+            }
+            let header_len = header.len();
+            // A vectored write may take less than it is offered: slices past
+            // `HELD_GATHER` wait for the next write.
+            let gathered = inputs.len().min(HELD_GATHER);
+            let mut slices = [IoSlice::new(&[]); HELD_GATHER + 1];
+            slices[0] = IoSlice::new(header);
+            slices[1..=gathered].copy_from_slice(&inputs[..gathered]);
+            let written =
+                ready!(Pin::new(&mut *this.inner).poll_write_vectored(cx, &slices[..=gathered]))?;
+            if written == 0 {
+                return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
+            }
+            if written > header_len {
+                this.merge_done();
+                return Poll::Ready(Ok(written - header_len));
+            }
+            this.pending_pos += written;
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -312,7 +382,6 @@ pub(super) fn flush_header_alone<S>(_: &mut S) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::IoSlice;
     use std::sync::Mutex;
     use tokio::io::AsyncReadExt;
 
