@@ -1901,6 +1901,12 @@ name = "olc-net"
 version = "0.10.0"
 dependencies = [
  "base64 0.23.1",
+ "boring",
+ "boring-sys",
+ "bytes",
+ "foreign-types",
+ "h2",
+ "http",
  "libc",
  "rand 0.8.6",
  "sha1",
@@ -2476,7 +2482,7 @@ dependencies = [
 [[package]]
 name = "rustls"
 version = "0.23.40"
-source = "git+https://github.com/ghostlane-project/shaped-rustls?rev=b0dc21a75980bc575ff4666f3bd90be64bd8c0d4#b0dc21a75980bc575ff4666f3bd90be64bd8c0d4"
+source = "git+https://github.com/ghostlane-project/shaped-rustls?rev=6d024710179fe4b5b79fcf21a1fda9af00b0b1db#6d024710179fe4b5b79fcf21a1fda9af00b0b1db"
 dependencies = [
  "aws-lc-rs",
  "brotli",

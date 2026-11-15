@@ -14,7 +14,8 @@ mod utls_tls_shaping_tests {
     use tokio_rustls::TlsAcceptor;
     use xray_routing::{Network, Target, TargetAddr};
     use xray_transport::{
-        plain_tls_client_hello_bytes, TlsClientConfig, TlsConnector, TransportError,
+        browser_tls_client_hello_bytes, plain_tls_client_hello_bytes, TlsClientConfig,
+        TlsConnector, TransportError,
     };
 
     use crate::client_hello_draws::{self, shuffles};
@@ -28,6 +29,8 @@ mod utls_tls_shaping_tests {
     const EXT_SUPPORTED_VERSIONS: u16 = 0x002b;
     const EXT_KEY_SHARE: u16 = 0x0033;
     const EXT_ENCRYPTED_CLIENT_HELLO: u16 = 0xfe0d;
+    const EXT_APPLICATION_SETTINGS_OLD: u16 = 0x4469;
+    const EXT_APPLICATION_SETTINGS: u16 = 0x44cd;
     const GROUP_X25519: u16 = 0x001d;
     const GROUP_SECP256R1: u16 = 0x0017;
     const CHROME_PROVIDER_SUPPORTED_CIPHERS: &[u16] = &[
@@ -438,6 +441,99 @@ mod utls_tls_shaping_tests {
             .expect("android ClientHello must be produced");
 
         assert_eq!(alpn_protocols(&hello), alpn(&["http/1.1"]));
+    }
+
+    /// The non-GREASE extension types of a ClientHello record, padding left
+    /// out (its length follows the rest), in a set: a profile that shuffles
+    /// draws a new order per hello.
+    fn extension_type_set(hello: &[u8]) -> BTreeSet<u16> {
+        let mut cursor = 5 + 4 + 2 + 32;
+        cursor += 1 + usize::from(hello[cursor]);
+        cursor += 2 + usize::from(u16::from_be_bytes([hello[cursor], hello[cursor + 1]]));
+        cursor += 1 + usize::from(hello[cursor]);
+        let end = cursor + 2 + usize::from(u16::from_be_bytes([hello[cursor], hello[cursor + 1]]));
+        cursor += 2;
+        let mut types = BTreeSet::new();
+        while cursor + 4 <= end {
+            let extension_type = u16::from_be_bytes([hello[cursor], hello[cursor + 1]]);
+            cursor += 4 + usize::from(u16::from_be_bytes([hello[cursor + 2], hello[cursor + 3]]));
+            let grease =
+                extension_type & 0x0f0f == 0x0a0a && extension_type >> 8 == extension_type & 0xff;
+            if !grease && extension_type != EXT_PADDING {
+                types.insert(extension_type);
+            }
+        }
+        types
+    }
+
+    /// ALPS's protocols: a u16-prefixed list of u8-prefixed names, as ALPN's.
+    fn alps_protocols(hello: &[u8], codepoint: u16) -> Option<Vec<String>> {
+        let payload = extension_payload(hello, codepoint)?;
+        let mut protocols = Vec::new();
+        let mut offset = 2;
+        while offset < payload.len() {
+            let len = usize::from(payload[offset]);
+            protocols
+                .push(String::from_utf8_lossy(&payload[offset + 1..offset + 1 + len]).into_owned());
+            offset += 1 + len;
+        }
+        Some(protocols)
+    }
+
+    /// uTLS keeps a profile's ALPS whatever the ALPN, and so does Xray's
+    /// path: the websocket-ALPN oracle fixtures carry it beside `http/1.1`.
+    #[test]
+    fn the_raw_path_keeps_the_profiles_alps_whatever_the_alpn() {
+        for alpn_list in [&[][..], &["h2", "http/1.1"][..], &["http/1.1"][..]] {
+            let hello = plain_tls_client_hello_bytes(&config("chrome", alpn_list))
+                .expect("chrome ClientHello must be produced");
+            assert_eq!(
+                alps_protocols(&hello, EXT_APPLICATION_SETTINGS),
+                alpn(&["h2"]),
+                "{alpn_list:?}"
+            );
+            assert_eq!(alps_protocols(&hello, EXT_APPLICATION_SETTINGS_OLD), None);
+        }
+    }
+
+    /// A browser offers ALPS only for a protocol of its ALPN list: Chrome
+    /// 157's fetch and page loads offer it for `h2`, its WebSocket's
+    /// connection (`http/1.1` alone) offers none (ghostlane lab/olc-alps).
+    #[test]
+    fn a_browsers_hello_offers_alps_only_within_its_alpn() {
+        for alpn_list in [&[][..], &["h2", "http/1.1"][..]] {
+            let hello = browser_tls_client_hello_bytes(&config("chrome", alpn_list))
+                .expect("chrome ClientHello must be produced");
+            assert_eq!(alpn_protocols(&hello), alpn(&["h2", "http/1.1"]));
+            assert_eq!(
+                alps_protocols(&hello, EXT_APPLICATION_SETTINGS),
+                alpn(&["h2"]),
+                "{alpn_list:?}"
+            );
+        }
+        let hello = browser_tls_client_hello_bytes(&config("chrome", &["http/1.1"]))
+            .expect("chrome ClientHello must be produced");
+        assert_eq!(alpn_protocols(&hello), alpn(&["http/1.1"]));
+        assert_eq!(alps_protocols(&hello, EXT_APPLICATION_SETTINGS), None);
+        assert_eq!(alps_protocols(&hello, EXT_APPLICATION_SETTINGS_OLD), None);
+    }
+
+    /// Leaving ALPS out takes nothing else with it.
+    #[test]
+    fn a_browsers_http11_hello_is_the_raw_one_without_alps() {
+        let raw = plain_tls_client_hello_bytes(&config("chrome", &["http/1.1"]))
+            .expect("chrome ClientHello must be produced");
+        let browser = browser_tls_client_hello_bytes(&config("chrome", &["http/1.1"]))
+            .expect("chrome ClientHello must be produced");
+        let mut expected = extension_type_set(&raw);
+        assert!(expected.remove(&EXT_APPLICATION_SETTINGS));
+        assert_eq!(extension_type_set(&browser), expected);
+
+        let raw = plain_tls_client_hello_bytes(&config("chrome", &[]))
+            .expect("chrome ClientHello must be produced");
+        let browser = browser_tls_client_hello_bytes(&config("chrome", &[]))
+            .expect("chrome ClientHello must be produced");
+        assert_eq!(extension_type_set(&browser), extension_type_set(&raw));
     }
 
     /// The two assertions above state what the override *should* do; this one

@@ -12,7 +12,9 @@
 //! - [`ws`] and [`http`]: the clients a carrier's signalling speaks (the
 //!   SaluteJazz connector's WebSocket, its auth's HTTPS calls), over any
 //!   byte stream: plain TCP from [`net`], or TLS the host shapes (with the
-//!   `shaped-tls` feature, `shaped_tls::install` puts the fork's own in).
+//!   `shaped-tls` feature, `shaped_tls::install` puts the fork's own in);
+//!   [`fetch`] is a browser's `fetch` on top: `h2` or `http/1.1`, as the
+//!   server picks.
 //!
 //! Moved out of `olc-client` so the engines (`olc-rtc`, the carriers) share
 //! one protector and one log with the client.
@@ -21,6 +23,7 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod fetch;
 pub mod http;
 pub mod link;
 pub mod log;

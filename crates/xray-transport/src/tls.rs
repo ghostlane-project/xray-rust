@@ -351,6 +351,22 @@ impl TlsConnector {
             .await
     }
 
+    /// [`connect_stream`](Self::connect_stream) as a browser's own
+    /// connection, with the application protocol the server picked: a
+    /// client that offers `h2` and `http/1.1`, as a browser's `fetch` does,
+    /// speaks what the server chose. The shaped hello offers ALPS only for a
+    /// protocol of its ALPN list, as Chrome does
+    /// ([`browser_tls_client_hello_bytes`]).
+    pub async fn connect_stream_with_alpn(
+        &self,
+        stream: BoxedTransportStream,
+        config: &TlsClientConfig,
+    ) -> Result<(BoxedTransportStream, Option<Vec<u8>>), TransportError> {
+        let prepared = self.prepare_stream(config, TlsAlpnPolicy::Browser)?;
+        self.connect_prepared_stream_with_alpn(stream, prepared)
+            .await
+    }
+
     pub(crate) fn prepare_stream(
         &self,
         config: &TlsClientConfig,
@@ -985,7 +1001,21 @@ fn build_client_config(
 /// `build_client_config` with `TlsConnector` so the bytes the parity tests
 /// inspect stay the bytes a real connection sends.
 pub fn plain_tls_client_hello_bytes(config: &TlsClientConfig) -> Result<Vec<u8>, TransportError> {
-    let client_config = build_client_config(config, TlsAlpnPolicy::Raw)?;
+    first_flight(config, TlsAlpnPolicy::Raw)
+}
+
+/// The ClientHello [`TlsConnector::connect_stream_with_alpn`] sends, as
+/// [`plain_tls_client_hello_bytes`] gives a plain-TLS connection's: a
+/// browser's own, its ALPS offered only for a protocol of its ALPN list.
+pub fn browser_tls_client_hello_bytes(config: &TlsClientConfig) -> Result<Vec<u8>, TransportError> {
+    first_flight(config, TlsAlpnPolicy::Browser)
+}
+
+fn first_flight(
+    config: &TlsClientConfig,
+    alpn_policy: TlsAlpnPolicy,
+) -> Result<Vec<u8>, TransportError> {
+    let client_config = build_client_config(config, alpn_policy)?;
 
     let server_name = tls_server_name(config)?;
     let mut connection = ClientConnection::new(Arc::new(client_config), server_name)
