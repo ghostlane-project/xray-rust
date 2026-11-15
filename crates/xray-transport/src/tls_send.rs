@@ -155,7 +155,7 @@ impl TransportStream for TlsClientStream {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
+    use std::io::{self, IoSlice};
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll, Waker};
@@ -168,9 +168,10 @@ mod tests {
     use crate::utls_tls::TlsAlpnPolicy;
     use crate::{BoxedTransportStream, TlsClientConfig, TlsConnector, TransportStream};
 
-    /// A phone relay's largest write: `CONSTRAINED_READ` in the core's
-    /// relay memory tests.
-    const WRITE: usize = 32 * 1024;
+    /// Relay writes: a phone's largest (32 KiB, `CONSTRAINED_READ` in the
+    /// core's relay memory tests), and a desktop's default largest
+    /// (128 KiB), more than rustls's default limit of 64 KiB.
+    const WRITES: [usize; 2] = [32 * 1024, 128 * 1024];
 
     /// The bytes the TLS 1.3 records of `len` bytes of writes take: 22 B a
     /// record (a 5-byte header, the content type and a 16-byte tag) of at
@@ -353,76 +354,121 @@ mod tests {
         (client, server, gate)
     }
 
-    /// Writes of `WRITE` bytes into `stream`, whose carrier takes nothing,
-    /// until one waits: the bytes the session took, and those of them the
-    /// waiting write gave it.
-    fn write_until_one_waits(stream: &mut BoxedTransportStream, bytes: &[u8]) -> (usize, usize) {
+    /// How a write reaches the session.
+    #[derive(Clone, Copy, Debug)]
+    enum Call {
+        /// `poll_write`, as a relay writes.
+        Write,
+        /// `poll_write_vectored` over two slices, as h2 writes.
+        Vectored,
+    }
+
+    /// One poll of a write of `bytes` from `offset` on.
+    fn poll_write_from(
+        stream: &mut BoxedTransportStream,
+        cx: &mut Context<'_>,
+        bytes: &[u8],
+        offset: usize,
+        call: Call,
+    ) -> Poll<io::Result<usize>> {
+        match call {
+            Call::Write => Pin::new(&mut *stream).poll_write(cx, &bytes[offset..]),
+            Call::Vectored => {
+                let middle = bytes.len() / 2;
+                if offset < middle {
+                    let halves = [
+                        IoSlice::new(&bytes[offset..middle]),
+                        IoSlice::new(&bytes[middle..]),
+                    ];
+                    Pin::new(&mut *stream).poll_write_vectored(cx, &halves)
+                } else {
+                    let rest = [IoSlice::new(&bytes[offset..])];
+                    Pin::new(&mut *stream).poll_write_vectored(cx, &rest)
+                }
+            }
+        }
+    }
+
+    /// Writes of `bytes` into `stream`, whose carrier takes nothing, until
+    /// one waits: the bytes the session took, and those of them the waiting
+    /// write gave it.
+    fn write_until_one_waits(
+        stream: &mut BoxedTransportStream,
+        bytes: &[u8],
+        call: Call,
+    ) -> (usize, usize) {
         let mut cx = Context::from_waker(Waker::noop());
         let mut took = 0;
         loop {
             let mut offset = 0;
             while offset < bytes.len() {
-                match Pin::new(&mut *stream).poll_write(&mut cx, &bytes[offset..]) {
+                match poll_write_from(stream, &mut cx, bytes, offset, call) {
                     Poll::Ready(written) => offset += written.expect("the session takes the write"),
                     Poll::Pending => return (took + offset, offset),
                 }
             }
             took += bytes.len();
             assert!(
-                took <= 1 << 20,
+                took <= 4 << 20,
                 "the session took {took} B while its carrier took none"
             );
         }
     }
 
-    /// While its carrier takes nothing, a session takes one write: what it
-    /// holds to send is that write's records, whose bytes its writer counts
-    /// as written, and the write after it waits having given it nothing,
-    /// so no byte the writer still holds sits in the session too. Once the
-    /// carrier takes writes again, every byte arrives.
+    /// While its carrier takes nothing, a session takes one write, whole,
+    /// whatever its size: what it holds to send is that write's records,
+    /// whose bytes its writer counts as written, and the write after it
+    /// waits having given it nothing, so no byte the writer still holds
+    /// sits in the session too. Once the carrier takes writes again, every
+    /// byte arrives.
     #[tokio::test]
     async fn a_session_takes_a_write_once_its_records_have_gone() {
         for path in [Path::Plain, Path::Penetrating] {
-            let (mut client, mut server, gate) = connected(path).await;
-            let bytes: Vec<u8> = (0..WRITE).map(|i| i as u8).collect();
-            gate.close();
-            let (took, waiting) = write_until_one_waits(&mut client, &bytes);
-            assert!(
-                took <= WRITE && waiting == 0,
-                "{path:?}: while the carrier took nothing the session took {took} B, \
-                 {waiting} B of them from the write that waits; one {WRITE} B write at most, \
-                 none of the waiting one"
-            );
+            for write in WRITES {
+                for call in [Call::Write, Call::Vectored] {
+                    let case = format!("{path:?}, a {write} B write, {call:?}");
+                    let (mut client, mut server, gate) = connected(path).await;
+                    let bytes: Vec<u8> = (0..write).map(|i| i as u8).collect();
+                    gate.close();
+                    let (took, waiting) = write_until_one_waits(&mut client, &bytes, call);
+                    assert!(
+                        took <= write && waiting == 0,
+                        "{case}: while the carrier took nothing the session took {took} B, \
+                         {waiting} B of them from the write that waits; one write at most, \
+                         none of the waiting one"
+                    );
 
-            // What the session held to send: the records its flush hands
-            // the carrier once the carrier takes them.
-            let before = gate.taken();
-            gate.open();
-            let mut cx = Context::from_waker(Waker::noop());
-            assert!(
-                Pin::new(&mut client).poll_flush(&mut cx).is_ready(),
-                "{path:?}: the session's records fit the carrier"
-            );
-            let queued = gate.taken() - before;
-            assert!(
-                queued <= records_len(WRITE),
-                "{path:?}: the session held {queued} B to send; one {WRITE} B write's \
-                 records are {} B",
-                records_len(WRITE)
-            );
+                    // What the session held to send: the records its flush
+                    // hands the carrier once the carrier takes them.
+                    let before = gate.taken();
+                    gate.open();
+                    let mut cx = Context::from_waker(Waker::noop());
+                    assert!(
+                        Pin::new(&mut client).poll_flush(&mut cx).is_ready(),
+                        "{case}: the session's records fit the carrier"
+                    );
+                    let queued = gate.taken() - before;
+                    assert!(
+                        queued <= records_len(write),
+                        "{case}: the session held {queued} B to send; one write's records \
+                         are {} B",
+                        records_len(write)
+                    );
 
-            let writer = tokio::spawn(async move {
-                client.write_all(&bytes[waiting..]).await.expect("write");
-                client.flush().await.expect("flush");
-                client
-            });
-            let mut arrived = vec![0; took + WRITE - waiting];
-            server.read_exact(&mut arrived).await.expect("read");
-            let _client = writer.await.expect("writer");
-            let expected: Vec<u8> = (0..took + WRITE - waiting)
-                .map(|i| (i % WRITE) as u8)
-                .collect();
-            assert!(arrived == expected, "{path:?}: the bytes arrived changed");
+                    let writer = tokio::spawn(async move {
+                        client.write_all(&bytes[waiting..]).await.expect("write");
+                        client.flush().await.expect("flush");
+                        client
+                    });
+                    let mut arrived = vec![0; took + write - waiting];
+                    server.read_exact(&mut arrived).await.expect("read");
+                    let _client = writer.await.expect("writer");
+                    let expected: Vec<u8> = (0..took + write - waiting)
+                        .map(|i| (i % write) as u8)
+                        .collect();
+                    assert!(arrived == expected, "{case}: the bytes arrived changed");
+                }
+            }
         }
     }
 }

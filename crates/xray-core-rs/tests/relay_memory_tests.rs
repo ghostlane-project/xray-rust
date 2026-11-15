@@ -129,15 +129,25 @@ const DEFRAMER_READ: isize = 4_096;
 /// plaintext waits, so the plaintext that waits is what one fill of the
 /// deframer decrypts, less than `MAX_WIRE_SIZE`: 18,437 B.
 const TLS_RECEIVE: isize = (MAX_WIRE_SIZE - DEFRAMER_READ) + MAX_WIRE_SIZE;
-/// A constrained host's largest relay read, which T4's core makes (it sets
-/// no `bufferSize`).
+/// A constrained host's largest relay read, which T4's core makes when it
+/// sets no `bufferSize`.
 const CONSTRAINED_READ: isize = 32 * KIB as isize;
+/// A standard host's largest relay read, and a phone's with a `bufferSize`
+/// of 128: more than a TLS session's default send limit of 64 KiB.
+const STANDARD_READ_KIB: u32 = 128;
+/// The flows of T4's arm with `STANDARD_READ_KIB` reads: about as many as
+/// `B` lends such a read at once beside their floors (8 × 124 KiB is
+/// 1,015,808 B), so that the reads press `B` and can grow to 128 KiB. 64
+/// flows share `B` at about 15.6 KB a flow.
+const STANDARD_FLOWS: usize = 8;
 /// The worker threads of the core's runtime (`near`).
 const CORE_WORKERS: usize = 2;
 /// What the core's `CORE_WORKERS` workers may keep once
 /// `release_relay_buffers` has freed the pool's lists: each the buffer it
-/// got back last, at most a `CONSTRAINED_READ`.
-const THREAD_SPARES: isize = CORE_WORKERS as isize * CONSTRAINED_READ;
+/// got back last, at most one read of `read` bytes.
+const fn thread_spares(read: isize) -> isize {
+    CORE_WORKERS as isize * read
+}
 /// The flows `quiesce` pings, so that each worker relays and its spare from
 /// before the release goes; the rest keep what the run left them.
 const QUIESCE_FLOWS: usize = 8;
@@ -168,15 +178,17 @@ struct Run {
 
 /// `flows` Vision flows over TLS, past Vision's padding, a MiB down each and
 /// then a MiB up each, all at once, the downloads read and the uploads taken
-/// at a phone's pace, under the byte budget the process has now. Idle and
-/// the end are taken quiesced, so that the buffers kept for later reads
+/// at a phone's pace, under the byte budget the process has now, their
+/// relays reading up to `buffer_kib` KiB at once or a phone's 32 KiB. Idle
+/// and the end are taken quiesced, so that the buffers kept for later reads
 /// count at neither.
-fn vision_flows(flows: usize) -> Run {
+fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
     let far = support::runtime(2, leave_this_thread);
     let near = support::runtime(CORE_WORKERS, count_this_thread);
     let (server, client_config) = far.block_on(support::start_vision_server(support::Uplink::Slow));
-    let mut core =
-        near.block_on(async { support::vision_core(server, client_config, support::Uplink::Slow) });
+    let mut core = near.block_on(async {
+        support::vision_core_reading(server, client_config, support::Uplink::Slow, buffer_kib)
+    });
     near.block_on(core.start()).unwrap();
     let socks = core.inbound_addr(Some("socks-in")).unwrap();
 
@@ -273,6 +285,14 @@ fn quiesce(
 /// to 261 KB in both places, and went up to 102 KB over this bound in CI.
 /// The arm with no limit holds more than the bound.
 ///
+/// A third arm reads up to 128 KiB at once (`bufferSize` 128), a standard
+/// host's default, under the same budget, with `STANDARD_FLOWS` flows so
+/// that each gets such a read, and the same bound for its flows. rustls
+/// took 64 KiB of such a write, its default limit, and the rest waited with
+/// the whole buffer held, so those 64 KiB sat in both places; a session now
+/// takes a write whole (`tls_send`'s `take_writes_whole`). The workers'
+/// spares after are a 128 KiB read each.
+///
 /// The downloads are held in permits, to the budget, not in bytes. What
 /// they hold beside the budget is each TLS session's receive side, up to
 /// `TLS_RECEIVE` a flow, which a bound in bytes must allow; and a flow with
@@ -294,9 +314,11 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
     const FLOWS: usize = 64;
     let _turn = take_turn();
     let flows = FLOWS as isize;
-    let held = T4_BUDGET as isize + flows * FLOOR;
-    let upload_bound = held + TLS_RECORD_FRAMING * (held / SMALLEST_RECORD + flows);
-    let download_bound = held + flows * TLS_RECEIVE;
+    let upload_bound = |flows: isize| {
+        let held = T4_BUDGET as isize + flows * FLOOR;
+        held + TLS_RECORD_FRAMING * (held / SMALLEST_RECORD + flows)
+    };
+    let download_bound = |flows: isize| T4_BUDGET as isize + flows * FLOOR + flows * TLS_RECEIVE;
     let budget = |capacity| {
         xray_transport::set_byte_budget(Some(xray_transport::ByteBudgetSettings {
             capacity,
@@ -304,23 +326,38 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
         }));
     };
     budget(usize::MAX / 2);
-    let unlimited = vision_flows(FLOWS);
+    let unlimited = vision_flows(FLOWS, None);
     budget(T4_BUDGET);
-    let limited = vision_flows(FLOWS);
+    let limited = vision_flows(FLOWS, None);
+    let standard = vision_flows(STANDARD_FLOWS, Some(STANDARD_READ_KIB));
     xray_transport::set_byte_budget(None);
-    for (arm, run) in [("no limit", unlimited), ("B = 1 MB", limited)] {
+    let phone_spares = thread_spares(CONSTRAINED_READ);
+    let standard_spares = thread_spares(STANDARD_READ_KIB as isize * KIB as isize);
+    let arms = [
+        ("no limit", FLOWS, unlimited, phone_spares),
+        ("B = 1 MB", FLOWS, limited, phone_spares),
+        (
+            "B = 1 MB, 128 KiB reads",
+            STANDARD_FLOWS,
+            standard,
+            standard_spares,
+        ),
+    ];
+    for (arm, flows, run, spares) in arms {
+        let flows = flows as isize;
         eprintln!(
-            "T4 {FLOWS} Vision flows, {arm}: idle {} B ({} B a flow); download {} B over \
-             idle ({download_bound} B with TLS's receive side, not asserted), {} B of \
-             permits at most; upload {} B over the {} B the flows held after the \
-             downloads, bound {upload_bound} B, {} B of permits at most; {} B more than \
-             idle after, bound {THREAD_SPARES} B",
+            "T4 {flows} Vision flows, {arm}: idle {} B ({} B a flow); download {} B over \
+             idle ({} B with TLS's receive side, not asserted), {} B of permits at most; \
+             upload {} B over the {} B the flows held after the downloads, bound {} B, {} \
+             B of permits at most; {} B more than idle after, bound {spares} B",
             run.idle,
             run.idle / flows,
             run.download,
+            download_bound(flows),
             run.download_permits,
             run.upload,
             run.moving,
+            upload_bound(flows),
             run.upload_permits,
             run.after
         );
@@ -332,28 +369,31 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
         unlimited.download_permits
     );
     assert!(
-        unlimited.upload_permits > 2 * T4_BUDGET && unlimited.upload > upload_bound,
+        unlimited.upload_permits > 2 * T4_BUDGET && unlimited.upload > upload_bound(flows),
         "without a limit the uploads took {} B and {} B of permits: the test no longer \
          presses the budget",
         unlimited.upload,
         unlimited.upload_permits
     );
-    assert!(
-        limited.download_permits <= T4_BUDGET,
-        "the downloads took {} B of permits; the budget is {T4_BUDGET} B",
-        limited.download_permits
-    );
-    assert!(
-        limited.upload <= upload_bound,
-        "the uploads held {} B over what the flows held before them; the bound is \
-         {upload_bound} B",
-        limited.upload
-    );
-    for (arm, run) in [("no limit", unlimited), ("B = 1 MB", limited)] {
+    for (arm, flows, run, _) in &arms[1..] {
+        let bound = upload_bound(*flows as isize);
         assert!(
-            run.after <= THREAD_SPARES,
+            run.download_permits <= T4_BUDGET,
+            "{arm}: the downloads took {} B of permits; the budget is {T4_BUDGET} B",
+            run.download_permits
+        );
+        assert!(
+            run.upload <= bound,
+            "{arm}: the uploads held {} B over what the flows held before them; the bound \
+             is {bound} B",
+            run.upload
+        );
+    }
+    for (arm, _, run, spares) in arms {
+        assert!(
+            run.after <= spares,
             "{arm}: the flows held {} B more than idle after the uploads; the workers' \
-             spares are at most {THREAD_SPARES} B",
+             spares are at most {spares} B",
             run.after
         );
     }

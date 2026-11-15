@@ -82,6 +82,21 @@ fn tls_configs() -> (Arc<rustls::ClientConfig>, Arc<rustls::ServerConfig>) {
 /// would hold: loopback's 64 KiB segments would otherwise grow the kernel's
 /// buffer to take a whole upload.
 pub fn vision_core(server: SocketAddr, client: Arc<rustls::ClientConfig>, uplink: Uplink) -> Core {
+    vision_core_reading(server, client, uplink, None)
+}
+
+/// [`vision_core`] whose relays read up to `buffer_kib` KiB at once (the
+/// policy's `bufferSize`), or a phone's 32 KiB.
+pub fn vision_core_reading(
+    server: SocketAddr,
+    client: Arc<rustls::ClientConfig>,
+    uplink: Uplink,
+    buffer_kib: Option<u32>,
+) -> Core {
+    let policy = match buffer_kib {
+        None => String::new(),
+        Some(kib) => format!(r#""policy": {{ "levels": {{ "0": {{ "bufferSize": {kib} }} }} }},"#),
+    };
     let sockopt = match uplink {
         Uplink::Fast => "",
         Uplink::Slow => {
@@ -91,6 +106,7 @@ pub fn vision_core(server: SocketAddr, client: Arc<rustls::ClientConfig>, uplink
     };
     let raw = format!(
         r#"{{
+          {policy}
           "inbounds": [{{
             "tag": "socks-in", "protocol": "socks",
             "listen": "127.0.0.1", "port": 0, "settings": {{ "udp": false }}
