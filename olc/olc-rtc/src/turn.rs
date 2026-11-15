@@ -638,7 +638,12 @@ impl Relays {
         let from = r.server;
         let arrived = Transmit::new(&chunk.data[..], TransportType::Tcp, from, local);
         if chunk.data.is_empty() {
-            olc_net::debug!("webrtc: TURN server {from} over TCP: the connection ended");
+            let how = if r.via == TurnTransport::Tls {
+                "TLS"
+            } else {
+                "TCP"
+            };
+            olc_net::debug!("webrtc: TURN server {from} over {how}: the connection ended");
             let _ = r.client.recv(arrived, at);
             r.done = true;
             return;

@@ -1114,7 +1114,10 @@ mod tests {
             b.send(vec![1; 40]).await;
             assert!(a.ends().await, "the untrusted relay did not end");
             assert_eq!(b.collect(100).await.expect("the good relay ended"), reply);
-            assert_eq!(srv_bad.seen(|s| s.failed), 1, "the server saw no alert");
+            eventually("the server saw the client's alert", || {
+                srv_bad.seen(|s| s.failed == 1)
+            })
+            .await;
             assert_eq!(srv_bad.seen(|s| s.received.len()), 0, "bytes got through");
         })
         .await;
@@ -1460,7 +1463,12 @@ mod tests {
         /// they were made. A TLS connection's total includes its tasks,
         /// queues, buffers and BoringSSL's state.
         async fn per_connection(dir: &str, plain: bool, setup: &Setup, n: usize) -> (usize, usize) {
+            eprintln!(
+                "TURNS-STEP starting the {} server process",
+                if plain { "plain" } else { "TLS" }
+            );
             let server = server_process(dir, plain);
+            eprintln!("TURNS-STEP the server process is on port {}", server.port);
             let addr = SocketAddr::from(([127, 0, 0, 1], server.port));
             let make = |slot: usize| {
                 if plain {
@@ -1486,6 +1494,7 @@ mod tests {
             drop(warm);
             tokio::time::sleep(Duration::from_millis(200)).await;
 
+            eprintln!("TURNS-STEP warmed up");
             let peak = Arc::new(AtomicUsize::new(0));
             let run = Arc::new(AtomicBool::new(true));
             let before = used();
@@ -1522,6 +1531,12 @@ mod tests {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[ignore = "heap measurement: needs the process to itself (--test-threads=1)"]
         async fn heap_a_tls_connection_beside_a_tcp_one() {
+            tokio::time::timeout(Duration::from_secs(120), heap_connection_measurement())
+                .await
+                .expect("the connection measurement did not finish in 120 s");
+        }
+
+        async fn heap_connection_measurement() {
             let names: Vec<String> = (0..60).map(|i| format!("pad{i:04}.olc.test")).collect();
             let mut all: Vec<&str> = names.iter().map(String::as_str).collect();
             all.push(HOST);
@@ -1566,6 +1581,12 @@ mod tests {
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         #[ignore = "heap measurement: needs the process to itself (--test-threads=1)"]
         async fn heap_a_kept_session() {
+            tokio::time::timeout(Duration::from_secs(120), heap_session_measurement())
+                .await
+                .expect("the session measurement did not finish in 120 s");
+        }
+
+        async fn heap_session_measurement() {
             let names: Vec<String> = (0..160).map(|i| format!("pad{i:04}.olc.test")).collect();
             let mut all: Vec<&str> = names.iter().map(String::as_str).collect();
             all.push(HOST);

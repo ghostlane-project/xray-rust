@@ -250,12 +250,12 @@ func refusedTurns(t *testing.T, host string, cert tls.Certificate, trust turnsPK
 	cfg := rustRoomConfig(room, tunnelKeyHex, 0, 0)
 	relay.useFor(&cfg)
 	proc := startRust(t, cfg, nil)
+	// The client never says it listens (it does so once a link is up, and
+	// none can be); it must not end either.
 	select {
-	case <-proc.listen:
 	case <-proc.exited:
-		t.Fatalf("the rust client ended before it listened: %v", proc.err)
-	case <-time.After(30 * time.Second):
-		t.Fatal("the rust client did not listen within 30 s")
+		t.Fatalf("the rust client ended: %v", proc.err)
+	case <-time.After(time.Second):
 	}
 	// The client dials the TLS server and refuses its certificate; it keeps
 	// the other (absent) relays going, so it stays up.
