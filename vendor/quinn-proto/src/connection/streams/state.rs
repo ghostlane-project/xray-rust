@@ -2073,10 +2073,18 @@ mod tests {
                 "cycle {cycle}: the peer still has the window's credit"
             );
             assert_eq!(server.receive_window, window);
-            // The peer sends a little and the reader takes it.
+            // The peer sends a little and the reader takes it. The growth paid
+            // the shrink's debt, so the read's credit goes to the peer whole.
+            // Nothing here sends the MAX_DATA, so everything read is credit
+            // not yet announced, due for one once it reaches an eighth of the
+            // window: from the second read on.
             let read = 64 * 1024;
             received += read;
-            server.add_read_credits(read);
+            assert_eq!(
+                server.add_read_credits(read).should_transmit(),
+                received >= window / 8,
+                "cycle {cycle}: {received} read and not announced, the window is {window}"
+            );
             assert!(
                 server.local_max_data - received <= window,
                 "cycle {cycle}: the peer may send {} beyond what it sent, the window is {window}",

@@ -476,6 +476,31 @@ class EvidenceAllowlists(unittest.TestCase):
             "unreviewed/runtime.json": lines,
         }), {(name, "generic-api-key") for name in (path, "unreviewed/runtime.json")})
 
+    def test_str0m_example_key_exception_is_narrow(self):
+        # str0m 0.25.0 as crates.io ships it: cert.pem and examples/key.pem,
+        # the self-signed pair its ssl-gen.sh made for its examples. A
+        # synthetic block stands in, assembled so this file holds no key.
+        crate = "olc/vendor/str0m-0.25.0/"
+        reviewed = [crate + "cert.pem", crate + "examples/key.pem"]
+        block = ("-----BEGIN " + "PRIVATE KEY-----\n"
+                 + ("0123456789abcdef" * 4 + "\n") * 2
+                 + "-----END " + "PRIVATE KEY-----\n")
+        self.assertEqual(self.scan({path: block for path in reviewed}), set())
+        elsewhere = [crate + "examples/cert.pem", crate + "src/key.pem",
+                     "olc/vendor/str0m-0.26.0/cert.pem", "unreviewed/key.pem"]
+        self.assertEqual(self.scan({path: block for path in elsewhere}),
+                         {(path, "private-key") for path in elsewhere})
+        token = "ghp_" + "aB7cD9eF2gH4iJ6kL8mN0oP1qR3sT5uV7wX9"
+        self.assertEqual(self.scan({path: block + token + "\n" for path in reviewed}),
+                         {(path, "github-pat") for path in reviewed})
+        # Where the crate is vendored, its bytes are bound to the crates.io
+        # archive: the vendored check verifies the archive's SHA-256 and
+        # diffs this tree against it.
+        if (ROOT / crate).exists():
+            script = (ROOT / "scripts/check-vendored-sources.sh").read_text()
+            self.assertRegex(script, r"download_and_verify \\\n  str0m 0\.25\.0 \\\n  [0-9a-f]{64}\n")
+            self.assertIn('"$temporary/str0m-0.25.0" "$ROOT/olc/vendor/str0m-0.25.0"', script)
+
     def test_xdrive_s3_oracle_signature_exception_is_narrow(self):
         path = "tests/fixtures/xdrive/http-vectors.json"
         lines = [line + "\n" for line in (ROOT / path).read_text().splitlines()

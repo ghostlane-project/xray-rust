@@ -4551,13 +4551,14 @@ fn runtime_plan_for(
     };
     if ios {
         // iOS (the packet tunnel extension is killed at about 50 MB). One
-        // worker: each costs about 32-64 KiB of touched stack + 128 KiB of
-        // relay pool spare + 6 KB of tokio state, and in the lab (p2/09,
-        // section 7) one worker cut XHTTP's CPU per GB by about 30 % on Linux
-        // and macOS with downloads as fast or faster, WebTunnel about the
-        // same. Earlier (run 43553887055) one worker carried Reality at
-        // 4.5-10.9 Gbit/s and Hysteria2 at 0.6-1.2 Gbit/s, far above a
-        // phone's link (300 Mbit/s). `XRAY_FFI_WORKER_THREADS` raises it.
+        // worker: each costs about 32-64 KiB of touched stack + up to 32 KiB
+        // of relay pool spare (128 KiB with `bufferSize` >= 128) + 6 KB of
+        // tokio state, and in the lab (p2/09, section 7) one worker cut
+        // XHTTP's CPU per GB by about 30 % on Linux and macOS with downloads
+        // as fast or faster, WebTunnel about the same. Earlier (run
+        // 43553887055) one worker carried Reality at 4.5-10.9 Gbit/s and
+        // Hysteria2 at 0.6-1.2 Gbit/s, far above a phone's link
+        // (300 Mbit/s). `XRAY_FFI_WORKER_THREADS` raises it.
         // The blocking pool (getaddrinfo for a domain dialed without the
         // core's DNS) is capped at 4 threads, each with its own touched
         // stack, and a thread idles 2 s, not tokio's 10 s: the shared
@@ -4813,10 +4814,11 @@ mod tests {
     }
 
     /// The packet tunnel extension is killed at about 50 MB: every worker is
-    /// 32-64 KiB of touched stack, 128 KiB of relay pool spare and 6 KB of
-    /// tokio state, and the blocking pool is bounded by tokio at 512 threads.
-    /// One worker carried Hysteria2 at 0.6-1.2 Gbit/s in the lab (run
-    /// 43553887055), above a phone's link; the override gives it more.
+    /// 32-64 KiB of touched stack, up to 32 KiB of relay pool spare (128 KiB
+    /// with `bufferSize` >= 128) and 6 KB of tokio state, and the blocking
+    /// pool is bounded by tokio at 512 threads. One worker carried Hysteria2
+    /// at 0.6-1.2 Gbit/s in the lab (run 43553887055), above a phone's link;
+    /// the override gives it more.
     #[test]
     fn runtime_plan_on_ios_is_one_worker_and_four_blocking_threads() {
         for available in [1, 2, 4, 6, 8] {

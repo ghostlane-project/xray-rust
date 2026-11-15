@@ -67,6 +67,22 @@ regexes = [
   '''^\s*"key_hex": "zz23456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",?\s*$''',
 ]
 
+# str0m 0.25.0, vendored for the olcRTC port exactly as crates.io ships it
+# (olc/vendor/str0m-0.25.0, 6c418b42 on gl/olc-p2p): cert.pem is the
+# self-signed key and certificate its ssl-gen.sh made for its examples, and
+# examples/key.pem is the key chat.rs and http-post.rs include. Both are
+# public upstream example files, used by nothing outside those examples.
+# scripts/check-vendored-sources.sh verifies the crate archive's SHA-256 and
+# diffs the tree against it, so these two paths cannot hold other bytes. Only
+# the private-key rule is excepted, and only at these two paths.
+[[allowlists]]
+description = "str0m 0.25.0 example key files, as crates.io ships them"
+targetRules = ["private-key"]
+paths = [
+  '''^olc/vendor/str0m-0\.25\.0/cert\.pem$''',
+  '''^olc/vendor/str0m-0\.25\.0/examples/key\.pem$''',
+]
+
 # The XDRIVE oracle signs S3 requests with AWS's documented example key pair
 # (AKIDEXAMPLE); the generic rule reads the signature after
 # "x-amz-security-token" in the signed-header list as a token.
