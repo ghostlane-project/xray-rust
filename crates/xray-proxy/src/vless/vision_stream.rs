@@ -489,7 +489,12 @@ where
     /// Writes the frame with the writer's `input` as its payload: the rest
     /// of its head, as much of `input` as the frame takes and, with the
     /// payload's last byte, its padding. Returns the bytes of `input` the
-    /// carrier took, which are 0 only for an empty `input`. A frame done
+    /// carrier took, which are 0 only for an empty `input`. Once the carrier
+    /// has taken the payload's last byte, the rest of the padding goes on
+    /// while it takes it, as a frame in a buffer of its own did, so a read
+    /// or a wait for the writer's next bytes comes after the frame; the call
+    /// returns when it is done or the carrier waits, and what the carrier
+    /// left goes before the next write, flush or shutdown. A frame done
     /// switches the stream as its command asks.
     fn poll_write_frame(&mut self, cx: &mut Context<'_>, input: &[u8]) -> Poll<io::Result<usize>> {
         loop {
@@ -515,12 +520,14 @@ where
             let took = frame.advance(written, payload.len(), padding)?;
             if frame.is_done() {
                 self.frame = None;
-                // A switch whose flush waits is finished by the next call.
-                if let Poll::Ready(Err(error)) = self.poll_switch(cx) {
-                    return Poll::Ready(Err(error));
-                }
             }
             if took > 0 {
+                // The padding left, while the carrier takes it, and the
+                // switch of a frame done. A switch whose flush waits is
+                // finished by the next call.
+                if let Poll::Ready(Err(error)) = self.poll_finish_frame(cx) {
+                    return Poll::Ready(Err(error));
+                }
                 return Poll::Ready(Ok(took));
             }
         }
