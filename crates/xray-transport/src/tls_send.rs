@@ -430,7 +430,7 @@ mod tests {
             took += bytes.len();
             assert!(
                 took <= 4 << 20,
-                "the session took {took} B while its carrier took none"
+                "the session took {took} B of {call:?} writes while its carrier took none"
             );
         }
     }

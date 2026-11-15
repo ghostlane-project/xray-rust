@@ -179,9 +179,10 @@ struct Run {
 /// `flows` Vision flows over TLS, past Vision's padding, a MiB down each and
 /// then a MiB up each, all at once, the downloads read and the uploads taken
 /// at a phone's pace, under the byte budget the process has now, their
-/// relays reading up to `buffer_kib` KiB at once or a phone's 32 KiB. Idle
-/// and the end are taken quiesced, so that the buffers kept for later reads
-/// count at neither.
+/// relays reading up to `buffer_kib` KiB at once or a phone's 32 KiB (with
+/// `buffer_kib`, a first MiB up each before the measured one). Idle and the
+/// end are taken quiesced, so that the buffers kept for later reads count
+/// at neither.
 fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
     let far = support::runtime(2, leave_this_thread);
     let near = support::runtime(CORE_WORKERS, count_this_thread);
@@ -213,6 +214,13 @@ fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
     let download = peak() - idle;
     let download_permits = xray_transport::byte_budget_usage().peak;
     far.block_on(async { tokio::time::sleep(Duration::from_millis(300)).await });
+    if buffer_kib.is_some() {
+        // The uploads read more at once than the downloads did: a first
+        // upload leaves the pool the buffers the measured one borrows, as
+        // the downloads do for a phone's reads, and `moving` counts them.
+        far.block_on(futures_join_all(streams.iter_mut().map(support::upload)));
+        far.block_on(async { tokio::time::sleep(Duration::from_millis(300)).await });
+    }
     let moving = reset_peak();
     xray_transport::reset_byte_budget_peak();
     far.block_on(futures_join_all(streams.iter_mut().map(support::upload)));
@@ -290,8 +298,13 @@ fn quiesce(
 /// that each gets such a read, and the same bound for its flows. rustls
 /// took 64 KiB of such a write, its default limit, and the rest waited with
 /// the whole buffer held, so those 64 KiB sat in both places; a session now
-/// takes a write whole (`tls_send`'s `take_writes_whole`). The workers'
-/// spares after are a 128 KiB read each.
+/// takes a write whole (`tls_send`'s `take_writes_whole`). Its downloads
+/// read less at once than its uploads, so a first upload leaves the pool
+/// the 128 KiB buffers the measured one borrows: the pool keeps up to
+/// 512 KiB of freed buffers, outside the budget, which `moving` counts.
+/// Measured without that first upload, the arm also counted the buffers
+/// the pool came to keep, up to 454 KB over the bound on a GitHub runner.
+/// The workers' spares after are a 128 KiB read each.
 ///
 /// The downloads are held in permits, to the budget, not in bytes. What
 /// they hold beside the budget is each TLS session's receive side, up to
