@@ -136,6 +136,12 @@ pub(crate) fn relieve() -> usize {
     PROCESS_POOL.relieve()
 }
 
+/// The bytes of free buffers the process's relays keep now, in the pool's
+/// lists and the threads' spares: at most `kept_bytes` of the host's class.
+pub(crate) fn kept_now() -> usize {
+    PROCESS_POOL.kept.load(Ordering::Relaxed)
+}
+
 impl Pool {
     const fn with_spares(keep: fn() -> usize) -> Self {
         Self {

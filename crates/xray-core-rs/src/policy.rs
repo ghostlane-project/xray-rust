@@ -23,6 +23,10 @@ pub(crate) fn release_kept_buffers() -> usize {
     relay_buffer::relieve()
 }
 
+pub(crate) fn kept_buffer_bytes() -> usize {
+    relay_buffer::kept_now()
+}
+
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_CONN_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 const DEFAULT_UPLINK_ONLY_TIMEOUT: Duration = Duration::from_secs(1);

@@ -1680,6 +1680,13 @@ pub fn release_relay_buffers() -> usize {
     policy::release_kept_buffers()
 }
 
+/// The bytes of free payload buffers the relays keep for their next reads
+/// now, the pool's and the threads' spares together: at most 8 MiB, or
+/// 512 KiB on a constrained host. They are not the byte budget's.
+pub fn relay_buffers_kept() -> usize {
+    policy::kept_buffer_bytes()
+}
+
 /// The system resolver behind a cache that forgets its answers when the
 /// network of `dialer` is reset.
 fn system_dns_resolver(dialer: &TransportDialer) -> Arc<dyn DnsResolver> {

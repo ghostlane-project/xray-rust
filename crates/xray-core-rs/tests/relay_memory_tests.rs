@@ -158,6 +158,17 @@ const VISION_PADDED_PACKETS: usize = 8;
 /// The free relay buffers a constrained process keeps.
 const CONSTRAINED_POOL_KEEP: isize = 4 * 128 * KIB as isize;
 
+/// What the relay pool may still come to keep, beside the `kept` bytes it
+/// keeps now.
+const fn pool_room(kept: isize) -> isize {
+    let room = CONSTRAINED_POOL_KEEP - kept;
+    if room > 0 {
+        room
+    } else {
+        0
+    }
+}
+
 /// What one run of `flows` Vision flows held, in bytes.
 #[derive(Debug, Clone, Copy)]
 struct Run {
@@ -168,6 +179,8 @@ struct Run {
     download_permits: usize,
     /// What the flows held over idle once the downloads were done.
     moving: isize,
+    /// The free buffers the relay pool kept then, which `moving` counts.
+    kept: isize,
     /// The uploads' peak over `moving`.
     upload: isize,
     /// The uploads' peak of permits.
@@ -222,6 +235,7 @@ fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
         far.block_on(async { tokio::time::sleep(Duration::from_millis(300)).await });
     }
     let moving = reset_peak();
+    let kept = xray_core_rs::relay_buffers_kept() as isize;
     xray_transport::reset_byte_budget_peak();
     far.block_on(futures_join_all(streams.iter_mut().map(support::upload)));
     let upload = peak() - moving;
@@ -236,6 +250,7 @@ fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
         download,
         download_permits,
         moving: moving - idle,
+        kept,
         upload,
         upload_permits,
         after,
@@ -300,11 +315,17 @@ fn quiesce(
 /// the whole buffer held, so those 64 KiB sat in both places; a session now
 /// takes a write whole (`tls_send`'s `take_writes_whole`). Its downloads
 /// read less at once than its uploads, so a first upload leaves the pool
-/// the 128 KiB buffers the measured one borrows: the pool keeps up to
-/// 512 KiB of freed buffers, outside the budget, which `moving` counts.
-/// Measured without that first upload, the arm also counted the buffers
-/// the pool came to keep, up to 454 KB over the bound on a GitHub runner.
-/// The workers' spares after are a 128 KiB read each.
+/// 128 KiB buffers the measured one borrows. The workers' spares after are
+/// a 128 KiB read each.
+///
+/// The pool keeps up to `CONSTRAINED_POOL_KEEP` of freed buffers, outside
+/// the budget. `moving` counts what it kept then, and each arm's bound
+/// allows the rest (`pool_room`), which it may come to keep while the
+/// uploads move: their reads are not all of one size, and a buffer of a
+/// size the pool has none of is new. Without that room the 128 KiB arm went
+/// up to 175 KB over its bound on a GitHub runner after the first upload,
+/// and up to 454 KB without the first upload; the arms of 64 flows find the
+/// pool full of the downloads' buffers.
 ///
 /// The downloads are held in permits, to the budget, not in bytes. What
 /// they hold beside the budget is each TLS session's receive side, up to
@@ -361,8 +382,9 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
         eprintln!(
             "T4 {flows} Vision flows, {arm}: idle {} B ({} B a flow); download {} B over \
              idle ({} B with TLS's receive side, not asserted), {} B of permits at most; \
-             upload {} B over the {} B the flows held after the downloads, bound {} B, {} \
-             B of permits at most; {} B more than idle after, bound {spares} B",
+             upload {} B over the {} B the flows held after the downloads ({} B of them \
+             the pool's), bound {} B, {} B of permits at most; {} B more than idle after, \
+             bound {spares} B",
             run.idle,
             run.idle / flows,
             run.download,
@@ -370,7 +392,8 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
             run.download_permits,
             run.upload,
             run.moving,
-            upload_bound(flows),
+            run.kept,
+            upload_bound(flows) + pool_room(run.kept),
             run.upload_permits,
             run.after
         );
@@ -389,7 +412,7 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
         unlimited.upload_permits
     );
     for (arm, flows, run, _) in &arms[1..] {
-        let bound = upload_bound(*flows as isize);
+        let bound = upload_bound(*flows as isize) + pool_room(run.kept);
         assert!(
             run.download_permits <= T4_BUDGET,
             "{arm}: the downloads took {} B of permits; the budget is {T4_BUDGET} B",
