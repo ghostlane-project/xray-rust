@@ -47,6 +47,14 @@ const MIN_COPY_BUFFER_SIZE: usize = 1024;
 const MAX_COPY_BUFFER_SIZE: usize = 1024 * 1024;
 const COPY_FLUSH_THRESHOLD: usize = 64 * 1024;
 const COPY_FLUSH_INTERVAL: Duration = Duration::from_millis(2);
+static LAB_ACCEPTED: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+pub(crate) fn lab_counters() -> (usize, isize, isize) {
+    (
+        relay_buffer::lab_kept(),
+        relay_buffer::LAB_UNFLUSHED.load(std::sync::atomic::Ordering::Relaxed),
+        LAB_ACCEPTED.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EffectivePolicy {
@@ -365,7 +373,19 @@ where
                     return Ok(total);
                 }
 
-                writer.write_all(buffer.filled(len)).await?;
+                {
+                    let data = buffer.filled(len);
+                    let mut off = 0;
+                    while off < data.len() {
+                        let n = writer.write(&data[off..]).await?;
+                        if n == 0 {
+                            return Err(io::Error::new(io::ErrorKind::WriteZero, "write zero"));
+                        }
+                        off += n;
+                        LAB_ACCEPTED.fetch_add(n as isize, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    LAB_ACCEPTED.fetch_sub(data.len() as isize, std::sync::atomic::Ordering::Relaxed);
+                }
                 total = total.saturating_add(len as u64);
                 if let Some(counter) = counter {
                     counter.fetch_add(len as u64, std::sync::atomic::Ordering::Relaxed);
