@@ -366,7 +366,11 @@ impl WebSocketStream {
             self.out_pos += written;
         }
 
-        self.out.clear();
+        // Dropped, not cleared: a data write encodes into a buffer of its
+        // own, so kept capacity would only idle with the flow beside the
+        // records a TLS session sealed from it, as large as the last write.
+        // A control frame allocates its few bytes again.
+        self.out = Vec::new();
         self.out_pos = 0;
         Poll::Ready(Ok(()))
     }

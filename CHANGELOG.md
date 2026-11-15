@@ -149,6 +149,9 @@ long-term supported release series.
   write that met a part-full queue under backpressure no longer occur.
   Inside the write call a session seals the write while the relay buffer
   still holds its bytes: one write per worker thread at most, for that call.
+- WebSocket gives back a write's frame buffer once its carrier has taken
+  the frames, rather than keeping its capacity, as large as the last write,
+  while the flow idles.
 - A relay direction holds no buffer between reads: each read borrows one
   sized for it (1 KiB to 1 MiB) from the process's pool and gives it back
   once written, and a read that brings half of its size or less sets the
