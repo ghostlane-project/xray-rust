@@ -80,7 +80,12 @@ where
     if !input.is_empty() {
         ready!(poll_records_gone(session, cx))?;
     }
-    Pin::new(session).poll_write(cx, input)
+    let n = input.len() as isize;
+    let now = crate::LAB_IN_CALL.fetch_add(n, std::sync::atomic::Ordering::Relaxed) + n;
+    crate::LAB_IN_CALL_MAX.fetch_max(now, std::sync::atomic::Ordering::Relaxed);
+    let out = Pin::new(session).poll_write(cx, input);
+    crate::LAB_IN_CALL.fetch_sub(n, std::sync::atomic::Ordering::Relaxed);
+    out
 }
 
 /// `poll_write_vectored` on `session`, once [`poll_records_gone`].
@@ -95,7 +100,12 @@ where
     if inputs.iter().any(|input| !input.is_empty()) {
         ready!(poll_records_gone(session, cx))?;
     }
-    Pin::new(session).poll_write_vectored(cx, inputs)
+    let n = inputs.iter().map(|i| i.len()).sum::<usize>() as isize;
+    let now = crate::LAB_IN_CALL.fetch_add(n, std::sync::atomic::Ordering::Relaxed) + n;
+    crate::LAB_IN_CALL_MAX.fetch_max(now, std::sync::atomic::Ordering::Relaxed);
+    let out = Pin::new(session).poll_write_vectored(cx, inputs);
+    crate::LAB_IN_CALL.fetch_sub(n, std::sync::atomic::Ordering::Relaxed);
+    out
 }
 
 /// TLS that Vision never unwraps: the session under an HTTP-based stream

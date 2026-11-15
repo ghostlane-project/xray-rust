@@ -28,8 +28,8 @@ const TAGS: usize = 4;
 static TAG_LIVE: [AtomicIsize; TAGS] = [const { AtomicIsize::new(0) }; TAGS];
 static TAG_COUNT: [AtomicIsize; TAGS] = [const { AtomicIsize::new(0) }; TAGS];
 // Base (the phase's start) and snapshot (its peak): tags, kept, unflushed, accepted, in_use, live.
-static BASE: [AtomicIsize; 2 * TAGS + 4] = [const { AtomicIsize::new(0) }; 2 * TAGS + 4];
-static SNAP: [AtomicIsize; 2 * TAGS + 4] = [const { AtomicIsize::new(0) }; 2 * TAGS + 4];
+static BASE: [AtomicIsize; 2 * TAGS + 5] = [const { AtomicIsize::new(0) }; 2 * TAGS + 5];
+static SNAP: [AtomicIsize; 2 * TAGS + 5] = [const { AtomicIsize::new(0) }; 2 * TAGS + 5];
 static SNAP_LIVE: AtomicIsize = AtomicIsize::new(0);
 static LAST_SNAP: AtomicIsize = AtomicIsize::new(isize::MAX);
 static SNAPPING: AtomicBool = AtomicBool::new(false);
@@ -45,7 +45,7 @@ fn counted() -> bool {
     COUNTED.try_with(Cell::get).unwrap_or(false)
 }
 
-fn state(into: &[AtomicIsize; 2 * TAGS + 4]) {
+fn state(into: &[AtomicIsize; 2 * TAGS + 5]) {
     for i in 0..TAGS {
         into[i].store(TAG_LIVE[i].load(Ordering::Relaxed), Ordering::Relaxed);
         into[TAGS + i].store(TAG_COUNT[i].load(Ordering::Relaxed), Ordering::Relaxed);
@@ -56,6 +56,10 @@ fn state(into: &[AtomicIsize; 2 * TAGS + 4]) {
     into[2 * TAGS + 2].store(accepted, Ordering::Relaxed);
     into[2 * TAGS + 3].store(
         xray_transport::memory_budget::ByteBudget::process().in_use() as isize,
+        Ordering::Relaxed,
+    );
+    into[2 * TAGS + 4].store(
+        xray_transport::LAB_IN_CALL.load(Ordering::Relaxed),
         Ordering::Relaxed,
     );
 }
@@ -199,6 +203,7 @@ fn reset_peak() -> isize {
     SNAP_LIVE.store(now, Ordering::Relaxed);
     LAST_SNAP.store(now, Ordering::Relaxed);
     SNAPS.store(0, Ordering::Relaxed);
+    xray_transport::LAB_IN_CALL_MAX.store(0, Ordering::Relaxed);
     now
 }
 
@@ -213,7 +218,7 @@ fn lab_report(phase: &str, start: isize) {
     let (send, recv, pool) = (d(1), d(2), d(3));
     let kept = d(2 * TAGS);
     eprintln!(
-        "LAB {arm} {phase}: peak {at} B over its start ({} snapshots, peak() {} B); tls_send {send} B ({} blocks, {} at start), tls_recv {recv} B, pool buffers {pool} B (kept {kept} B, so lent {} B), other {} B; at the peak: budget in_use {} B, unflushed {} B, accepted-in-flight {} B; at the start: tls_send {} B, kept {} B",
+        "LAB {arm} {phase}: peak {at} B over its start ({} snapshots, peak() {} B); tls_send {send} B ({} blocks, {} at start), tls_recv {recv} B, pool buffers {pool} B (kept {kept} B, so lent {} B), other {} B; at the peak: budget in_use {} B, unflushed {} B, accepted-in-flight {} B, sealing in a write call {} B (most in the run {} B); at the start: tls_send {} B, kept {} B",
         SNAPS.load(Ordering::Relaxed),
         peak() - start,
         d(TAGS + 1),
@@ -223,6 +228,8 @@ fn lab_report(phase: &str, start: isize) {
         SNAP[2 * TAGS + 3].load(Ordering::Relaxed),
         SNAP[2 * TAGS + 1].load(Ordering::Relaxed),
         SNAP[2 * TAGS + 2].load(Ordering::Relaxed),
+        SNAP[2 * TAGS + 4].load(Ordering::Relaxed),
+        xray_transport::LAB_IN_CALL_MAX.swap(0, Ordering::Relaxed),
         BASE[1].load(Ordering::Relaxed),
         BASE[2 * TAGS].load(Ordering::Relaxed),
     );
@@ -273,11 +280,14 @@ const STANDARD_READ_KIB: u32 = 128;
 const STANDARD_FLOWS: usize = 8;
 /// The worker threads of the core's runtime (`near`).
 const CORE_WORKERS: usize = 2;
+fn core_workers() -> usize {
+    std::env::var("LAB_CORE_WORKERS").ok().and_then(|v| v.parse().ok()).unwrap_or(CORE_WORKERS)
+}
 /// What the core's `CORE_WORKERS` workers may keep once
 /// `release_relay_buffers` has freed the pool's lists: each the buffer it
 /// got back last, at most one read of `read` bytes.
-const fn thread_spares(read: isize) -> isize {
-    CORE_WORKERS as isize * read
+fn thread_spares(read: isize) -> isize {
+    core_workers() as isize * read
 }
 /// The flows `quiesce` pings, so that each worker relays and its spare from
 /// before the release goes; the rest keep what the run left them.
@@ -329,7 +339,7 @@ struct Run {
 /// at neither.
 fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
     let far = support::runtime(2, leave_this_thread);
-    let near = support::runtime(CORE_WORKERS, count_this_thread);
+    let near = support::runtime(core_workers(), count_this_thread);
     let (server, client_config) = far.block_on(support::start_vision_server(support::Uplink::Slow));
     let mut core = near.block_on(async {
         support::vision_core_reading(server, client_config, support::Uplink::Slow, buffer_kib)
@@ -579,7 +589,7 @@ fn a_thousand_closed_flows_leave_the_core_where_it_was() {
     const AT_ONCE: usize = 50;
     let _turn = take_turn();
     let far = support::runtime(2, leave_this_thread);
-    let near = support::runtime(CORE_WORKERS, count_this_thread);
+    let near = support::runtime(core_workers(), count_this_thread);
     let sink = far.block_on(support::start_sink());
     let mut core = near.block_on(async { support::direct_core() });
     near.block_on(core.start()).unwrap();

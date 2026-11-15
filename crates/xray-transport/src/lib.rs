@@ -29,6 +29,12 @@ pub mod hysteria;
 pub mod kcp;
 pub mod masque;
 pub mod memory_budget;
+/// Lab only (gl/tls-send-lab-11): bytes a TLS session is sealing now, in
+/// a write call that has not returned. Never merged.
+#[doc(hidden)]
+pub static LAB_IN_CALL: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+#[doc(hidden)]
+pub static LAB_IN_CALL_MAX: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 mod memory_class;
 mod network_change;
 pub mod realm;

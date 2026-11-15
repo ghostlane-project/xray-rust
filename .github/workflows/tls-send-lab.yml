@@ -2,7 +2,7 @@ name: tls-send-lab
 
 # Lab for gl/tls-send-limit: T4 (relay_memory_tests) on a GitHub ubuntu-24.04
 # runner, built as the rust job's Test step builds it (debug, the whole
-# workspace's features), the whole binary 10 times. Throwaway
+# workspace's features), T4 alone, 10 times with two core workers and 10 with one (lab-11). Throwaway
 # gl/tls-send-lab-* branches only; never merged.
 
 on:
@@ -42,15 +42,17 @@ jobs:
           cargo test --workspace --exclude xray-rust-fuzz --all-targets --locked --no-run --message-format=json > "$RUNNER_TEMP/build.json"
           bin=$(python3 -c 'import json,sys; print(next(v["executable"] for v in map(json.loads, open(sys.argv[1])) if v.get("reason") == "compiler-artifact" and v.get("executable") and v["target"]["name"] == "relay_memory_tests"))' "$RUNNER_TEMP/build.json")
           echo "BIN=$bin" >> "$GITHUB_ENV"; echo "$bin"
-      - name: relay_memory_tests x 10
+      - name: T4 x 10, two core workers, then x 10, one
         working-directory: crates/xray-core-rs
         run: |
           set +e -uo pipefail
-          pass=0 fail=0
-          for i in $(seq 1 10); do
-            out=$(timeout 600 "$BIN" --nocapture 2>&1); rc=$?
-            echo "run $i rc=$rc $(printf '%s\n' "$out" | grep -E '^test result:' | tail -1)"
-            printf '%s\n' "$out" | grep -E '^T4 |^LAB |^T5 |panicked|the uploads held|the downloads took|the flows held|without a limit' | sed 's/^/    /'
-            if [ $rc -eq 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
+          for workers in 2 1; do
+            pass=0 fail=0
+            for i in $(seq 1 10); do
+              out=$(LAB_CORE_WORKERS=$workers timeout 600 "$BIN" --nocapture --test-threads=1 sixty_four_vision_flows 2>&1); rc=$?
+              echo "workers=$workers run $i rc=$rc $(printf '%s\n' "$out" | grep -E '^test result:' | tail -1)"
+              printf '%s\n' "$out" | grep -E '^T4 |^LAB |panicked|the uploads held|the flows held|without a limit' | sed 's/^/    /'
+              if [ $rc -eq 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
+            done
+            echo "workers=$workers pass=$pass fail=$fail"
           done
-          echo "pass=$pass fail=$fail"
