@@ -199,7 +199,7 @@ impl AsyncRead for VisionTransportStream {
         cx: &mut Context<'_>,
         output: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().inner).poll_read(cx, output)
+        crate::lab::with(crate::lab::TLS_RECV, || Pin::new(&mut *self.get_mut().inner).poll_read(cx, output))
     }
 }
 
@@ -209,15 +209,15 @@ impl AsyncWrite for VisionTransportStream {
         cx: &mut Context<'_>,
         input: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut *self.get_mut().inner).poll_write(cx, input)
+        crate::lab::with(crate::lab::TLS_SEND, || Pin::new(&mut *self.get_mut().inner).poll_write(cx, input))
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().inner).poll_flush(cx)
+        crate::lab::with(crate::lab::TLS_SEND, || Pin::new(&mut *self.get_mut().inner).poll_flush(cx))
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().inner).poll_shutdown(cx)
+        crate::lab::with(crate::lab::TLS_SEND, || Pin::new(&mut *self.get_mut().inner).poll_shutdown(cx))
     }
 }
 
@@ -231,7 +231,7 @@ impl VisionStreamIo for VisionTransportStream {
         cx: &mut Context<'_>,
         output: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().inner).poll_read_direct(cx, output)
+        crate::lab::with(crate::lab::TLS_RECV, || Pin::new(&mut *self.get_mut().inner).poll_read_direct(cx, output))
     }
 
     #[cfg(target_os = "linux")]
@@ -244,15 +244,15 @@ impl VisionStreamIo for VisionTransportStream {
         cx: &mut Context<'_>,
         input: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut *self.get_mut().inner).poll_write_direct(cx, input)
+        crate::lab::with(crate::lab::TLS_SEND, || Pin::new(&mut *self.get_mut().inner).poll_write_direct(cx, input))
     }
 
     fn poll_flush_direct(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().inner).poll_flush_direct(cx)
+        crate::lab::with(crate::lab::TLS_SEND, || Pin::new(&mut *self.get_mut().inner).poll_flush_direct(cx))
     }
 
     fn poll_shutdown_direct(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Pin::new(&mut *self.get_mut().inner).poll_shutdown_direct(cx)
+        crate::lab::with(crate::lab::TLS_SEND, || Pin::new(&mut *self.get_mut().inner).poll_shutdown_direct(cx))
     }
 }
 

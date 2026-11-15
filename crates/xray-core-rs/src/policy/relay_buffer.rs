@@ -128,6 +128,10 @@ thread_local! {
 
 /// The pool every relay in the process shares.
 pub(super) static PROCESS_POOL: Pool = Pool::with_spares(process_keeps);
+pub(super) static LAB_UNFLUSHED: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+pub(super) fn lab_kept() -> usize {
+    PROCESS_POOL.kept.load(Ordering::Relaxed)
+}
 
 /// Frees every buffer the process's relays keep for later, and has every
 /// thread free its spare the next time it relays: for a host under memory
@@ -179,7 +183,7 @@ impl Pool {
                 self.kept.fetch_sub(buffer.len(), Ordering::Relaxed);
                 buffer
             }
-            None => vec![0; class_len(class)].into_boxed_slice(),
+            None => crate::lab::with(crate::lab::POOL, || vec![0; class_len(class)].into_boxed_slice()),
         }
     }
 
@@ -407,11 +411,13 @@ impl<'p> RelayBuffer<'p> {
     pub(super) fn written(&mut self, len: usize) {
         self.give_back();
         self.unflushed += len;
+        LAB_UNFLUSHED.fetch_add(len as isize, Ordering::Relaxed);
         self.hold_for_unflushed();
     }
 
     /// The writer was flushed: it holds nothing the direction wrote.
     pub(super) fn flushed(&mut self) {
+        LAB_UNFLUSHED.fetch_sub(self.unflushed as isize, Ordering::Relaxed);
         self.unflushed = 0;
         self.hold_for_unflushed();
     }
@@ -430,6 +436,7 @@ impl<'p> RelayBuffer<'p> {
 
 impl Drop for RelayBuffer<'_> {
     fn drop(&mut self) {
+        LAB_UNFLUSHED.fetch_sub(self.unflushed as isize, Ordering::Relaxed);
         self.give_back();
     }
 }

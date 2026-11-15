@@ -13,7 +13,7 @@ mod support;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -24,6 +24,19 @@ struct Counting;
 static LIVE: AtomicIsize = AtomicIsize::new(0);
 static PEAK: AtomicIsize = AtomicIsize::new(0);
 
+const TAGS: usize = 4;
+static TAG_LIVE: [AtomicIsize; TAGS] = [const { AtomicIsize::new(0) }; TAGS];
+static TAG_COUNT: [AtomicIsize; TAGS] = [const { AtomicIsize::new(0) }; TAGS];
+// Base (the phase's start) and snapshot (its peak): tags, kept, unflushed, accepted, in_use, live.
+static BASE: [AtomicIsize; 2 * TAGS + 4] = [const { AtomicIsize::new(0) }; 2 * TAGS + 4];
+static SNAP: [AtomicIsize; 2 * TAGS + 4] = [const { AtomicIsize::new(0) }; 2 * TAGS + 4];
+static SNAP_LIVE: AtomicIsize = AtomicIsize::new(0);
+static LAST_SNAP: AtomicIsize = AtomicIsize::new(isize::MAX);
+static SNAPPING: AtomicBool = AtomicBool::new(false);
+static SNAPS: AtomicUsize = AtomicUsize::new(0);
+static LIMITED: AtomicBool = AtomicBool::new(false);
+const MAGIC: u64 = 0x7a7a_5a5a_0000_0000;
+
 thread_local! {
     static COUNTED: Cell<bool> = const { Cell::new(false) };
 }
@@ -32,44 +45,135 @@ fn counted() -> bool {
     COUNTED.try_with(Cell::get).unwrap_or(false)
 }
 
+fn state(into: &[AtomicIsize; 2 * TAGS + 4]) {
+    for i in 0..TAGS {
+        into[i].store(TAG_LIVE[i].load(Ordering::Relaxed), Ordering::Relaxed);
+        into[TAGS + i].store(TAG_COUNT[i].load(Ordering::Relaxed), Ordering::Relaxed);
+    }
+    let (kept, unflushed, accepted) = xray_core_rs::lab::counters();
+    into[2 * TAGS].store(kept as isize, Ordering::Relaxed);
+    into[2 * TAGS + 1].store(unflushed, Ordering::Relaxed);
+    into[2 * TAGS + 2].store(accepted, Ordering::Relaxed);
+    into[2 * TAGS + 3].store(
+        xray_transport::memory_budget::ByteBudget::process().in_use() as isize,
+        Ordering::Relaxed,
+    );
+}
+
+fn snapshot(live: isize) {
+    if SNAPPING
+        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+    state(&SNAP);
+    SNAP_LIVE.store(live, Ordering::Relaxed);
+    LAST_SNAP.store(live, Ordering::Relaxed);
+    SNAPS.fetch_add(1, Ordering::Relaxed);
+    SNAPPING.store(false, Ordering::Release);
+}
+
 fn count(delta: isize) {
     let live = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
     if delta > 0 {
-        PEAK.fetch_max(live, Ordering::Relaxed);
+        let before = PEAK.fetch_max(live, Ordering::Relaxed);
+        if live > before && live >= LAST_SNAP.load(Ordering::Relaxed).saturating_add(4096) {
+            snapshot(live);
+        }
     }
 }
 
-// SAFETY: every call goes to `System` unchanged; the counters only watch.
+fn header(align: usize) -> usize {
+    align.max(16)
+}
+
+fn full(layout: Layout) -> Layout {
+    Layout::from_size_align(layout.size() + header(layout.align()), layout.align().max(16)).unwrap()
+}
+
+unsafe fn put(base: *mut u8, tag: u8) {
+    unsafe { (base as *mut u64).write(MAGIC | u64::from(tag)) };
+}
+
+unsafe fn tag_of(base: *mut u8) -> usize {
+    let word = unsafe { (base as *const u64).read() };
+    assert_eq!(word & !0xff, MAGIC, "a block without the lab's header");
+    (word & 0xff) as usize
+}
+
+fn tag_add(tag: usize, size: usize, n: isize) {
+    if tag != 0 && tag < TAGS {
+        TAG_LIVE[tag].fetch_add(size as isize * n, Ordering::Relaxed);
+        TAG_COUNT[tag].fetch_add(n, Ordering::Relaxed);
+    }
+}
+
+fn this_tag() -> u8 {
+    if counted() {
+        xray_core_rs::lab::current()
+    } else {
+        0
+    }
+}
+
+// SAFETY: every block gets a header of `header(align)` bytes before it, which
+// keeps its alignment; the counters only watch.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { System.alloc(layout) };
-        if !ptr.is_null() && counted() {
+        let base = unsafe { System.alloc(full(layout)) };
+        if base.is_null() {
+            return base;
+        }
+        let tag = this_tag();
+        unsafe { put(base, tag) };
+        if counted() {
             count(layout.size() as isize);
         }
-        ptr
+        tag_add(tag as usize, layout.size(), 1);
+        unsafe { base.add(header(layout.align())) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let ptr = unsafe { System.alloc_zeroed(layout) };
-        if !ptr.is_null() && counted() {
+        let base = unsafe { System.alloc_zeroed(full(layout)) };
+        if base.is_null() {
+            return base;
+        }
+        let tag = this_tag();
+        unsafe { put(base, tag) };
+        if counted() {
             count(layout.size() as isize);
         }
-        ptr
+        tag_add(tag as usize, layout.size(), 1);
+        unsafe { base.add(header(layout.align())) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        unsafe { System.dealloc(ptr, layout) };
+        let base = unsafe { ptr.sub(header(layout.align())) };
+        let tag = unsafe { tag_of(base) };
+        tag_add(tag, layout.size(), -1);
+        unsafe { System.dealloc(base, full(layout)) };
         if counted() {
             count(-(layout.size() as isize));
         }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let new = unsafe { System.realloc(ptr, layout, new_size) };
-        if !new.is_null() && counted() {
+        let h = header(layout.align());
+        let base = unsafe { ptr.sub(h) };
+        let old_tag = unsafe { tag_of(base) };
+        let new_base = unsafe { System.realloc(base, full(layout), new_size + h) };
+        if new_base.is_null() {
+            return new_base;
+        }
+        let tag = if old_tag != 0 { old_tag as u8 } else { this_tag() };
+        unsafe { put(new_base, tag) };
+        tag_add(old_tag, layout.size(), -1);
+        tag_add(tag as usize, new_size, 1);
+        if counted() {
             count(new_size as isize - layout.size() as isize);
         }
-        new
+        unsafe { new_base.add(h) }
     }
 }
 
@@ -90,11 +194,38 @@ fn live() -> isize {
 fn reset_peak() -> isize {
     let now = live();
     PEAK.store(now, Ordering::Relaxed);
+    state(&BASE);
+    state(&SNAP);
+    SNAP_LIVE.store(now, Ordering::Relaxed);
+    LAST_SNAP.store(now, Ordering::Relaxed);
+    SNAPS.store(0, Ordering::Relaxed);
     now
 }
 
 fn peak() -> isize {
     PEAK.load(Ordering::Relaxed)
+}
+
+fn lab_report(phase: &str, start: isize) {
+    let arm = if LIMITED.load(Ordering::Relaxed) { "B = 1 MB" } else { "no limit" };
+    let d = |i: usize| SNAP[i].load(Ordering::Relaxed) - BASE[i].load(Ordering::Relaxed);
+    let at = SNAP_LIVE.load(Ordering::Relaxed) - start;
+    let (send, recv, pool) = (d(1), d(2), d(3));
+    let kept = d(2 * TAGS);
+    eprintln!(
+        "LAB {arm} {phase}: peak {at} B over its start ({} snapshots, peak() {} B); tls_send {send} B ({} blocks, {} at start), tls_recv {recv} B, pool buffers {pool} B (kept {kept} B, so lent {} B), other {} B; at the peak: budget in_use {} B, unflushed {} B, accepted-in-flight {} B; at the start: tls_send {} B, kept {} B",
+        SNAPS.load(Ordering::Relaxed),
+        peak() - start,
+        d(TAGS + 1),
+        BASE[TAGS + 1].load(Ordering::Relaxed),
+        pool - kept,
+        at - send - recv - pool,
+        SNAP[2 * TAGS + 3].load(Ordering::Relaxed),
+        SNAP[2 * TAGS + 1].load(Ordering::Relaxed),
+        SNAP[2 * TAGS + 2].load(Ordering::Relaxed),
+        BASE[1].load(Ordering::Relaxed),
+        BASE[2 * TAGS].load(Ordering::Relaxed),
+    );
 }
 
 static TURN: Mutex<()> = Mutex::new(());
@@ -226,6 +357,7 @@ fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
     ));
     let download = peak() - idle;
     let download_permits = xray_transport::byte_budget_usage().peak;
+    lab_report("download", idle);
     far.block_on(async { tokio::time::sleep(Duration::from_millis(300)).await });
     if buffer_kib.is_some() {
         // The uploads read more at once than the downloads did: a first
@@ -240,6 +372,7 @@ fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
     far.block_on(futures_join_all(streams.iter_mut().map(support::upload)));
     let upload = peak() - moving;
     let upload_permits = xray_transport::byte_budget_usage().peak;
+    lab_report("upload", moving);
     far.block_on(async { tokio::time::sleep(Duration::from_millis(300)).await });
     quiesce(&far, &near, &mut streams);
     let after = live() - idle;
@@ -360,8 +493,10 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
         }));
     };
     budget(usize::MAX / 2);
+    LIMITED.store(false, Ordering::Relaxed);
     let unlimited = vision_flows(FLOWS, None);
     budget(T4_BUDGET);
+    LIMITED.store(true, Ordering::Relaxed);
     let limited = vision_flows(FLOWS, None);
     let standard = vision_flows(STANDARD_FLOWS, Some(STANDARD_READ_KIB));
     xray_transport::set_byte_budget(None);
