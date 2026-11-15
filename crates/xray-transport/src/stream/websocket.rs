@@ -366,7 +366,11 @@ impl WebSocketStream {
             self.out_pos += written;
         }
 
-        self.out.clear();
+        // Dropped, not cleared: a data write encodes into a buffer of its
+        // own, so kept capacity would only idle with the flow beside the
+        // records a TLS session sealed from it, as large as the last write.
+        // A control frame allocates its few bytes again.
+        self.out = Vec::new();
         self.out_pos = 0;
         Poll::Ready(Ok(()))
     }
@@ -746,4 +750,37 @@ impl TransportStream for DeferredWebSocketStream {
 
 fn protocol_io_error(error: TransportError) -> io::Error {
     io::Error::other(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::WebSocketStream;
+
+    /// A write's frames, once its carrier has taken them, leave the stream
+    /// no buffer. A data write encodes its frames into a buffer of its own,
+    /// so capacity kept from the last one would only sit with the flow while
+    /// it idles, beside the records a TLS session sealed from it: as much
+    /// again as the write, up to the relay's 128 KiB and more.
+    #[tokio::test]
+    async fn a_written_frame_leaves_no_buffer_behind() {
+        let (client, mut server) = tokio::io::duplex(1 << 20);
+        let mut stream = WebSocketStream::new(Box::new(client), Vec::new(), 0);
+        for len in [100, 32 * 1024, 128 * 1024] {
+            stream.write_all(&vec![7u8; len]).await.expect("write");
+            assert_eq!(
+                stream.out.capacity(),
+                0,
+                "a {len} B write's frames were written and their buffer kept"
+            );
+        }
+        drop(stream);
+        let mut wire = Vec::new();
+        server.read_to_end(&mut wire).await.expect("read");
+        assert!(
+            wire.len() > 100 + 32 * 1024 + 128 * 1024,
+            "the frames arrived"
+        );
+    }
 }

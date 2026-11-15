@@ -339,8 +339,10 @@ fn quiesce(
 /// to the socket (xray-transport's `tls_send`). Before, rustls took writes up to 64 KiB
 /// ahead of the socket and part of a write that then waited, which the
 /// relay buffer held too: at their peak 64 flows on a GitHub runner had 90
-/// to 261 KB in both places, and went up to 102 KB over this bound in CI.
-/// The arm with no limit holds more than the bound.
+/// to 261 KB in both places, and went up to 102 KB over the bound T4 had
+/// then (the budget, the floors and the framing: without the pool's room
+/// and the sealing below) in CI. The arm with no limit holds more than its
+/// bound.
 ///
 /// A third arm reads up to 128 KiB at once (`bufferSize` 128), a standard
 /// host's default, under the same budget, with `STANDARD_FLOWS` flows so
@@ -370,6 +372,22 @@ fn quiesce(
 /// 128 KiB write (262,144 B in write calls; with one worker, 131,072 B and
 /// up to 27,544 B over).
 ///
+/// The 128 KiB arm's bound in bytes is a regression bound, not a guard: no
+/// broken rule this test knows of takes the arm over it. Eight flows
+/// reading 128 KiB want about `B` in all, and the bound gives the two
+/// workers' sealing and the pool's room beside it. On the build box the
+/// arm held, against about 1.4 to 1.6 MB, 885,748 and 1,000,590 B with no
+/// budget, 344,526 and 377,338 B with a relay direction that keeps its
+/// buffer while it waits, and up to 1,229,394 B with a session that keeps
+/// rustls's 64 KiB limit (`take_writes_whole` a no-op). The arm's permits
+/// tell the first apart: with no budget its flows take 1,015,808 B of
+/// them, a 128 KiB read less its floor each, so each limited arm's uploads
+/// must take no more than `B`. The guard for `tls_send`'s rule is its unit
+/// test, on both of its paths (`TlsClientStream`, and the
+/// `PenetratingTlsStream` of REALITY and of Vision over TLS): its 32 KiB
+/// write for a session that takes a write only once the records before it
+/// have gone, and its 128 KiB write for one that takes it whole.
+///
 /// The downloads are held in permits, to the budget, not in bytes. What
 /// they hold beside the budget is each TLS session's receive side, up to
 /// `TLS_RECEIVE` a flow, which a bound in bytes must allow; and a flow with
@@ -390,7 +408,6 @@ fn quiesce(
 fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
     const FLOWS: usize = 64;
     let _turn = take_turn();
-    let flows = FLOWS as isize;
     let download_bound = |flows: isize| T4_BUDGET as isize + flows * FLOOR + flows * TLS_RECEIVE;
     let budget = set_budget;
     budget(usize::MAX / 2);
@@ -446,10 +463,11 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
          the budget",
         unlimited.download_permits
     );
+    let unlimited_bound = upload_bound_of(FLOWS, &unlimited, CONSTRAINED_READ);
     assert!(
-        unlimited.upload_permits > 2 * T4_BUDGET && unlimited.upload > upload_bound(flows),
-        "without a limit the uploads took {} B and {} B of permits: the test no longer \
-         presses the budget",
+        unlimited.upload_permits > 2 * T4_BUDGET && unlimited.upload > unlimited_bound,
+        "without a limit the uploads took {} B and {} B of permits, its bound {unlimited_bound} \
+         B: the test no longer presses the budget",
         unlimited.upload,
         unlimited.upload_permits
     );
@@ -459,6 +477,11 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
             run.download_permits <= T4_BUDGET,
             "{arm}: the downloads took {} B of permits; the budget is {T4_BUDGET} B",
             run.download_permits
+        );
+        assert!(
+            run.upload_permits <= T4_BUDGET,
+            "{arm}: the uploads took {} B of permits; the budget is {T4_BUDGET} B",
+            run.upload_permits
         );
         assert!(
             run.upload <= bound,

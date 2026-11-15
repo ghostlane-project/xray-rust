@@ -149,6 +149,23 @@ long-term supported release series.
   write that met a part-full queue under backpressure no longer occur.
   Inside the write call a session seals the write while the relay buffer
   still holds its bytes: one write per worker thread at most, for that call.
+  Under XHTTP over HTTP/2 and gRPC the session's writer is h2's connection,
+  and a relay's flush returns once h2 has its bytes, so no relay counts
+  what h2 queues (at most the peer's window and 400 KiB a stream) or the
+  session holds: one of h2's writes, its 16 KiB frame buffer and one DATA
+  frame. That is 32 KiB under XHTTP, and under gRPC against grpc-go's
+  16 KiB frames; through a peer that advertises larger frames a gRPC write
+  is up to 416 KiB.
+- XHTTP over HTTP/1.1 writes a request's head and body 16 KiB at a time,
+  so a TLS session, which takes a write whole (above), holds 16,406 B of a
+  request at most while its carrier waits, none of it in the byte budget.
+  A packet-up POST body (1,000,000 B by default) is one write no longer:
+  the session would hold it sealed beside the body its uploader keeps
+  until the response, about 2 MB a flow; before, rustls took up to 64 KiB
+  of it ahead. A body's records are 16 KiB, the last one shorter.
+- WebSocket gives back a write's frame buffer once its carrier has taken
+  the frames, rather than keeping its capacity, as large as the last write,
+  while the flow idles.
 - A relay direction holds no buffer between reads: each read borrows one
   sized for it (1 KiB to 1 MiB) from the process's pool and gives it back
   once written, and a read that brings half of its size or less sets the
