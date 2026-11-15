@@ -364,7 +364,7 @@ where
             // still decrypts our writes until Vision switches this direction.
             PenetratingTlsState::Tls(Some(stream))
             | PenetratingTlsState::ReadDirect { stream, .. } => {
-                Pin::new(stream).poll_write(cx, input)
+                crate::tls_send::poll_write(&mut **stream, cx, input)
             }
             PenetratingTlsState::Tls(None) => {
                 Poll::Ready(Err(io::Error::other("TLS stream was already taken")))
@@ -381,7 +381,7 @@ where
         match &mut this.state {
             PenetratingTlsState::Tls(Some(stream))
             | PenetratingTlsState::ReadDirect { stream, .. } => {
-                Pin::new(stream).poll_write_vectored(cx, inputs)
+                crate::tls_send::poll_write_vectored(&mut **stream, cx, inputs)
             }
             PenetratingTlsState::Tls(None) => {
                 Poll::Ready(Err(io::Error::other("TLS stream was already taken")))

@@ -1,10 +1,7 @@
 use std::{
     collections::HashMap,
-    io,
     net::SocketAddr,
-    pin::Pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll},
 };
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -15,18 +12,18 @@ use rustls::{
     SignatureScheme,
 };
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::TlsConnector as TokioTlsConnector;
 use x509_parser::prelude::{FromDer, X509Certificate};
 use xray_routing::{Target, TargetAddr};
 
 use crate::{
     connect_tcp_happy_eyeballs, connect_tcp_stream,
+    tls_send::TlsClientStream,
     utls_profiles::UtlsClientHelloProfile,
     utls_shaping::profile_offers_tls13,
     utls_tls::{unshaped_alpn_protocols, TlsAlpnPolicy},
     BoxedTransportStream, CapturedStream, HappyEyeballsConfig, PenetratingTlsStream,
-    SocketProtector, TlsClientConfig, TransportError, TransportStream,
+    SocketProtector, TlsClientConfig, TransportError,
 };
 
 /// Identifies one rustls configuration shape. Two connections that agree on
@@ -372,7 +369,7 @@ impl TlsConnector {
             .await
             .map_err(TransportError::Tls)?;
 
-        Ok(Box::new(stream))
+        Ok(Box::new(TlsClientStream::new(stream)))
     }
 
     /// [`connect_prepared_stream`](Self::connect_prepared_stream), with the
@@ -388,7 +385,7 @@ impl TlsConnector {
             .await
             .map_err(TransportError::Tls)?;
         let alpn = stream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
-        Ok((Box::new(stream), alpn))
+        Ok((Box::new(TlsClientStream::new(stream)), alpn))
     }
 
     /// The QUIC TLS configuration for a WARP dial: the connector's own for
@@ -420,7 +417,7 @@ impl TlsConnector {
             .await
             .map_err(TransportError::Tls)?;
         let alpn = stream.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
-        Ok((Box::new(stream), alpn))
+        Ok((Box::new(TlsClientStream::new(stream)), alpn))
     }
 
     /// Completes the handshake on a carrier that Vision may unwrap.
@@ -548,29 +545,6 @@ fn validate_quic_client_config(client_config: &rustls::ClientConfig) -> Result<(
     )
     .map(|_| ())
     .map_err(|error| TransportError::TlsConfig(error.to_string()))
-}
-
-/// TLS that Vision never unwraps: the session under an HTTP-based stream
-/// transport, where Vision requires VLESS encryption and its Direct command
-/// removes only that layer, and the sessions `TlsConnector` dials for DNS and
-/// probes. Direct I/O therefore stays inside the session. The raw transport's
-/// TLS, which Vision does unwrap, is a `PenetratingTlsStream`.
-impl TransportStream for tokio_rustls::client::TlsStream<BoxedTransportStream> {
-    fn poll_read_direct(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        output: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        AsyncRead::poll_read(self, cx, output)
-    }
-
-    fn poll_write_direct(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        input: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        AsyncWrite::poll_write(self, cx, input)
-    }
 }
 
 /// Skips certificate verification, but still verifies handshake signatures

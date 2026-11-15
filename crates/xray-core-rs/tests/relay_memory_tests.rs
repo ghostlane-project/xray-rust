@@ -264,8 +264,14 @@ fn quiesce(
 /// framing for each record those bytes may wait in, a record per KiB (the
 /// smallest relay read, the far client being always ahead) and one more
 /// per flow. Their relay buffers come from those the pool kept from the
-/// downloads, which `moving` counts. The arm with no limit holds more than
-/// that.
+/// downloads, which `moving` counts. A flow's TLS session holds to send
+/// only bytes its relay wrote and counts as unflushed: it takes a write
+/// once the records of the one before have gone to the socket
+/// (xray-transport's `tls_send`). Before, rustls took writes up to 64 KiB
+/// ahead of the socket and part of a write that then waited, which the
+/// relay buffer held too: at their peak 64 flows on a GitHub runner had 90
+/// to 261 KB in both places, and went up to 102 KB over this bound in CI.
+/// The arm with no limit holds more than the bound.
 ///
 /// The downloads are held in permits, to the budget, not in bytes. What
 /// they hold beside the budget is each TLS session's receive side, up to

@@ -55,6 +55,7 @@ mod socket_options;
 pub mod stream;
 mod system_records;
 mod tls;
+mod tls_send;
 mod utls_profiles;
 mod utls_shaping;
 mod utls_tls;
