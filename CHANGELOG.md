@@ -167,9 +167,14 @@ long-term supported release series.
   carrier waits holds 30 B of its frame in the stream and none of its bytes.
   It copied its input and padding into a buffer of its own, which held them,
   outside the byte budget, while the carrier waited. The carrier sees the
-  same writes with the same bytes, and a TLS session seals the same records.
-  A VLESS request header held for the first payload goes out gathered with
-  it, uncopied, when its carrier gathers.
+  same writes with the same bytes, in the same order with its reads (a
+  frame whose payload went goes on with its padding while the carrier
+  takes it), and a TLS session seals the same records. A carrier that does
+  not gather gets the rest of the frame copied for each call it is offered,
+  as many times as it takes pieces: a 65,535 B frame to one that takes
+  8,192 B a call costs 5.9 µs where the one copy cost 1.7 µs, 11.2 µs when
+  it waits between pieces. A VLESS request header held for the first
+  payload goes out gathered with it, uncopied, when its carrier gathers.
 - Vendored h2: the reader takes each frame into an allocation of its own
   size, `9 + length`, which grows while the frame arrives from at most
   16,393 B and so never holds more than twice what has arrived, and it holds

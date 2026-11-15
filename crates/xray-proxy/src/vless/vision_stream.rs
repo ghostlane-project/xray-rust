@@ -196,6 +196,17 @@ impl FrameTail {
 /// frame in a buffer of its own would hold there. A carrier that gathers
 /// gets them as slices; one that does not gets a copy for this call only,
 /// gone before it returns, unless there is one piece to write.
+///
+/// So a carrier that does not gather and takes a frame in pieces has the
+/// rest copied again on each call, a call it waits on too: a 65,535 B
+/// payload to one that takes 8,192 B a call costs 5.9 µs a frame where the
+/// one copy into a frame buffer cost 1.7 µs, and 11.2 µs when it waits
+/// between pieces (release build, medians of 10 rounds on the build box).
+/// Offering it a bounded piece instead would change what a carrier is
+/// offered, which the wire tests pin with writes of up to 70,000 B. The
+/// cost is paid only for a padded frame, and a flow pads only its first
+/// ones; the client's carriers over TLS and REALITY gather
+/// (`outbound::vision_chain_tests`).
 fn poll_write_parts<S: AsyncWrite + Unpin>(
     inner: &mut S,
     cx: &mut Context<'_>,
