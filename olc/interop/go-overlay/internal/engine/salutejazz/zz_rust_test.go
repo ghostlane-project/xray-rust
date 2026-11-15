@@ -668,7 +668,19 @@ func TestRustRejoinsWhenTheConnectorDropsIt(t *testing.T) {
 	tunnel := startRustTunnel(t, room, time.Second, 4*time.Second)
 	first := startDownload(t, tunnel.socksAddr, startSource(t))
 	eventually(t, 10*time.Second, "the first download under way", func() bool { return first.moved() >= 1<<20 })
-	room.DropAll()
+	before := room.Identities()
+	if err := room.DropAll(); err != nil {
+		t.Fatal(err)
+	}
+	// The drop is over only once the fake has let go of everyone it dropped:
+	// until then its relay can still reach a participant it is tearing down,
+	// and trips over its own closed channel (R5: the engine's Go client trips
+	// it too), which this test would read as the client's.
+	for _, id := range before {
+		if slices.Contains(room.Identities(), id) {
+			t.Fatalf("DropAll returned while %s, a participant it dropped, was still in the fake", id)
+		}
+	}
 	source := startSource(t)
 	var again *transfer
 	eventually(t, 60*time.Second, "a download after the drop", func() bool {
@@ -800,8 +812,7 @@ func TestServeFakeRoom(t *testing.T) {
 		return nil
 	}))
 	mux.HandleFunc("POST /dropall", s.hook(func(r *servedRoom, _ map[string]string) error {
-		r.room.DropAll()
-		return nil
+		return r.room.DropAll()
 	}))
 	mux.HandleFunc("POST /swallow", s.hook(func(r *servedRoom, q map[string]string) error {
 		r.room.Swallow(q["topic"])
