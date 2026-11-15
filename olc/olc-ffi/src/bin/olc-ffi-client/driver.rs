@@ -15,7 +15,9 @@
 //! (`ffi cycle=...`), for the stop/start leak test.
 //!
 //! With `OLC_FFI_CONTROL=1` it is the footprint harness's host on Linux
-//! (Ghostlane `lab/olc-ffi/footprint/footprint.py`), fp-host's protocol
+//! (Ghostlane `lab/olc-ffi/footprint/footprint.py`) and the core in a
+//! process of its own on the Android emulator (Ghostlane
+//! `lab/olc-ffi-android`, `TrimProcessTest`), fp-host's protocol
 //! (`host/main.swift`), one command per line on stdin, one answer per line
 //! on stdout, and a `TICK <unix ms> <footprint> <memory_stats json>` line
 //! four times a second between them; `<footprint>` is `RssAnon` (the
@@ -26,6 +28,8 @@
 //! stats        memory_stats()             STATS <json>
 //! trim         trim()                     TRIM <bytes> <footprint before> <after>
 //! mtrim        glibc's malloc_trim(0)     MTRIM <its result> <footprint before> <after>
+//! mpurge       bionic's mallopt(M_PURGE)  MPURGE <its result> <footprint before> <after>
+//! mpurge_all   mallopt(M_PURGE_ALL)       MPURGE_ALL <its result> <footprint before> <after>
 //! budget <n>   set_byte_budget(n)         BUDGET cap=<B>
 //! cycle <n>    n x (stop, start, ready)   CYCLED n=<n> ready_min=<ms> ready_max=<ms>
 //! stop         stop(5000)                 STOPPED ms=<n>
@@ -323,6 +327,47 @@ fn glibc_trim() -> Option<i32> {
     }
 }
 
+/// bionic's `M_PURGE` (API 28: Scudo returns its free pages) and
+/// `M_PURGE_ALL` (API 34: its caches' too), `<malloc.h>`.
+const M_PURGE: std::ffi::c_int = -101;
+const M_PURGE_ALL: std::ffi::c_int = -104;
+
+#[cfg(all(target_os = "android", target_pointer_width = "64"))]
+extern "C" {
+    fn dlsym(
+        handle: *mut std::ffi::c_void,
+        symbol: *const std::ffi::c_char,
+    ) -> *mut std::ffi::c_void;
+}
+
+/// bionic's `mallopt(param, 0)`, looked up when called: `mallopt` is API
+/// 26 and the app's minSdk is 23, so the binary links no symbol an older
+/// system lacks. `None` off Android, or where there is no `mallopt`.
+fn bionic_mallopt(param: std::ffi::c_int) -> Option<i32> {
+    #[cfg(all(target_os = "android", target_pointer_width = "64"))]
+    {
+        // SAFETY: a null handle is RTLD_DEFAULT on 64-bit bionic (every
+        // loaded library, in load order); the name is a C string.
+        let f = unsafe { dlsym(std::ptr::null_mut(), c"mallopt".as_ptr()) };
+        if f.is_null() {
+            return None;
+        }
+        // SAFETY: the symbol is libc's `int mallopt(int, int)`.
+        let mallopt = unsafe {
+            std::mem::transmute::<
+                *mut std::ffi::c_void,
+                extern "C" fn(std::ffi::c_int, std::ffi::c_int) -> std::ffi::c_int,
+            >(f)
+        };
+        Some(mallopt(param, 0))
+    }
+    #[cfg(not(all(target_os = "android", target_pointer_width = "64")))]
+    {
+        let _ = param;
+        None
+    }
+}
+
 fn say(line: &str) {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{line}");
@@ -390,6 +435,18 @@ fn control(rt: &OlcrtcRuntime, extra: Extra<'_>) -> ExitCode {
                 match glibc_trim() {
                     Some(r) => say(&format!("MTRIM {r} {before} {}", footprint())),
                     None => say("ERR mtrim not glibc"),
+                }
+            }
+            "mpurge" | "mpurge_all" => {
+                let (param, word) = if command == "mpurge" {
+                    (M_PURGE, "MPURGE")
+                } else {
+                    (M_PURGE_ALL, "MPURGE_ALL")
+                };
+                let before = footprint();
+                match bionic_mallopt(param) {
+                    Some(r) => say(&format!("{word} {r} {before} {}", footprint())),
+                    None => say(&format!("ERR {command} not bionic")),
                 }
             }
             "budget" => {
