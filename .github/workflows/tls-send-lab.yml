@@ -1,0 +1,56 @@
+name: tls-send-lab
+
+# Lab for gl/tls-send-limit: T4 (relay_memory_tests) on a GitHub ubuntu-24.04
+# runner, built as the rust job's Test step builds it (debug, the whole
+# workspace's features), the whole binary 10 times. Throwaway
+# gl/tls-send-lab-* branches only; never merged.
+
+on:
+  push:
+    branches: ['gl/tls-send-lab-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tls-send-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  t4:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Runner
+        run: |
+          nproc; grep -m1 'model name' /proc/cpuinfo; free -m; uname -r
+      - name: Toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal && rustup default 1.96.0
+      - name: Build as the Test step does
+        run: |
+          set -euo pipefail
+          cargo test --workspace --exclude xray-rust-fuzz --all-targets --locked --no-run --message-format=json > "$RUNNER_TEMP/build.json"
+          bin=$(python3 -c 'import json,sys; print(next(v["executable"] for v in map(json.loads, open(sys.argv[1])) if v.get("reason") == "compiler-artifact" and v.get("executable") and v["target"]["name"] == "relay_memory_tests"))' "$RUNNER_TEMP/build.json")
+          echo "BIN=$bin" >> "$GITHUB_ENV"; echo "$bin"
+      - name: relay_memory_tests x 10
+        working-directory: crates/xray-core-rs
+        run: |
+          set +e -uo pipefail
+          pass=0 fail=0
+          for i in $(seq 1 10); do
+            out=$(timeout 600 "$BIN" --nocapture 2>&1); rc=$?
+            echo "run $i rc=$rc $(printf '%s\n' "$out" | grep -E '^test result:' | tail -1)"
+            printf '%s\n' "$out" | grep -E '^T4 |^LAB |^T5 |panicked|the uploads held|the downloads took|the flows held|without a limit' | sed 's/^/    /'
+            if [ $rc -eq 0 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
+          done
+          echo "pass=$pass fail=$fail"

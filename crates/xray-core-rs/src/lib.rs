@@ -24,6 +24,8 @@ use xray_transport::{
 use xray_tun::{TunConfig, TunEndpoint};
 
 mod connection;
+#[doc(hidden)]
+pub mod lab;
 mod debug_log;
 mod dns;
 mod dns_forward;
