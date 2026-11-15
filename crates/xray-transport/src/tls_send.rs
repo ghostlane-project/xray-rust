@@ -29,6 +29,13 @@
 //! its bytes. The writer waits for the carrier instead. How large that one
 //! write is, the writer decides: a relay's is at most its read cap, 1 MiB.
 //!
+//! Inside the write call, the session seals the write's records while the
+//! writer's buffer still holds the same bytes, which the budget counts once,
+//! as the buffer until the call returns. A worker thread makes one such call
+//! at a time, so a process holds at most one write that way per worker, for
+//! the length of the call: on a phone (one worker), its relay's largest
+//! write and their framing, 32,812 B.
+//!
 //! Records: a write that meets an empty queue is cut as rustls always cut
 //! one, into 16 KiB records and the rest, whatever its size (the old limit,
 //! 64 KiB, fell at the end of a record). A write that met a queue holding

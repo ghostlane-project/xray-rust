@@ -161,6 +161,20 @@ const VISION_PADDED_PACKETS: usize = 8;
 const VISION_FRAME_EXTRA: isize = 5 + 1_399;
 /// The free relay buffers a constrained process keeps.
 const CONSTRAINED_POOL_KEEP: isize = 4 * 128 * KIB as isize;
+/// The plaintext of a full TLS record.
+const RECORD_PLAINTEXT: usize = 16 * KIB;
+
+/// What the core's workers may hold beside the budget while they hand
+/// writes of up to `read` bytes to TLS sessions. Inside the write call, the
+/// session seals the write's records while the relay buffer the write came
+/// from still holds its bytes, which the budget counts once: as the buffer
+/// until the call returns, then as unflushed (xray-transport's `tls_send`).
+/// A worker makes one such call at a time, so each holds at most one write's
+/// records that way: `read` bytes and 22 B for each record of them.
+const fn sealing(read: isize) -> isize {
+    let records = (read as usize).div_ceil(RECORD_PLAINTEXT) as isize;
+    CORE_WORKERS as isize * (read + TLS_RECORD_FRAMING * records)
+}
 
 /// What the relay pool may still come to keep, beside the `kept` bytes it
 /// keeps now.
@@ -318,9 +332,9 @@ fn quiesce(
 /// smallest relay read, the far client being always ahead) and one more
 /// per flow. Their relay buffers come from those the pool kept from the
 /// downloads, which `moving` counts. A flow's TLS session holds to send
-/// only bytes its relay wrote and counts as unflushed: it takes a write
-/// once the records of the one before have gone to the socket
-/// (xray-transport's `tls_send`). Before, rustls took writes up to 64 KiB
+/// only bytes its relay wrote and counts as unflushed once the write call
+/// returns: it takes a write once the records of the one before have gone
+/// to the socket (xray-transport's `tls_send`). Before, rustls took writes up to 64 KiB
 /// ahead of the socket and part of a write that then waited, which the
 /// relay buffer held too: at their peak 64 flows on a GitHub runner had 90
 /// to 261 KB in both places, and went up to 102 KB over this bound in CI.
@@ -340,10 +354,19 @@ fn quiesce(
 /// the budget. `moving` counts what it kept then, and each arm's bound
 /// allows the rest (`pool_room`), which it may come to keep while the
 /// uploads move: their reads are not all of one size, and a buffer of a
-/// size the pool has none of is new. Without that room the 128 KiB arm went
-/// up to 175 KB over its bound on a GitHub runner after the first upload,
-/// and up to 454 KB without the first upload; the arms of 64 flows find the
-/// pool full of the downloads' buffers.
+/// size the pool has none of is new. The arms of 64 flows find the pool
+/// full of the downloads' buffers.
+///
+/// Each arm's bound also allows the writes the core's workers are sealing
+/// (`sealing`): inside a write call a TLS session seals the write's records
+/// while the relay buffer the write came from still holds its bytes, one
+/// write per worker at most. The 128 KiB arm meets it whole, as its relays
+/// flush after each write (`COPY_FLUSH_THRESHOLD`, 64 KiB), so no unflushed
+/// bytes of the write before, whose records have gone, stand for the new
+/// records. Without the term it went up to 158,572 B over its bound on a
+/// GitHub runner, and at each such peak both workers were sealing a
+/// 128 KiB write (262,144 B in write calls; with one worker, 131,072 B and
+/// up to 27,544 B over).
 ///
 /// The downloads are held in permits, to the budget, not in bytes. What
 /// they hold beside the budget is each TLS session's receive side, up to
@@ -378,19 +401,23 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
         Uploads::PastPadding,
     );
     xray_transport::set_byte_budget(None);
-    let phone_spares = thread_spares(CONSTRAINED_READ);
-    let standard_spares = thread_spares(STANDARD_READ_KIB as isize * KIB as isize);
+    let standard_read = STANDARD_READ_KIB as isize * KIB as isize;
     let arms = [
-        ("no limit", FLOWS, unlimited, phone_spares),
-        ("B = 1 MB", FLOWS, limited, phone_spares),
+        ("no limit", FLOWS, unlimited, CONSTRAINED_READ),
+        ("B = 1 MB", FLOWS, limited, CONSTRAINED_READ),
         (
             "B = 1 MB, 128 KiB reads",
             STANDARD_FLOWS,
             standard,
-            standard_spares,
+            standard_read,
         ),
     ];
-    for (arm, flows, run, spares) in arms {
+    let upload_bound_of = |flows: usize, run: &Run, read: isize| {
+        upload_bound(flows as isize) + pool_room(run.kept) + sealing(read)
+    };
+    for (arm, flows, run, read) in arms {
+        let spares = thread_spares(read);
+        let bound = upload_bound_of(flows, &run, read);
         let flows = flows as isize;
         eprintln!(
             "T4 {flows} Vision flows, {arm}: idle {} B ({} B a flow); download {} B over \
@@ -406,7 +433,7 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
             run.upload,
             run.moving,
             run.kept,
-            upload_bound(flows) + pool_room(run.kept),
+            bound,
             run.upload_permits,
             run.after
         );
@@ -424,8 +451,8 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
         unlimited.upload,
         unlimited.upload_permits
     );
-    for (arm, flows, run, _) in &arms[1..] {
-        let bound = upload_bound(*flows as isize) + pool_room(run.kept);
+    for (arm, flows, run, read) in &arms[1..] {
+        let bound = upload_bound_of(*flows, run, *read);
         assert!(
             run.download_permits <= T4_BUDGET,
             "{arm}: the downloads took {} B of permits; the budget is {T4_BUDGET} B",
@@ -438,7 +465,8 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
             run.upload
         );
     }
-    for (arm, _, run, spares) in arms {
+    for (arm, _, run, read) in arms {
+        let spares = thread_spares(read);
         assert!(
             run.after <= spares,
             "{arm}: the flows held {} B more than idle after the uploads; the workers' \
