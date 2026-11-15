@@ -579,8 +579,9 @@ impl Inner {
             // The direct path won: whatever the tunnel has by now is closed.
             prep.abort();
             let given = std::mem::replace(&mut job.host, host.into_bytes());
-            self.dial_direct(conn, job, "sniffed name", Some(given))
-                .await;
+            // Boxed: a sniffed connection mostly goes through the tunnel,
+            // and its task holds the direct path's state only when taken.
+            Box::pin(self.dial_direct(conn, job, "sniffed name", Some(given))).await;
             return;
         }
         if !host.is_empty() {

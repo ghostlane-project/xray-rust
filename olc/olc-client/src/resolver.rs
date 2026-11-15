@@ -506,7 +506,10 @@ async fn configured_lookup(ring: &Ring, host: &str) -> io::Result<Vec<IpAddr>> {
 /// One family, up to [`ATTEMPTS`] queries: an answer ends it, an empty or
 /// NXDOMAIN one too; a server failure or refusal tries again.
 async fn lookup_family(ring: &Ring, host: &str, qtype: u16) -> io::Result<Vec<IpAddr>> {
-    let mut buf = [0u8; ANSWER_BUFFER];
+    // On the heap for the lookup's life, not in the future: both families
+    // run at once, and an array here put 8 KiB into every future that may
+    // look a name up, every SOCKS connection's task among them (gap 18).
+    let mut buf = vec![0u8; ANSWER_BUFFER];
     let mut last = no_addresses();
     for _ in 0..ATTEMPTS {
         let id: u16 = rand::random();

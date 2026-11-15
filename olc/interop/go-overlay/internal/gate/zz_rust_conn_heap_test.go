@@ -64,9 +64,13 @@ const (
 	// live heap per open connection. Before the shrink (gap 18) an idle one
 	// held 13,169-13,199 bytes and a moving one 13,334-13,422: the task's
 	// 12,672-byte allocation, its socket's 256-byte registration and its
-	// smux slot.
-	connIdleTarget   = 3072
-	connMovingTarget = 4096
+	// smux slot. After it, 2,289-2,321 and 2,414-2,480: the task is 1,792
+	// bytes. The idle bound is what a task at olc-client's own size guard
+	// (CONN_TASK_MAX, 2,048 bytes of future: a 2,176-byte task) would hold
+	// with the rest unchanged, plus a little; the moving one adds the
+	// buffers and arena chunks of the bytes in flight.
+	connIdleTarget   = 2816
+	connMovingTarget = 3072
 	// connReturnSlack is how far above the base the heap may stay once the
 	// connections closed: what their slots leave as capacity.
 	connReturnSlack = 512 << 10

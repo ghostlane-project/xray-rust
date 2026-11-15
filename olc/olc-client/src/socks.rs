@@ -390,16 +390,20 @@ impl Inner {
                     let Some(slot) = ConnSlot::take(&self) else {
                         continue;
                     };
-                    let me = self.clone();
-                    tokio::spawn(async move {
-                        let _slot = slot;
-                        tokio::select! {
-                            () = me.run.cancelled() => {}
-                            () = me.handle_socks(conn) => {}
-                        }
-                    });
+                    tokio::spawn(Self::conn_task(self.clone(), conn, slot));
                 }
             }
+        }
+    }
+
+    /// One accepted connection's task: its whole life, holding its slot.
+    /// The task's allocation is this future, so its size is what every
+    /// open connection pays first (`tests::per_connection_futures`).
+    async fn conn_task(me: Arc<Self>, conn: TcpStream, slot: ConnSlot) {
+        let _slot = slot;
+        tokio::select! {
+            () = me.run.cancelled() => {}
+            () = me.handle_socks(conn) => {}
         }
     }
 
@@ -418,9 +422,13 @@ impl Inner {
             }
             Err(_) => return,
         };
+        // A connection's task is as large as its largest arm, so the arms
+        // only some connections take (UDP, direct) are boxed: their state is
+        // allocated when one is taken, and a CONNECT through the tunnel, the
+        // common one, holds only its own (gap 18).
         match req.cmd {
-            cmd::UDP_ASSOCIATE => self.udp_associate(conn, req).await,
-            cmd::FWD_UDP => self.fwd_udp(conn, req).await,
+            cmd::UDP_ASSOCIATE => Box::pin(self.udp_associate(conn, req)).await,
+            cmd::FWD_UDP => Box::pin(self.fwd_udp(conn, req)).await,
             _ => self.serve_connect(conn, req).await,
         }
     }
@@ -433,7 +441,7 @@ impl Inner {
             ..Job::default()
         };
         match classify(self.rules.as_ref(), &host_text(&job.host)) {
-            Route::Direct(reason) => self.dial_direct(conn, job, reason, None).await,
+            Route::Direct(reason) => Box::pin(self.dial_direct(conn, job, reason, None)).await,
             Route::Sniff => self.sniff_then_route(conn, job).await,
             Route::Tunnel => self.tunnel_when_ready(conn, job).await,
         }
@@ -510,6 +518,128 @@ mod tests {
     use tokio::io::duplex;
 
     use super::*;
+
+    /// The size of what `f` returns, from its type alone: nothing is built
+    /// or run.
+    fn returned<A, R>(_: impl FnOnce(A) -> R) -> usize {
+        std::mem::size_of::<R>()
+    }
+
+    /// The most an open connection's task future may be: the task is one
+    /// allocation of it (and Tokio's header and trailer), whichever arm the
+    /// connection takes, so it is the first thing every connection pays
+    /// (gap 18: 12,560 bytes in release before the UDP and direct arms were
+    /// boxed and the lookup's answer buffers went to the heap, 1,640 after).
+    const CONN_TASK_MAX: usize = 2048;
+    /// A name's lookup, inside the direct arms and UDP's (9,784 bytes with
+    /// its two answer buffers inline, 1,640 without).
+    const LOOKUP_MAX: usize = 2048;
+    /// A UDP association's and a FWD_UDP connection's future, boxed apart:
+    /// what only those connections pay (12,280 bytes before, 4,136 after;
+    /// the rest is the datagram's record, `UDP_MAX_RECORD`, held while the
+    /// lane takes it).
+    const UDP_ARM_MAX: usize = 4608;
+
+    /// Every future an open connection's task holds, by its type's size,
+    /// held to the bounds above.
+    #[test]
+    fn per_connection_futures() {
+        type Me = &'static Arc<Inner>;
+        type Stop = &'static tokio_util::sync::CancellationToken;
+        let sizes = [
+            (
+                "conn_task",
+                returned(|(me, conn, slot): (Arc<Inner>, TcpStream, ConnSlot)| {
+                    Inner::conn_task(me, conn, slot)
+                }),
+            ),
+            (
+                "handle_socks",
+                returned(|(me, conn): (Me, TcpStream)| me.handle_socks(conn)),
+            ),
+            (
+                "handshake",
+                returned(|conn: &'static mut TcpStream| handshake(conn, "", "")),
+            ),
+            (
+                "read_request",
+                returned(|conn: &'static mut TcpStream| read_request(conn, false)),
+            ),
+            (
+                "serve_connect",
+                returned(|(me, conn, req): (Me, TcpStream, Request)| me.serve_connect(conn, req)),
+            ),
+            (
+                "tunnel_when_ready",
+                returned(|(me, conn, job): (Me, TcpStream, Job)| me.tunnel_when_ready(conn, job)),
+            ),
+            (
+                "prepare_tunnel",
+                returned(|me: Me| me.prepare_tunnel(b"", 0)),
+            ),
+            ("wait_session", returned(|me: Me| me.wait_session())),
+            (
+                "pump_tunnel",
+                returned(|(me, conn, stream, job): (Me, TcpStream, Stream, Job)| {
+                    me.pump_tunnel(conn, stream, job)
+                }),
+            ),
+            (
+                "copy_bidirectional",
+                returned(|(conn, stream, stop): (TcpStream, Stream, Stop)| {
+                    copy_bidirectional(conn, stream, true, HALF_OPEN_GRACE, stop)
+                }),
+            ),
+            (
+                "dial_direct",
+                returned(|(me, conn, job): (Me, TcpStream, Job)| {
+                    me.dial_direct(conn, job, "", None)
+                }),
+            ),
+            (
+                "sniff_then_route",
+                returned(|(me, conn, job): (Me, TcpStream, Job)| me.sniff_then_route(conn, job)),
+            ),
+            (
+                "udp_associate",
+                returned(|(me, conn, req): (Me, TcpStream, Request)| me.udp_associate(conn, req)),
+            ),
+            (
+                "fwd_udp",
+                returned(|(me, conn, req): (Me, TcpStream, Request)| me.fwd_udp(conn, req)),
+            ),
+            (
+                "dial_tcp_host",
+                returned(|host: &'static str| crate::net::dial_tcp_host(host)),
+            ),
+        ];
+        let line: Vec<String> = sizes.iter().map(|(n, s)| format!("{n}={s}")).collect();
+        eprintln!(
+            "CONN_FUTURES {} TcpStream={} Job={} Request={}",
+            line.join(" "),
+            std::mem::size_of::<TcpStream>(),
+            std::mem::size_of::<Job>(),
+            std::mem::size_of::<Request>()
+        );
+        let size = |name: &str| sizes.iter().find(|(n, _)| *n == name).unwrap().1;
+        assert!(
+            size("conn_task") <= CONN_TASK_MAX,
+            "an open connection's task future is {} bytes; at most {CONN_TASK_MAX}",
+            size("conn_task")
+        );
+        assert!(
+            size("dial_tcp_host") <= LOOKUP_MAX,
+            "a lookup's future is {} bytes; at most {LOOKUP_MAX}",
+            size("dial_tcp_host")
+        );
+        for arm in ["udp_associate", "fwd_udp"] {
+            assert!(
+                size(arm) <= UDP_ARM_MAX,
+                "{arm}'s future is {} bytes; at most {UDP_ARM_MAX}",
+                size(arm)
+            );
+        }
+    }
 
     #[tokio::test]
     async fn no_login_answers_method_zero_and_reads_a_connect() {
