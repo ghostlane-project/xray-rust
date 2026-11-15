@@ -5021,14 +5021,20 @@ fn held_request_stream(
     )))
 }
 
+/// What a Vision stream writes its frames through: the reader of the VLESS
+/// response over the held request. It gathers as the session under it does,
+/// so that a padded frame goes uncopied (`vision_chain_tests`).
+fn vision_carrier(stream: BoxedTransportStream) -> VlessResponseStream<VisionTransportStream> {
+    VlessResponseStream::new(VisionTransportStream::new(stream))
+}
+
 /// A held request under Vision, as a TCP relay reads and writes it.
 fn vision_stream(
     stream: BoxedTransportStream,
     user_id: [u8; 16],
     seed: [u32; 4],
 ) -> BoxedTransportStream {
-    let stream = VlessResponseStream::new(VisionTransportStream::new(stream));
-    let stream = VisionStream::new(stream, user_id, seed);
+    let stream = VisionStream::new(vision_carrier(stream), user_id, seed);
     // On timeout Xray-core pads an empty frame to hide the bare header.
     Box::new(FirstPayloadDeadline::new(
         VisionOutboundStream::new(stream),
@@ -5044,6 +5050,109 @@ pub(crate) fn vision_stream_for_tests(
     user_id: [u8; 16],
 ) -> BoxedTransportStream {
     vision_stream(Box::new(HeldHeader::new(carrier, &[])), user_id, [0; 4])
+}
+
+/// Vision over TLS writes through layers that each gather as the session
+/// under them does. One that answered `false` would make every padded frame
+/// a copy of its payload and padding again (`VisionStream`'s
+/// `poll_write_parts`), outside the byte budget, and nothing on the wire
+/// would show it.
+#[cfg(test)]
+mod vision_chain_tests {
+    use std::sync::Arc;
+
+    use rcgen::{generate_simple_self_signed, CertifiedKey};
+    use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
+    use tokio::io::AsyncWrite;
+    use tokio::net::{TcpListener, TcpStream};
+    use tokio_rustls::TlsAcceptor;
+    use xray_routing::{Network, Target, TargetAddr};
+    use xray_transport::{ConnectorConfig, TlsClientConfig, TlsConnector, TransportDialer};
+
+    use super::first_payload::HeldHeader;
+    use super::vision_carrier;
+
+    /// Both TLS sessions the core makes: the raw transport's, which Vision
+    /// may unwrap (`PenetratingTlsStream`, the type REALITY's connector
+    /// returns too, `reality_rustls.rs`), and one over a carrier of its own
+    /// (`TlsClientStream`). A REALITY handshake needs a REALITY server, which
+    /// the workspace has none of.
+    #[tokio::test]
+    async fn a_padded_frame_goes_through_layers_that_gather_over_tls() {
+        let CertifiedKey { cert, signing_key } =
+            generate_simple_self_signed(vec!["vision.test".to_owned()]).expect("certificate");
+        let cert_der = cert.der().clone();
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(signing_key.serialize_der()));
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert_der.clone()).expect("test root");
+        let provider = || Arc::new(rustls::crypto::ring::default_provider());
+        let client_config = Arc::new(
+            rustls::ClientConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .expect("ring's versions")
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(provider())
+                .with_safe_default_protocol_versions()
+                .expect("ring's versions")
+                .with_no_client_auth()
+                .with_single_cert(vec![cert_der], key_der)
+                .expect("server certificate"),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("address");
+        let acceptor = TlsAcceptor::from(server_config);
+        let server = tokio::spawn(async move {
+            let mut sessions = Vec::new();
+            for _ in 0..2 {
+                let (tcp, _) = listener.accept().await.expect("accept");
+                sessions.push(acceptor.accept(tcp).await.expect("TLS accept"));
+            }
+            sessions
+        });
+        let config = TlsClientConfig {
+            server_name: "vision.test".to_owned(),
+            allow_insecure: false,
+            pinned_peer_cert_sha256: Vec::new(),
+            verify_peer_cert_by_name: Vec::new(),
+            alpn: Vec::new(),
+            fingerprint: None,
+        };
+        let target = Target::new(TargetAddr::Ip(addr.ip()), addr.port(), Network::Tcp);
+        let raw = TransportDialer::with_tls_connector(TlsConnector::with_pinned_client_config(
+            Arc::clone(&client_config),
+        ))
+        .connect_resolved(
+            &ConnectorConfig::Tls(config.clone()),
+            &target,
+            &[addr],
+            None,
+        )
+        .await
+        .expect("the raw transport's TLS");
+        let tcp = TcpStream::connect(addr).await.expect("connect");
+        let own = TlsConnector::with_pinned_client_config(client_config)
+            .connect_stream(Box::new(tcp), &config)
+            .await
+            .expect("TLS over a carrier");
+        let _sessions = server.await.expect("server");
+
+        for (path, session) in [("raw transport", raw), ("own carrier", own)] {
+            assert!(
+                session.is_write_vectored(),
+                "{path}: the TLS session gathers"
+            );
+            let held = HeldHeader::new(session, &[1; 26]);
+            assert!(held.is_write_vectored(), "{path}: the held request gathers");
+            let carrier = vision_carrier(Box::new(held));
+            assert!(
+                carrier.is_write_vectored(),
+                "{path}: what Vision writes through gathers"
+            );
+        }
+    }
 }
 
 pub async fn open_vless_udp_stream_with_resolver_and_dialer(
