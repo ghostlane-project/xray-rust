@@ -155,10 +155,12 @@ const QUIESCE_FLOWS: usize = 8;
 const VISION_PADDED_PACKETS: usize = 8;
 /// What a padded frame hands the carrier beside its payload, at most, none
 /// of it the budget's: its head (a command and two lengths) and the longest
-/// padding Vision's default seed draws, for a payload of none (900 + 499).
+/// padding Vision's default seed draws without long padding, 255 (a draw
+/// below its fourth number, 256). Long padding, up to 900 + 499 for a
+/// payload of none, pads only a flow whose bytes are TLS, and T10's are not.
 /// The first frame, which also names the user ID behind the request
 /// header, goes before T10 measures.
-const VISION_FRAME_EXTRA: isize = 5 + 1_399;
+const VISION_FRAME_EXTRA: isize = 5 + 255;
 /// The free relay buffers a constrained process keeps.
 const CONSTRAINED_POOL_KEEP: isize = 4 * 128 * KIB as isize;
 /// The plaintext of a full TLS record.
@@ -505,7 +507,8 @@ fn upload_bound(flows: isize) -> isize {
 /// and they fit in the sockets' buffers. The copy a padded write made of
 /// its input and its padding (`VisionStream`'s `pending_write`, outside the
 /// budget) was gone before the next write, and T10 passed with it too
-/// (999,690 B against 1,381,920 B on the build box). xray-proxy's
+/// (999,690 B on the build box, against the 1,381,920 B its bound was then,
+/// with long padding's 1,399 B a flow and without the sealing). xray-proxy's
 /// `vision_write_memory_tests` counts that copy while a carrier waits.
 #[test]
 fn sixty_four_new_vision_flows_pad_their_uploads_within_the_budget() {
