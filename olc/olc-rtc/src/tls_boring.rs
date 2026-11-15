@@ -22,9 +22,10 @@
 //!     (brotli), an empty session_ticket, a GREASE ECH, and trust_anchors
 //!     (0xca34) listing [`CHROME_TRUST_ANCHORS`].
 //!
-//! The olcRTC client's `turns:` stays off until the connection is wired to
-//! this context; the hello is held to the capture by the tests below (run on
-//! a runner: the build box cannot build BoringSSL).
+//! `turns:` connects from [`turns_context`] ([`crate::turns`]); the hello is
+//! held to the capture by the tests below, for a fresh connection, a
+//! resumed one and one to an address literal (run on a runner: the build box
+//! cannot build BoringSSL).
 //!
 //! Memory, per connection: BoringSSL's own state (its C heap, outside the
 //! Rust gauges); a certificate chain of at most BoringSSL's `max_cert_list`
@@ -36,7 +37,7 @@ use std::io::{self, Write};
 
 use boring::error::ErrorStack;
 use boring::ssl::{CertificateCompressionAlgorithm, CertificateCompressor, Ssl, SslContext};
-use boring::ssl::{SslContextBuilder, SslMethod, SslVersion};
+use boring::ssl::{SslContextBuilder, SslMethod, SslSessionCacheMode, SslVersion};
 
 /// Chrome's cipher command (net/socket/ssl_client_socket_impl.cc): BoringSSL's
 /// suites without PSK, 3DES and ECDSA with CBC-SHA1.
@@ -91,6 +92,26 @@ impl CertificateCompressor for Brotli {
 /// # Errors
 /// BoringSSL refused a setting.
 pub fn chrome_tls_context() -> Result<SslContext, ErrorStack> {
+    Ok(chrome_builder()?.build())
+}
+
+/// The context [`crate::turns`] connects from: [`chrome_tls_context`]'s
+/// profile, and the client session cache switched on as Chrome's is, so a
+/// later hello to a server that gave a ticket carries its PSK. The sessions
+/// BoringSSL negotiates are handed to [`crate::turns`]'s own bounded cache
+/// (one per server), not kept here.
+///
+/// # Errors
+/// BoringSSL refused a setting.
+pub fn turns_context() -> Result<SslContext, ErrorStack> {
+    let mut ctx = chrome_builder()?;
+    ctx.set_session_cache_mode(SslSessionCacheMode::CLIENT);
+    ctx.set_new_session_callback(|_ssl, session| crate::turns::offer_session(session));
+    Ok(ctx.build())
+}
+
+/// Chrome 157's settings, not yet built into a context.
+fn chrome_builder() -> Result<SslContextBuilder, ErrorStack> {
     let mut ctx = SslContextBuilder::new(SslMethod::tls())?;
     ctx.set_min_proto_version(Some(SslVersion::TLS1_2))?;
     ctx.set_max_proto_version(Some(SslVersion::TLS1_3))?;
@@ -124,23 +145,28 @@ pub fn chrome_tls_context() -> Result<SslContext, ErrorStack> {
     if ok != 1 {
         return Err(ErrorStack::get());
     }
-    Ok(ctx.build())
+    Ok(ctx)
 }
 
-/// One connection's TLS client for `host` (its SNI) from `ctx`, with a
-/// GREASE ECH as Chrome sends.
+/// One connection's TLS client for `host` from `ctx`, with a GREASE ECH as
+/// Chrome sends. A name is the hello's server name; an address literal is
+/// not (Chrome's TLS never sends an IP as SNI, [`crate::turn::sni_name`]).
 ///
 /// # Errors
 /// BoringSSL refused the name.
 pub fn chrome_ssl(ctx: &SslContext, host: &str) -> Result<Ssl, ErrorStack> {
     let mut ssl = Ssl::new(ctx)?;
-    ssl.set_hostname(host)?;
+    if let Some(name) = crate::turn::sni_name(host) {
+        ssl.set_hostname(name)?;
+    }
     ssl.set_enable_ech_grease(true);
     Ok(ssl)
 }
 
+/// What the hello tests share with [`crate::turns`]'s: a hello as BoringSSL
+/// writes it, Chrome 157's capture, and a parser of both.
 #[cfg(test)]
-mod tests {
+pub(crate) mod hello_util {
     use std::collections::BTreeMap;
 
     use boring::ssl::HandshakeError;
@@ -171,9 +197,17 @@ mod tests {
     }
 
     /// Our first flight to `host`: the TLS records BoringSSL wrote.
-    fn our_hello(host: &str) -> Vec<u8> {
-        let ctx = chrome_tls_context().unwrap();
-        let ssl = chrome_ssl(&ctx, host).unwrap();
+    pub(crate) fn our_hello(host: &str) -> Vec<u8> {
+        our_hello_for(&chrome_tls_context().unwrap(), host)
+    }
+
+    /// Our first flight to `host` from `ctx`.
+    pub(crate) fn our_hello_for(ctx: &SslContext, host: &str) -> Vec<u8> {
+        flight(chrome_ssl(ctx, host).unwrap())
+    }
+
+    /// The TLS records `ssl` writes before it waits for the server.
+    pub(crate) fn flight(ssl: Ssl) -> Vec<u8> {
         match ssl.connect(Pipe::default()) {
             Err(HandshakeError::WouldBlock(mid)) => mid.get_ref().out.clone(),
             Ok(_) => panic!("a handshake with nobody"),
@@ -182,7 +216,7 @@ mod tests {
     }
 
     /// The captured Chrome 157 hello (lab-olc-rtc.yml, turn-capture).
-    fn chromes_hello() -> Vec<u8> {
+    pub(crate) fn chromes_hello() -> Vec<u8> {
         let hex = include_str!("../testdata/chrome-157-turns-client-hello.hex").trim();
         (0..hex.len())
             .step_by(2)
@@ -190,25 +224,25 @@ mod tests {
             .collect()
     }
 
-    fn is_grease(v: u16) -> bool {
+    pub(crate) fn is_grease(v: u16) -> bool {
         v & 0x0f0f == 0x0a0a && v >> 8 == v & 0xff
     }
 
     /// A ClientHello's fields, GREASE values named as such.
     #[derive(Debug, PartialEq, Eq)]
-    struct Hello {
-        record_version: u16,
-        legacy_version: u16,
-        session_id_len: usize,
-        suites: Vec<u16>,
-        compression: Vec<u8>,
+    pub(crate) struct Hello {
+        pub(crate) record_version: u16,
+        pub(crate) legacy_version: u16,
+        pub(crate) session_id_len: usize,
+        pub(crate) suites: Vec<u16>,
+        pub(crate) compression: Vec<u8>,
         /// (id, body length) in order; GREASE ids as 0x0a0a.
-        order: Vec<(u16, usize)>,
+        pub(crate) order: Vec<(u16, usize)>,
         /// Bodies by id (GREASE ones left out).
-        bodies: BTreeMap<u16, Vec<u8>>,
+        pub(crate) bodies: BTreeMap<u16, Vec<u8>>,
     }
 
-    fn parse(records: &[u8]) -> Hello {
+    pub(crate) fn parse(records: &[u8]) -> Hello {
         let mut hs = Vec::new();
         let mut at = 0;
         while at + 5 <= records.len() {
@@ -258,7 +292,7 @@ mod tests {
     }
 
     /// A list of u16s after a length prefix of `skip` bytes, GREASE named.
-    fn u16s(b: &[u8], skip: usize) -> Vec<u16> {
+    pub(crate) fn u16s(b: &[u8], skip: usize) -> Vec<u16> {
         b[skip..]
             .chunks(2)
             .map(|c| u16::from_be_bytes([c[0], c[1]]))
@@ -267,7 +301,7 @@ mod tests {
     }
 
     /// key_share: (group, share length), GREASE named.
-    fn shares(b: &[u8]) -> Vec<(u16, usize)> {
+    pub(crate) fn shares(b: &[u8]) -> Vec<(u16, usize)> {
         let (mut at, mut out) = (2, Vec::new());
         while at + 4 <= b.len() {
             let g = u16::from_be_bytes([b[at], b[at + 1]]);
@@ -278,21 +312,19 @@ mod tests {
         out
     }
 
-    /// Our hello to the capture's server name equals Chrome 157's field by
-    /// field: versions, the session id's length, the suites, every
-    /// extension's id and length (the GREASE ECH's length is one of the
-    /// four Chrome sent), and the bodies that carry no randomness.
-    #[test]
-    fn the_turns_hello_is_chromes() {
+    /// `ours` equals the captured Chrome 157 hello field by field: versions,
+    /// the session id's length, the suites, every extension's id and length
+    /// (the GREASE ECH's length is one of the four Chrome sent), and the
+    /// bodies that carry no randomness.
+    pub(crate) fn assert_is_chromes(ours: &Hello) {
         let chrome = parse(&chromes_hello());
-        let ours = parse(&our_hello("turn.olc.test"));
         assert_eq!(ours.record_version, chrome.record_version, "record version");
         assert_eq!(ours.legacy_version, chrome.legacy_version, "legacy version");
         assert_eq!(ours.session_id_len, chrome.session_id_len, "session id");
         assert_eq!(ours.suites, chrome.suites, "cipher suites");
         assert_eq!(ours.compression, chrome.compression, "compression");
         // The first and last extensions are GREASE, empty and one byte.
-        for h in [&ours, &chrome] {
+        for h in [ours, &chrome] {
             assert_eq!(h.order.first(), Some(&(0x0a0a, 0)), "{:04x?}", h.order);
             assert_eq!(h.order.last(), Some(&(0x0a0a, 1)), "{:04x?}", h.order);
         }
@@ -306,7 +338,7 @@ mod tests {
             s.sort_unstable();
             s
         };
-        assert_eq!(set(&ours), set(&chrome), "extensions and their lengths");
+        assert_eq!(set(ours), set(&chrome), "extensions and their lengths");
         let ech = ours.bodies.get(&0xfe0d).map(Vec::len);
         assert!(
             matches!(ech, Some(186 | 218 | 250 | 282)),
@@ -323,22 +355,22 @@ mod tests {
             );
         }
         assert_eq!(
-            u16s(&ours.bodies[&0x000a], 2),
+            u16s(ours.bodies[&0x000a], 2),
             u16s(&chrome.bodies[&0x000a], 2),
             "groups"
         );
         assert_eq!(
-            u16s(&ours.bodies[&0x000d], 2),
+            u16s(ours.bodies[&0x000d], 2),
             u16s(&chrome.bodies[&0x000d], 2),
             "sigalgs"
         );
         assert_eq!(
-            u16s(&ours.bodies[&0x002b], 1),
+            u16s(ours.bodies[&0x002b], 1),
             u16s(&chrome.bodies[&0x002b], 1),
             "versions"
         );
         assert_eq!(
-            shares(&ours.bodies[&0x0033]),
+            shares(ours.bodies[&0x0033]),
             shares(&chrome.bodies[&0x0033]),
             "key shares"
         );
@@ -347,6 +379,66 @@ mod tests {
             CHROME_TRUST_ANCHORS,
             "the fixture's trust anchors"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hello_util::{assert_is_chromes, our_hello, our_hello_for, parse, Hello};
+    use super::*;
+
+    /// Our hello to the capture's server name equals Chrome 157's field by
+    /// field (see [`assert_is_chromes`]).
+    #[test]
+    fn the_turns_hello_is_chromes() {
+        assert_is_chromes(&parse(&our_hello("turn.olc.test")));
+    }
+
+    /// The `turns:` context (the session cache on) sends the same first
+    /// hello, and one shared context sends them permuted per connection.
+    #[test]
+    fn the_turns_context_sends_chromes_hello() {
+        let ctx = turns_context().unwrap();
+        for _ in 0..2 {
+            assert_is_chromes(&parse(&our_hello_for(&ctx, "turn.olc.test")));
+        }
+        let order = || {
+            parse(&our_hello_for(&ctx, "turn.olc.test"))
+                .order
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        };
+        let first = order();
+        assert!(
+            (0..4).any(|_| order() != first),
+            "five hellos from one context with one extension order"
+        );
+    }
+
+    /// To an address literal the hello has no server name and is otherwise
+    /// the same (Chrome's TLS sends none for an IP).
+    #[test]
+    fn a_hello_to_an_address_names_no_server() {
+        let ctx = chrome_tls_context().unwrap();
+        let named = parse(&our_hello_for(&ctx, "turn.olc.test"));
+        let set = |h: &Hello| {
+            let mut s: Vec<(u16, usize)> = h
+                .order
+                .iter()
+                .copied()
+                .filter(|(id, _)| !matches!(*id, 0x0000 | 0xfe0d))
+                .collect();
+            s.sort_unstable();
+            s
+        };
+        for ip in ["127.0.0.1", "2001:db8::1"] {
+            let ours = parse(&our_hello_for(&ctx, ip));
+            assert!(!ours.bodies.contains_key(&0x0000), "{ip}: a server name");
+            assert!(ours.order.iter().all(|(id, _)| *id != 0x0000), "{ip}");
+            assert_eq!(set(&ours), set(&named), "{ip}: the other extensions");
+            assert_eq!(ours.suites, named.suites);
+        }
     }
 
     /// The extensions are permuted per hello, as Chrome's are.

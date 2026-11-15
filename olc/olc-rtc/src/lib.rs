@@ -40,6 +40,11 @@ pub mod peer;
 #[allow(unsafe_code)]
 pub mod tls_boring;
 pub mod turn;
+#[cfg(feature = "boring")]
+#[allow(unsafe_code)]
+pub mod turns;
+#[cfg(feature = "boring")]
+pub mod turns_verify;
 
 use std::sync::Arc;
 

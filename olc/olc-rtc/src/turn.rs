@@ -839,7 +839,7 @@ impl Relays {
 /// [`STREAM_WRITE_STALL`] (the driver hears an empty chunk), or when the
 /// relays are dropped: then it writes what is queued (a closing Refresh)
 /// and shuts the connection down, within [`crate::peer::CLOSE_DRAIN`].
-async fn stream(
+pub(crate) async fn stream(
     slot: usize,
     server: SocketAddr,
     mut out: mpsc::Receiver<Vec<u8>>,
