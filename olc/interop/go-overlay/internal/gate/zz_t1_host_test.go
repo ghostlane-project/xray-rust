@@ -13,7 +13,12 @@
 //
 // The simulator shares the Mac's loopback, so every address is 127.0.0.1
 // but the UDP echo's second one: the Mac's own non-loopback IPv4, for a
-// datagram that hev's lwIP would not take to a loopback destination.
+// datagram that hev's lwIP would not take to a loopback destination. The
+// Android emulator (Ghostlane's lab/olc-ffi-android, on a Linux runner)
+// reaches this host's loopback as 10.0.2.2, so its test dials the room
+// there; the origin and the echo are dialed by the server, on this host,
+// and keep their addresses. The big pull (-olcrtc.gate-big-mb MiB) is the
+// emulator's download burst.
 
 package gate
 
@@ -36,6 +41,9 @@ type t1Host struct {
 	DNS       string `json:"dns"`
 	// Origin is the origin's 1 KB (GET), http://127.0.0.1:<port>/kb.
 	Origin string `json:"origin"`
+	// Big is the origin's big pull (GET), BigBytes long.
+	Big      string `json:"big"`
+	BigBytes int64  `json:"big_bytes"`
 	// EchoPort is the UDP echo's port on every address; EchoIP the Mac's
 	// non-loopback IPv4 it answers on ("" when it has none).
 	EchoPort int    `json:"echo_port"`
@@ -117,7 +125,8 @@ func TestT1Host(t *testing.T) {
 	}()
 
 	host := t1Host{Room: ep.Room, Key: ep.Key, Transport: ep.Transport, DNS: ep.DNS,
-		Origin: env.target.origin.URLs.Small, EchoPort: echo.LocalAddr().(*net.UDPAddr).Port,
+		Origin: env.target.origin.URLs.Small, Big: env.target.origin.URLs.Big,
+		BigBytes: env.target.origin.URLs.BigBytes, EchoPort: echo.LocalAddr().(*net.UDPAddr).Port,
 		EchoIP: hostIPv4(), ServerLog: env.serverLog}
 	raw, _ := json.Marshal(host)
 	tmp := out + ".tmp"
