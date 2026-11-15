@@ -8,6 +8,11 @@
 //!   Swift and Kotlin bindings are generated from this library.
 //! - [`ALLOC`]: the system allocator, counted (`ghostlane_runtime::alloc`),
 //!   which `memory_stats()` reports.
+//! - One byte budget (`ghostlane_runtime::memory_budget`, which
+//!   xray-transport re-exports): the olcRTC client's copies and UDP and the
+//!   xray core's relays and HTTP/2 windows take their payload bytes beyond
+//!   their floors of the same `B`, which `set_byte_budget()` (olc_ffi, in
+//!   the UniFFI API) sets for both.
 //!
 //! The runtime is `ghostlane_runtime`'s: one worker and four blocking
 //! threads on iOS (`design.md` D11), xray-ffi's 2 to 6 workers elsewhere.
@@ -34,5 +39,18 @@ mod tests {
             u64::try_from(rt.metrics().num_workers()).ok(),
             "{line}"
         );
+    }
+
+    #[test]
+    fn both_cores_take_bytes_of_one_budget() {
+        use ghostlane_runtime::memory_budget::ByteBudget;
+        assert!(std::ptr::eq(
+            xray_transport::memory_budget::ByteBudget::process(),
+            ByteBudget::process()
+        ));
+        olc_ffi::set_byte_budget(2_000_000);
+        let xray_sees = xray_transport::byte_budget().capacity;
+        olc_ffi::set_byte_budget(0);
+        assert_eq!(xray_sees, 2_000_000, "set through olc_ffi, read by xray");
     }
 }

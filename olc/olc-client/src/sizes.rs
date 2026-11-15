@@ -7,6 +7,14 @@
 //!
 //! The rows are the client's own (the SOCKS front, UDP, DNS, the lane, the
 //! link); smux's rows are `olc_smux`'s and are added from its config.
+//!
+//! The SOCKS front's and the UDP reads' rows hold the process's byte budget
+//! `B` ([`ghostlane_runtime::memory_budget`]): beyond its floor each read
+//! takes bytes of `B`, which the copies, UDP and xray's relays share, so each
+//! of those rows is at most `B` plus its floors, and all of them together
+//! too: `B` counts once in the process, not once per row.
+
+use ghostlane_runtime::ByteBudgetSettings;
 
 use crate::copy::{COPY_BUFFER, POOL_KEEP};
 use crate::dns::{MAX_IN_FLIGHT, MAX_MESSAGE};
@@ -33,16 +41,32 @@ pub struct Row {
 /// the 64 of S1 as the peak).
 pub const BURST_CONNECTIONS: usize = 64;
 
-/// The client's rows.
+/// The client's rows, on the process's byte budget as it is now.
 pub fn budget() -> Vec<Row> {
+    budget_with(ghostlane_runtime::byte_budget())
+}
+
+/// The client's rows on a byte budget of `bytes`.
+pub fn budget_with(bytes: ByteBudgetSettings) -> Vec<Row> {
     let smux = olc_smux::Config::client_data(DATACHANNEL.max_payload_size, false);
     let inbound = olc_muxconn::conn::inbound_capacity(DATACHANNEL.max_record_plaintext());
+    let copy_floor = bytes.floor.min(COPY_BUFFER);
+    let socks = |moving: usize| {
+        (moving * 2 * COPY_BUFFER).min(bytes.capacity.saturating_add(moving * 2 * copy_floor))
+            + POOL_KEEP * COPY_BUFFER
+    };
+    let read_floor = bytes.floor.min(READ_BUFFER);
+    let reads = |draining: usize| {
+        (draining * READ_BUFFER).min(bytes.capacity.saturating_add(draining * read_floor))
+    };
     vec![
         Row {
             layer: "SOCKS front copy buffers (only while bytes move)",
-            cap: (MAX_SOCKS_CONNS * 2 + POOL_KEEP) * COPY_BUFFER,
-            burst: (BURST_CONNECTIONS * 2 + POOL_KEEP) * COPY_BUFFER,
-            formula: "2 directions x COPY_BUFFER (16 KiB) per connection moving bytes, \
+            cap: socks(MAX_SOCKS_CONNS),
+            burst: socks(BURST_CONNECTIONS),
+            formula: "2 directions x one read per connection moving bytes: COPY_BUFFER (16 KiB) \
+                      when the byte budget B gives the bytes beyond the floor, else less, down \
+                      to the floor (4 KiB): min(N x 2 x 16 KiB, B + N x 2 x floor), \
                       + POOL_KEEP (8) kept; an idle connection holds none",
         },
         Row {
@@ -53,16 +77,18 @@ pub fn budget() -> Vec<Row> {
         },
         Row {
             layer: "UDP read buffers (only while a socket has datagrams waiting)",
-            cap: MAX_SOCKS_CONNS * READ_BUFFER,
-            burst: 4 * READ_BUFFER,
-            formula: "one READ_BUFFER (16 KiB) per association being drained",
+            cap: reads(MAX_SOCKS_CONNS),
+            burst: reads(4),
+            formula: "one READ_BUFFER (16 KiB) per association being drained when B gives \
+                      the bytes beyond the floor, else the floor: min(N x 16 KiB, B + N x floor)",
         },
         Row {
             layer: "FWD_UDP reply queues",
             cap: FWD_QUEUE_BUDGET,
             burst: FWD_QUEUE_BUDGET.min(4 * FWD_REPLY_QUEUE * crate::udp::FWD_CLIENT_BUFFER),
             formula: "FWD_QUEUE_BUDGET (512 KiB) for every connection's queued and \
-                      in-flight frames (queues of FWD_REPLY_QUEUE (32) x <= 1500)",
+                      in-flight frames (queues of FWD_REPLY_QUEUE (32) x <= 1500); beyond \
+                      each connection's floor the bytes are B's too",
         },
         Row {
             layer: "DNS queries in flight",
@@ -149,9 +175,13 @@ mod tests {
         );
     }
 
+    fn phone() -> ByteBudgetSettings {
+        ByteBudgetSettings::for_class(ghostlane_runtime::MemoryClass::Constrained)
+    }
+
     #[test]
     fn the_burst_fits_the_engine_budget() {
-        let rows = budget();
+        let rows = budget_with(phone());
         let burst: usize = rows.iter().map(|r| r.burst).sum();
         // Plan §9: the engine at or below 12 MiB, the SOCKS front 3 MiB,
         // UDP 0.5 MiB, the smux receive 4 MiB, the muxconn queue 1 MiB.
@@ -173,7 +203,7 @@ mod tests {
         let held = |moving: usize| (moving * 2 + POOL_KEEP) * COPY_BUFFER;
         assert!(held(BURST_CONNECTIONS / 2) <= 3 << 20);
         assert!(held(0) <= 128 << 10, "256 idle connections");
-        let rows = budget();
+        let rows = budget_with(phone());
         let fwd = rows
             .iter()
             .find(|r| r.layer.starts_with("FWD_UDP"))
@@ -181,6 +211,35 @@ mod tests {
         assert!(
             fwd.cap <= 512 << 10,
             "UDP 0.5 MiB, whatever the connection count"
+        );
+    }
+
+    #[test]
+    fn all_five_hundred_twelve_moving_hold_the_byte_budget_and_their_floors() {
+        // Without the budget: (512 x 2 + 8) x 16 KiB = 16.1 MiB. With the
+        // phone's (B 3,000,000 bytes, floors of 4 KiB): B + 4 MiB + 128 KiB,
+        // and B is the process's, not the front's alone.
+        let b = phone();
+        let rows = budget_with(b);
+        let row = |name: &str| rows.iter().find(|r| r.layer.starts_with(name)).unwrap();
+        assert_eq!(
+            row("SOCKS front").cap,
+            b.capacity + MAX_SOCKS_CONNS * 2 * b.floor + POOL_KEEP * COPY_BUFFER
+        );
+        assert!(row("SOCKS front").cap < (MAX_SOCKS_CONNS * 2 + POOL_KEEP) * COPY_BUFFER / 2);
+        assert_eq!(
+            row("UDP read buffers").cap,
+            b.capacity + MAX_SOCKS_CONNS * b.floor
+        );
+        // A budget larger than every read: the reads' own sizes bound them.
+        let roomy = budget_with(ByteBudgetSettings {
+            capacity: usize::MAX,
+            floor: b.floor,
+        });
+        let row = |name: &str| roomy.iter().find(|r| r.layer.starts_with(name)).unwrap();
+        assert_eq!(
+            row("SOCKS front").cap,
+            (MAX_SOCKS_CONNS * 2 + POOL_KEEP) * COPY_BUFFER
         );
     }
 }

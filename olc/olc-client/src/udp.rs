@@ -13,14 +13,18 @@
 //!
 //! - flows: at most [`DEFAULT_MAX_FLOWS`] lane flows and as many direct
 //!   ones, each idle out after [`FLOW_IDLE_TIMEOUT`]; one sweeper for all;
-//! - a read buffer of [`READ_BUFFER`] exists only while a socket has
-//!   datagrams waiting (Go holds one per association for its life: 117
-//!   associations held 7.5 MB on iOS, olcbox 1.0.428);
+//! - a read buffer exists only while a socket has datagrams waiting (Go
+//!   holds one per association for its life: 117 associations held 7.5 MB
+//!   on iOS, olcbox 1.0.428): [`READ_BUFFER`] when the process's byte
+//!   budget ([`ghostlane_runtime::memory_budget`], shared with the copies
+//!   and xray's relays) gives the bytes beyond the floor, else the floor
+//!   (4 KiB), and then a datagram that fills it is dropped as maybe cut;
 //! - `FWD_UDP` replies: a queue of [`FWD_REPLY_QUEUE`] frames per
 //!   connection and [`FWD_QUEUE_BUDGET`] bytes for all of them, counted
 //!   until written (gathered writes of up to [`FWD_WRITE_BATCH`], no buffer
-//!   of their own); a full queue or budget drops the datagram (the lane is
-//!   lossy by contract); a quiet connection holds no read buffer.
+//!   of their own), and beyond each connection's floor taken of the byte
+//!   budget ([`FwdBytes`]); a full queue or budget drops the datagram (the
+//!   lane is lossy by contract); a quiet connection holds no read buffer.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -28,6 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use ghostlane_runtime::memory_budget::{BudgetPermits, ByteBudget};
 use olc_wire::record::Lane as RecordLane;
 use olc_wire::sizes::UDP_MAX_RECORD;
 use olc_wire::udpwire::{self, FrameType, Host};
@@ -74,27 +79,115 @@ pub fn fwd_queued_bytes() -> usize {
     FWD_QUEUED.load(Ordering::Relaxed)
 }
 
-/// One reply frame in a `FWD_UDP` queue, counted in [`FWD_QUEUED`] until it
-/// is written or dropped.
+/// One `FWD_UDP` connection's queued reply bytes: the first floor's worth
+/// ([`ByteBudget::floor`]) are the connection's own, the rest are taken of
+/// the process's byte budget (the one the copies and xray's relays take
+/// theirs of) until written or dropped. A reply the budget cannot give its
+/// bytes is dropped, as a full queue drops it; the floor keeps every
+/// connection's replies moving however much of the budget others hold.
 #[derive(Debug)]
-pub(crate) struct Queued(Vec<u8>);
+pub(crate) struct FwdBytes {
+    /// The bytes queued, and the budget's part of them.
+    held: Mutex<(usize, BudgetPermits<'static>)>,
+}
+
+impl FwdBytes {
+    pub(crate) fn new(budget: &'static ByteBudget) -> Arc<Self> {
+        Arc::new(Self {
+            held: Mutex::new((0, BudgetPermits::new(budget))),
+        })
+    }
+
+    fn lock(&self) -> MutexGuard<'_, (usize, BudgetPermits<'static>)> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Queues `len` more bytes; false when the budget cannot give them.
+    fn take(&self, len: usize) -> bool {
+        let mut held = self.lock();
+        let (queued, permits) = &mut *held;
+        let floor = permits.budget().floor();
+        let need = (*queued + len).saturating_sub(floor);
+        if permits.try_hold(need) < need {
+            permits.try_hold(queued.saturating_sub(floor));
+            return false;
+        }
+        *queued += len;
+        true
+    }
+
+    /// `len` queued bytes were written or dropped.
+    fn give(&self, len: usize) {
+        let mut held = self.lock();
+        let (queued, permits) = &mut *held;
+        *queued -= len;
+        let floor = permits.budget().floor();
+        permits.try_hold(queued.saturating_sub(floor));
+    }
+
+    #[cfg(test)]
+    fn queued(&self) -> usize {
+        self.lock().0
+    }
+}
+
+/// One reply frame in a `FWD_UDP` queue, counted in [`FWD_QUEUED`] and its
+/// connection's [`FwdBytes`] until it is written or dropped.
+#[derive(Debug)]
+pub(crate) struct Queued {
+    frame: Vec<u8>,
+    bytes: Arc<FwdBytes>,
+}
 
 impl Queued {
-    /// The frame, if the budget has room for it.
-    fn new(frame: Vec<u8>) -> Option<Self> {
+    /// The frame, if the replies' budget and the byte budget have room for
+    /// it.
+    fn new(frame: Vec<u8>, bytes: &Arc<FwdBytes>) -> Option<Self> {
         let len = frame.len();
         if FWD_QUEUED.fetch_add(len, Ordering::Relaxed) + len > FWD_QUEUE_BUDGET {
             FWD_QUEUED.fetch_sub(len, Ordering::Relaxed);
             return None;
         }
-        Some(Self(frame))
+        if !bytes.take(len) {
+            FWD_QUEUED.fetch_sub(len, Ordering::Relaxed);
+            return None;
+        }
+        Some(Self {
+            frame,
+            bytes: Arc::clone(bytes),
+        })
     }
 }
 
 impl Drop for Queued {
     fn drop(&mut self) {
-        FWD_QUEUED.fetch_sub(self.0.len(), Ordering::Relaxed);
+        FWD_QUEUED.fetch_sub(self.frame.len(), Ordering::Relaxed);
+        self.bytes.give(self.frame.len());
     }
+}
+
+/// A read buffer for a UDP socket with datagrams waiting, and the budget's
+/// bytes for it: [`READ_BUFFER`] when the budget gives the bytes beyond the
+/// floor, else the floor alone, where a datagram that fills the buffer may
+/// have been cut ([`may_be_cut`]).
+fn read_buffer(budget: &'static ByteBudget) -> (Vec<u8>, BudgetPermits<'static>) {
+    let mut permits = BudgetPermits::new(budget);
+    let floor = budget.floor().min(READ_BUFFER);
+    let need = READ_BUFFER - floor;
+    let len = if permits.try_hold(need) >= need {
+        READ_BUFFER
+    } else {
+        permits.try_hold(0);
+        floor
+    };
+    (vec![0u8; len], permits)
+}
+
+/// Whether a datagram of `n` bytes read into `buf` may have been cut: it
+/// filled a buffer the budget made smaller than [`READ_BUFFER`]. It is
+/// dropped rather than sent on short.
+fn may_be_cut(n: usize, buf: &[u8]) -> bool {
+    n == buf.len() && buf.len() < READ_BUFFER
 }
 
 /// Reply bytes queued on every `FWD_UDP` connection.
@@ -112,7 +205,7 @@ async fn write_frames<W: tokio::io::AsyncWrite + Unpin>(
         let mut slices = [std::io::IoSlice::new(&[]); FWD_GATHER];
         let mut n = 0;
         for (k, f) in frames[i..].iter().take(FWD_GATHER).enumerate() {
-            slices[n] = std::io::IoSlice::new(&f.0[if k == 0 { off } else { 0 }..]);
+            slices[n] = std::io::IoSlice::new(&f.frame[if k == 0 { off } else { 0 }..]);
             n += 1;
         }
         let mut wrote = wr.write_vectored(&slices[..n]).await?;
@@ -120,7 +213,7 @@ async fn write_frames<W: tokio::io::AsyncWrite + Unpin>(
             return Err(std::io::ErrorKind::WriteZero.into());
         }
         while wrote > 0 {
-            let left = frames[i].0.len() - off;
+            let left = frames[i].frame.len() - off;
             if wrote >= left {
                 wrote -= left;
                 (i, off) = (i + 1, 0);
@@ -398,9 +491,11 @@ pub(crate) enum Reply {
         sock: Arc<UdpSocket>,
         client: SocketAddr,
     },
-    /// A `FWD_UDP` connection's writer, and the target the client sent to.
+    /// A `FWD_UDP` connection's writer, its queued bytes, and the target
+    /// the client sent to.
     Fwd {
         tx: mpsc::Sender<Queued>,
+        bytes: Arc<FwdBytes>,
         to: Addr,
         to_port: u16,
     },
@@ -418,7 +513,12 @@ impl Reply {
                 };
                 let _ = sock.try_send_to(&pkt, *client);
             }
-            Self::Fwd { tx, to, to_port } => {
+            Self::Fwd {
+                tx,
+                bytes,
+                to,
+                to_port,
+            } => {
                 // hev hands lwIP only an address of the client socket's
                 // family: a name or the other family is answered as the
                 // address the client sent to.
@@ -435,8 +535,10 @@ impl Reply {
                     return;
                 }
                 if let Some(frame) = encode_fwd_frame(addr, port, payload) {
-                    let Some(frame) = Queued::new(frame) else {
-                        crate::debug!("drop udp reply: the FWD_UDP replies hold their budget");
+                    let Some(frame) = Queued::new(frame, bytes) else {
+                        crate::debug!(
+                            "drop udp reply: the FWD_UDP replies or the byte budget hold their bytes"
+                        );
                         return;
                     };
                     if tx.try_send(frame).is_err() {
@@ -714,8 +816,9 @@ impl Inner {
                     break;
                 },
             }
-            // The buffer lives only while datagrams wait.
-            let mut buf = vec![0u8; READ_BUFFER];
+            // The buffer lives only while datagrams wait, the budget's
+            // bytes for it with it.
+            let (mut buf, _bytes) = read_buffer(ByteBudget::process());
             loop {
                 let (n, src) = match sock.try_recv_from(&mut buf) {
                     Ok(x) => x,
@@ -727,6 +830,12 @@ impl Inner {
                 };
                 if !allowed.allows(src) {
                     crate::debug!("drop socks udp packet from unbound source: {src}");
+                    continue;
+                }
+                if may_be_cut(n, &buf) {
+                    crate::debug!(
+                        "drop socks udp packet: it may not fit the {n} bytes the byte budget left"
+                    );
                     continue;
                 }
                 let dg = match parse_socks_udp(&buf[..n]) {
@@ -767,6 +876,7 @@ impl Inner {
         let assoc = self.run.child_token();
         let (mut rd, mut wr) = conn.into_split();
         let (tx, mut rx) = mpsc::channel::<Queued>(FWD_REPLY_QUEUE);
+        let bytes = FwdBytes::new(ByteBudget::process());
         let writer = {
             let assoc = assoc.clone();
             tokio::spawn(async move {
@@ -780,12 +890,12 @@ impl Inner {
                     // stay counted in the budget until written: no buffer
                     // of their own. The write ends with the association,
                     // however slow the client reads.
-                    let mut bytes = first.0.len();
+                    let mut bytes = first.frame.len();
                     gather.push(first);
                     while bytes < FWD_WRITE_BATCH && gather.len() < FWD_GATHER {
                         match rx.try_recv() {
                             Ok(f) => {
-                                bytes += f.0.len();
+                                bytes += f.frame.len();
                                 gather.push(f);
                             }
                             Err(_) => break,
@@ -809,6 +919,7 @@ impl Inner {
                 Ok(Some((dg, used))) => {
                     let reply = Reply::Fwd {
                         tx: tx.clone(),
+                        bytes: bytes.clone(),
                         to: Addr::parse(&dg.host),
                         to_port: dg.port,
                     };
@@ -1134,13 +1245,19 @@ async fn read_direct_flow(
             () = assoc.cancelled() => return,
             r = remote.readable() => if r.is_err() { return },
         }
-        let mut buf = vec![0u8; READ_BUFFER];
+        let (mut buf, _bytes) = read_buffer(ByteBudget::process());
         loop {
             let n = match remote.try_recv(&mut buf) {
                 Ok(n) => n,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(_) => return,
             };
+            if may_be_cut(n, &buf) {
+                crate::debug!(
+                    "drop udp response: it may not fit the {n} bytes the byte budget left"
+                );
+                continue;
+            }
             let Some(inner) = inner.upgrade() else { return };
             if let Some(f) = inner.flows.lock().direct.get_mut(&key) {
                 f.last_seen = Instant::now();
@@ -1245,10 +1362,11 @@ mod tests {
     async fn gathered_frames_are_written_whole_through_short_writes() {
         crate::testing::bounded(async {
             let (mut a, mut b) = tokio::io::duplex(7);
+            let bytes = FwdBytes::new(ByteBudget::process());
             let frames: Vec<Queued> = (1..=5u8)
-                .map(|i| Queued::new(vec![i; usize::from(i) * 3]).unwrap())
+                .map(|i| Queued::new(vec![i; usize::from(i) * 3], &bytes).unwrap())
                 .collect();
-            let want: Vec<u8> = frames.iter().flat_map(|f| f.0.clone()).collect();
+            let want: Vec<u8> = frames.iter().flat_map(|f| f.frame.clone()).collect();
             let read = tokio::spawn(async move {
                 let mut got = vec![0; 45];
                 b.read_exact(&mut got).await.unwrap();
@@ -1270,23 +1388,24 @@ mod tests {
         let to = Addr::V4(Ipv4Addr::new(198, 18, 0, 7));
         let reply = Reply::Fwd {
             tx,
+            bytes: FwdBytes::new(ByteBudget::process()),
             to: to.clone(),
             to_port: 443,
         };
         reply.deliver(&Addr::V6("2001:db8::35".parse().unwrap()), 9, b"a");
         let f = rx.recv().await.unwrap();
         assert_eq!(
-            &f.0[3..10],
+            &f.frame[3..10],
             &[1, 198, 18, 0, 7, 1, 187],
             "the other family is answered as the target"
         );
         reply.deliver(&Addr::V4(Ipv4Addr::new(192, 0, 2, 9)), 4433, b"b");
         let f = rx.recv().await.unwrap();
-        assert_eq!(&f.0[3..10], &[1, 192, 0, 2, 9, 0x11, 0x51]);
+        assert_eq!(&f.frame[3..10], &[1, 192, 0, 2, 9, 0x11, 0x51]);
         reply.deliver(&Addr::V4(Ipv4Addr::LOCALHOST), 1, &[0; 1494]);
         reply.deliver(&Addr::V4(Ipv4Addr::LOCALHOST), 1, &[0; 1493]);
         assert_eq!(
-            rx.recv().await.unwrap().0.len(),
+            rx.recv().await.unwrap().frame.len(),
             10 + 1493,
             "the oversize one alone is dropped"
         );
@@ -1299,6 +1418,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1000);
         let reply = Reply::Fwd {
             tx,
+            bytes: FwdBytes::new(ByteBudget::process()),
             to: Addr::V4(Ipv4Addr::LOCALHOST),
             to_port: 1,
         };
@@ -1309,7 +1429,7 @@ mod tests {
         while let Ok(f) = rx.try_recv() {
             frames.push(f);
         }
-        let held: usize = frames.iter().map(|f| f.0.len()).sum();
+        let held: usize = frames.iter().map(|f| f.frame.len()).sum();
         let frame = 10 + 1493;
         // Other tests may hold a few frames of the same budget meanwhile.
         assert!(held <= FWD_QUEUE_BUDGET, "{held}");
@@ -1323,12 +1443,90 @@ mod tests {
         );
     }
 
+    fn test_budget(capacity: usize, floor: usize) -> &'static ByteBudget {
+        Box::leak(Box::new(ByteBudget::with_settings(
+            ghostlane_runtime::ByteBudgetSettings { capacity, floor },
+        )))
+    }
+
+    #[test]
+    fn fwd_replies_beyond_the_floor_take_bytes_of_the_budget() {
+        // A client that stops reading: its replies fill its floor and then
+        // the budget, and the next is dropped; another connection's still
+        // fill its own floor; every byte comes back.
+        let budget = test_budget(8 * 1024, 4 * 1024);
+        let (stalled, other) = (FwdBytes::new(budget), FwdBytes::new(budget));
+        let frame = 1000;
+        let fit = |bytes: &FwdBytes| (0..100).take_while(|_| bytes.take(frame)).count();
+        assert_eq!(fit(&stalled), 12, "4096 of its floor, 8192 of the budget");
+        assert_eq!(budget.in_use(), 12 * frame - 4096);
+        assert_eq!(fit(&other), 4, "its floor, with the budget spent");
+        assert_eq!(
+            budget.in_use(),
+            12 * frame - 4096,
+            "a floor takes nothing of it"
+        );
+        for _ in 0..12 {
+            stalled.give(frame);
+        }
+        assert_eq!(budget.in_use(), 0);
+        assert_eq!(fit(&other), 8, "the budget it gave back: 12 in all");
+        for _ in 0..12 {
+            other.give(frame);
+        }
+        assert_eq!(
+            (stalled.queued(), other.queued(), budget.in_use()),
+            (0, 0, 0)
+        );
+        // A frame gives its bytes back when it goes, written or dropped.
+        let bytes = FwdBytes::new(budget);
+        let frames: Vec<Queued> = (0..6)
+            .map_while(|_| Queued::new(vec![0; frame], &bytes))
+            .collect();
+        assert_eq!((frames.len(), budget.in_use()), (6, 6 * frame - 4096));
+        drop(frames);
+        assert_eq!((bytes.queued(), budget.in_use()), (0, 0));
+    }
+
+    #[test]
+    fn udp_reads_take_the_budget_and_drop_what_a_floor_read_may_have_cut() {
+        let roomy = test_budget(1 << 20, 4 * 1024);
+        let (buf, bytes) = read_buffer(roomy);
+        assert_eq!(buf.len(), READ_BUFFER);
+        assert_eq!(roomy.in_use(), READ_BUFFER - 4 * 1024, "beyond the floor");
+        drop((buf, bytes));
+        assert_eq!(roomy.in_use(), 0, "the bytes go with the buffer");
+        // A spent budget: the floor alone, and a datagram that fills it
+        // may have been cut.
+        let spent = test_budget(0, 4 * 1024);
+        let (mut buf, bytes) = read_buffer(spent);
+        assert_eq!((buf.len(), bytes.held()), (4 * 1024, 0));
+        let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        rx.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let tx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        tx.send_to(&[7; 6000], rx.local_addr().unwrap()).unwrap();
+        tx.send_to(&[8; 1400], rx.local_addr().unwrap()).unwrap();
+        let (n, _) = rx.recv_from(&mut buf).unwrap();
+        assert!(
+            may_be_cut(n, &buf),
+            "6000 bytes read into {}: {n}",
+            buf.len()
+        );
+        let (n, _) = rx.recv_from(&mut buf).unwrap();
+        assert_eq!(n, 1400);
+        assert!(!may_be_cut(n, &buf));
+        // A full read of READ_BUFFER is Go's cut, not the budget's.
+        let full = vec![0u8; READ_BUFFER];
+        assert!(!may_be_cut(READ_BUFFER, &full));
+    }
+
     #[test]
     fn flows_take_random_ids_under_the_cap_and_idle_out() {
         let flows = Flows::new(2);
         let (tx, _rx) = mpsc::channel(1);
         let reply = Reply::Fwd {
             tx,
+            bytes: FwdBytes::new(ByteBudget::process()),
             to: Addr::V4(Ipv4Addr::LOCALHOST),
             to_port: 1,
         };

@@ -8,6 +8,7 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
+ghostlane-runtime = { path = "../../crates/ghostlane-runtime" }
 libc.workspace = true
 olc-muxconn = { path = "../olc-muxconn" }
 olc-smux = { path = "../olc-smux" }

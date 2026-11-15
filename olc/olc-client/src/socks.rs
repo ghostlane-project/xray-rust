@@ -8,11 +8,14 @@
 //!
 //! # Bounds
 //!
-//! At most [`MAX_SOCKS_CONNS`] connections; each direction borrows a
-//! [`crate::copy::COPY_BUFFER`] only while bytes move ([`crate::copy`]), so
+//! At most [`MAX_SOCKS_CONNS`] connections (Go's `maxSocksConns`); each
+//! direction borrows a buffer only while bytes move ([`crate::copy`]), so
 //! an idle connection holds none: 2 MiB for the 64 moving connections of
 //! the burst, whatever the number open (plan §9: cap 3 MiB at the expected
-//! load; 16 MiB only if all 512 moved at once).
+//! load). Beyond a 4 KiB floor a read takes bytes of the process's byte
+//! budget `B`, shared with UDP and xray: all 512 moving at once hold at
+//! most `B` plus 4 MiB of floors (16 MiB before the budget), and none is
+//! refused for want of bytes: it reads less.
 
 use std::borrow::Cow;
 use std::io;

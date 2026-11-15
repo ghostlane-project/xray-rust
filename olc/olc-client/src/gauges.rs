@@ -65,7 +65,7 @@ impl Gauges {
 pub fn snapshot() -> Gauges {
     let pool = Pool::global();
     let mut g = Gauges {
-        copy_bytes: (pool.lent() + pool.kept()) * COPY_BUFFER,
+        copy_bytes: pool.lent_bytes() + pool.kept() * COPY_BUFFER,
         fwd_queued: crate::udp::fwd_queued_bytes(),
         ..Gauges::default()
     };

@@ -18,7 +18,8 @@
 //! - The room list is the runtime's and the supervisor reads it at every
 //!   hop (`set_room`, `clear_failover_rooms`, `add_failover_room` while
 //!   running), as Go's `Reload` does.
-//! - [`memory_stats`] and [`trim`] are MemoryWatch's (plan §9).
+//! - [`memory_stats`] and [`trim`] are MemoryWatch's (plan §9), and
+//!   [`set_byte_budget`] sets the byte budget both cores share (D11's relief).
 
 #![warn(missing_docs)]
 
@@ -33,5 +34,5 @@ pub mod runtime;
 
 pub use callbacks::{set_log_writer, LogWriter, SessionListener, SocketProtector};
 pub use error::OlcrtcError;
-pub use memory::{memory_stats, trim};
+pub use memory::{memory_stats, set_byte_budget, trim};
 pub use runtime::{OlcrtcRuntime, RoomRun, Runner};

@@ -18,3 +18,5 @@ xray-ffi = { path = "../xray-ffi", features = ["shared-runtime"] }
 
 [dev-dependencies]
 serde_json.workspace = true
+# Already linked through xray-ffi: the test below holds both cores to one byte budget.
+xray-transport = { path = "../xray-transport" }

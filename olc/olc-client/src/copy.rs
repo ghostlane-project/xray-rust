@@ -11,14 +11,23 @@
 //!
 //! # Memory
 //!
-//! A direction holds a [`COPY_BUFFER`] only while bytes move: it waits for
-//! its source to be readable with no buffer, borrows one from the
-//! [`Pool`] for the read and the write that follows, and gives it back. An
-//! idle connection holds none (Go keeps one 32 KiB buffer per direction for
-//! the connection's life). Borrowing never waits: a cap that made a
-//! direction wait for a buffer would deadlock once every buffer sat in a
-//! write to a destination that stopped reading, the buffers' own readers
-//! among them.
+//! A direction holds a buffer only while bytes move: it waits for its
+//! source to be readable with no buffer, borrows one from the [`Pool`] for
+//! the read and the write that follows, and gives it back. An idle
+//! connection holds none (Go keeps one 32 KiB buffer per direction for the
+//! connection's life).
+//!
+//! A read beyond the floor takes bytes of the process's byte budget
+//! ([`ghostlane_runtime::memory_budget`], the one xray's relays take theirs
+//! of), held until its bytes are written: a read takes [`COPY_BUFFER`] when
+//! the budget gives the bytes beyond the floor, else half, and so on down to
+//! the floor ([`ByteBudget::floor`], 4 KiB), which is the direction's own.
+//! So the SOCKS front holds at most `B` plus a floor per moving direction,
+//! whatever the number of connections, and a connection whose bytes the
+//! budget cannot give reads less: it is slowed, never refused. Borrowing
+//! never waits: a direction that waited for bytes would deadlock once every
+//! byte sat in a write to a destination that stopped reading, the bytes'
+//! own readers among them; the floor is what keeps every direction moving.
 
 use std::future::poll_fn;
 use std::io;
@@ -28,29 +37,38 @@ use std::sync::{Mutex, PoisonError};
 use std::task::{ready, Context, Poll};
 use std::time::Duration;
 
+use ghostlane_runtime::memory_budget::{BudgetPermits, ByteBudget};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_util::sync::CancellationToken;
 
 /// How long a half-open connection may stay silent (`HalfOpenGrace`).
 pub const HALF_OPEN_GRACE: Duration = Duration::from_secs(60);
 
-/// One read's buffer. Plan §9 gives the SOCKS front 2 × 16 KiB per moving
+/// One read's buffer, at most: the read's size when the budget gives the
+/// bytes beyond the floor. Plan §9 gives the SOCKS front 2 × 16 KiB per moving
 /// connection: 16 KiB is more than a smux frame (12,236 on datachannel), so
 /// one read fills at most two frames, and the window updates the server
 /// sees keep the sizes they had (a read of the smux stream takes at most
 /// this much, so its `UPD` values are those of the Go client's reads).
 pub const COPY_BUFFER: usize = 16 * 1024;
 
-/// Buffers the pool keeps for reuse when they come back (128 KiB).
+/// [`COPY_BUFFER`]s the pool keeps for reuse when they come back (128 KiB);
+/// a smaller read's buffer is freed when it comes back.
 pub const POOL_KEEP: usize = 8;
 
 /// The copy buffers: lent for one read and its write, kept up to
-/// [`POOL_KEEP`] when they come back.
+/// [`POOL_KEEP`] when they come back. The bytes of a read beyond the floor
+/// are taken of the pool's budget by the direction before it borrows.
 #[derive(Debug)]
 pub struct Pool {
     free: Mutex<Vec<Box<[u8]>>>,
+    /// The budget its directions' reads take bytes of; `None` is the
+    /// process's.
+    budget: Option<&'static ByteBudget>,
     out: AtomicUsize,
     peak: AtomicUsize,
+    out_bytes: AtomicUsize,
+    peak_bytes: AtomicUsize,
 }
 
 static POOL: Pool = Pool::new();
@@ -62,13 +80,27 @@ impl Default for Pool {
 }
 
 impl Pool {
-    /// An empty pool.
+    /// An empty pool whose reads take bytes of the process's budget
+    /// ([`ByteBudget::process`], the one xray's relays take theirs of).
     #[must_use]
     pub const fn new() -> Self {
+        Self::in_budget(None)
+    }
+
+    /// An empty pool whose reads take bytes of `budget` (a test's own).
+    #[must_use]
+    pub const fn with_budget(budget: &'static ByteBudget) -> Self {
+        Self::in_budget(Some(budget))
+    }
+
+    const fn in_budget(budget: Option<&'static ByteBudget>) -> Self {
         Self {
             free: Mutex::new(Vec::new()),
+            budget,
             out: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
+            out_bytes: AtomicUsize::new(0),
+            peak_bytes: AtomicUsize::new(0),
         }
     }
 
@@ -77,19 +109,34 @@ impl Pool {
         &POOL
     }
 
-    fn take(&self) -> Box<[u8]> {
+    /// The budget this pool's reads take bytes of.
+    pub fn budget(&self) -> &'static ByteBudget {
+        self.budget.unwrap_or_else(ByteBudget::process)
+    }
+
+    /// A buffer of `len` bytes: a kept one for a [`COPY_BUFFER`].
+    fn take(&self, len: usize) -> Box<[u8]> {
         let out = self.out.fetch_add(1, Ordering::Relaxed) + 1;
         self.peak.fetch_max(out, Ordering::Relaxed);
-        let spare = self
-            .free
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .pop();
-        spare.unwrap_or_else(|| vec![0u8; COPY_BUFFER].into_boxed_slice())
+        let bytes = self.out_bytes.fetch_add(len, Ordering::Relaxed) + len;
+        self.peak_bytes.fetch_max(bytes, Ordering::Relaxed);
+        let spare = if len == COPY_BUFFER {
+            self.free
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .pop()
+        } else {
+            None
+        };
+        spare.unwrap_or_else(|| vec![0u8; len].into_boxed_slice())
     }
 
     fn give(&self, buf: Box<[u8]>) {
         self.out.fetch_sub(1, Ordering::Relaxed);
+        self.out_bytes.fetch_sub(buf.len(), Ordering::Relaxed);
+        if buf.len() != COPY_BUFFER {
+            return;
+        }
         let mut free = self.free.lock().unwrap_or_else(PoisonError::into_inner);
         if free.len() < POOL_KEEP {
             free.push(buf);
@@ -104,6 +151,16 @@ impl Pool {
     /// The most buffers ever lent at once.
     pub fn peak_lent(&self) -> usize {
         self.peak.load(Ordering::Relaxed)
+    }
+
+    /// Bytes of the buffers lent now.
+    pub fn lent_bytes(&self) -> usize {
+        self.out_bytes.load(Ordering::Relaxed)
+    }
+
+    /// The most bytes ever lent at once.
+    pub fn peak_lent_bytes(&self) -> usize {
+        self.peak_bytes.load(Ordering::Relaxed)
     }
 
     /// Drops the buffers kept for reuse (the host's memory relief, D11);
@@ -273,9 +330,11 @@ where
 }
 
 /// One direction's state between polls; a buffer it holds goes back to
-/// its pool when it goes.
+/// its pool when it goes, and the budget's bytes for it with it.
 struct Direction<'a> {
     pool: &'a Pool,
+    /// The budget's bytes for the read beyond the floor, held while `buf` is.
+    permits: BudgetPermits<'static>,
     /// The buffer while its bytes are written: the bytes `pos..len`.
     buf: Option<Box<[u8]>>,
     pos: usize,
@@ -290,7 +349,7 @@ struct Direction<'a> {
 impl Drop for Direction<'_> {
     fn drop(&mut self) {
         if let Some(b) = self.buf.take() {
-            self.pool.give(b);
+            self.give_back(b);
         }
     }
 }
@@ -299,6 +358,7 @@ impl<'a> Direction<'a> {
     fn new(pool: &'a Pool, eof_fails: bool) -> Self {
         Self {
             pool,
+            permits: BudgetPermits::new(pool.budget()),
             buf: None,
             pos: 0,
             len: 0,
@@ -326,10 +386,34 @@ impl<'a> Direction<'a> {
         let r = self.poll_inner(src, dst, moved, cx);
         if r.is_ready() {
             if let Some(b) = self.buf.take() {
-                self.pool.give(b);
+                self.give_back(b);
             }
         }
         r
+    }
+
+    /// The next read's size: [`COPY_BUFFER`] when the budget gives the
+    /// bytes beyond the floor, else half, and so on down to the floor,
+    /// which takes nothing of it. The bytes are held until the read's
+    /// buffer goes back.
+    fn plan(&mut self) -> usize {
+        let floor = self.permits.budget().floor().min(COPY_BUFFER);
+        let mut size = COPY_BUFFER;
+        while size > floor {
+            let need = size - floor;
+            if self.permits.try_hold(need) >= need {
+                return size;
+            }
+            size /= 2;
+        }
+        self.permits.try_hold(0);
+        floor
+    }
+
+    /// A read's buffer goes back, and the budget's bytes for it.
+    fn give_back(&mut self, buf: Box<[u8]>) {
+        self.pool.give(buf);
+        self.permits.try_hold(0);
     }
 
     fn poll_inner<S, D>(
@@ -343,7 +427,6 @@ impl<'a> Direction<'a> {
         S: AsyncRead + ReadReady + Unpin,
         D: AsyncWrite + Unpin,
     {
-        let pool = self.pool;
         loop {
             if self.closing {
                 let _ = ready!(Pin::new(&mut *dst).poll_shutdown(cx));
@@ -364,28 +447,29 @@ impl<'a> Direction<'a> {
                     }
                 }
                 if let Some(b) = self.buf.take() {
-                    pool.give(b);
+                    self.give_back(b);
                 }
             }
             // Readable first, with no buffer down.
             if let Err(e) = ready!(src.poll_read_ready(cx)) {
                 return Poll::Ready(Err((self.copied, e)));
             }
-            let mut buf = pool.take();
+            let size = self.plan();
+            let mut buf = self.pool.take(size);
             let mut rb = ReadBuf::new(&mut buf);
             match Pin::new(&mut *src).poll_read(cx, &mut rb) {
                 Poll::Pending => {
-                    pool.give(buf);
+                    self.give_back(buf);
                     return Poll::Pending;
                 }
                 Poll::Ready(Err(e)) => {
-                    pool.give(buf);
+                    self.give_back(buf);
                     return Poll::Ready(Err((self.copied, e)));
                 }
                 Poll::Ready(Ok(())) => {
                     let got = rb.filled().len();
                     if got == 0 {
-                        pool.give(buf);
+                        self.give_back(buf);
                         if self.eof_fails {
                             return Poll::Ready(Err((
                                 self.copied,
@@ -467,6 +551,153 @@ mod tests {
             assert_eq!(pool.lent(), 0, "a stopped copy gives its buffers back");
         })
         .await;
+    }
+
+    /// Plan §9's worst case at the SOCKS front: all [`MAX_SOCKS_CONNS`]
+    /// connections moving both ways at once.
+    const MOVING: usize = crate::socks::MAX_SOCKS_CONNS;
+    /// Each way of each connection.
+    const EACH_WAY: usize = 64 * 1024;
+    /// The pipes on both sides: smaller than one read, so a direction's
+    /// write waits on its reader while it holds the read's buffer.
+    const PIPE: usize = 8 * 1024;
+    /// The readers on both sides take this much at a time and pause: they
+    /// are slower than the copy, so every direction has a read waiting to
+    /// be written.
+    const READER_STEP: usize = 4 * 1024;
+    const FLOOR: usize = 4 * 1024;
+
+    fn pattern(conn: usize, way: u8) -> Vec<u8> {
+        (0..EACH_WAY)
+            .map(|k| {
+                (k as u32)
+                    .wrapping_mul(31)
+                    .wrapping_add(conn as u32 * 7 + u32::from(way)) as u8
+            })
+            .collect()
+    }
+
+    /// One end of a connection: sends `send` and closes its write half,
+    /// while it reads everything the other end sends, slowly.
+    async fn one_end(stream: tokio::io::DuplexStream, send: Vec<u8>) -> Vec<u8> {
+        let (mut rd, mut wr) = tokio::io::split(stream);
+        let sending = async move {
+            wr.write_all(&send).await.unwrap();
+            wr.shutdown().await.unwrap();
+        };
+        let reading = async move {
+            let mut got = Vec::with_capacity(EACH_WAY);
+            let mut step = vec![0u8; READER_STEP];
+            loop {
+                let n = rd.read(&mut step).await.unwrap();
+                if n == 0 {
+                    return got;
+                }
+                got.extend_from_slice(&step[..n]);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        };
+        let ((), got) = tokio::join!(sending, reading);
+        got
+    }
+
+    /// [`MOVING`] connections through one pool on a budget of `capacity`:
+    /// returns the pool and the budget, every copy having ended.
+    async fn move_all(capacity: usize) -> (&'static Pool, &'static ByteBudget) {
+        let budget: &'static ByteBudget = Box::leak(Box::new(ByteBudget::with_settings(
+            ghostlane_runtime::ByteBudgetSettings {
+                capacity,
+                floor: FLOOR,
+            },
+        )));
+        let pool: &'static Pool = Box::leak(Box::new(Pool::with_budget(budget)));
+        let stop = CancellationToken::new();
+        let (go, ready) = tokio::sync::watch::channel(false);
+        let mut copies = tokio::task::JoinSet::new();
+        let mut ends = tokio::task::JoinSet::new();
+        for conn in 0..MOVING {
+            let (local, app) = duplex(PIPE);
+            let (remote, server) = duplex(PIPE);
+            let stop = stop.clone();
+            copies.spawn(async move {
+                copy_bidirectional_in(pool, local, remote, false, HALF_OPEN_GRACE, &stop).await
+            });
+            for (stream, send, expect) in [
+                (app, pattern(conn, 0), pattern(conn, 1)),
+                (server, pattern(conn, 1), pattern(conn, 0)),
+            ] {
+                let mut ready = ready.clone();
+                ends.spawn(async move {
+                    ready.wait_for(|go| *go).await.unwrap();
+                    let got = one_end(stream, send).await;
+                    assert!(got == expect, "connection {conn}: the bytes differ");
+                });
+            }
+        }
+        go.send(true).unwrap();
+        while let Some(done) = ends.join_next().await {
+            done.unwrap();
+        }
+        let mut finished = 0;
+        while let Some(done) = copies.join_next().await {
+            let (counts, end) = done.unwrap();
+            assert!(matches!(end, CopyEnd::Done), "{end:?}");
+            assert_eq!(counts.left_to_right, EACH_WAY as u64);
+            assert_eq!(counts.right_to_left, EACH_WAY as u64);
+            finished += 1;
+        }
+        assert_eq!(finished, MOVING, "every connection finished");
+        assert_eq!(pool.lent_bytes(), 0, "every buffer came back");
+        assert_eq!(budget.in_use(), 0, "every byte of the budget came back");
+        assert!(budget.usage().peak <= capacity);
+        (pool, budget)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn five_hundred_twelve_moving_connections_stay_within_the_budget() {
+        crate::testing::bounded_for(Duration::from_secs(40), async {
+            const CAPACITY: usize = 1 << 20;
+            let (pool, budget) = move_all(CAPACITY).await;
+            let bound = CAPACITY + 2 * MOVING * FLOOR;
+            eprintln!(
+                "{MOVING} moving on a budget of {CAPACITY}: {} bytes lent at most, \
+                 {} of the budget",
+                pool.peak_lent_bytes(),
+                budget.usage().peak
+            );
+            assert!(
+                pool.peak_lent_bytes() <= bound,
+                "{MOVING} moving connections had {} bytes of buffers lent at once; \
+                 the budget and the floors allow {bound}",
+                pool.peak_lent_bytes()
+            );
+            // Not on the floors alone: reads took bytes of the budget.
+            assert!(budget.usage().peak > 0, "no read took bytes of the budget");
+        })
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_spent_budget_moves_every_connection_on_its_floor() {
+        crate::testing::bounded_for(Duration::from_secs(40), async {
+            let (pool, _) = move_all(0).await;
+            let bound = 2 * MOVING * FLOOR;
+            eprintln!(
+                "{MOVING} moving on an empty budget: {} bytes lent at most",
+                pool.peak_lent_bytes()
+            );
+            assert!(
+                pool.peak_lent_bytes() <= bound,
+                "on an empty budget {} bytes were lent at once; the floors allow {bound}",
+                pool.peak_lent_bytes()
+            );
+        })
+        .await;
+    }
+
+    #[test]
+    fn the_process_pool_takes_bytes_of_the_process_budget() {
+        assert!(std::ptr::eq(Pool::global().budget(), ByteBudget::process()));
     }
 
     #[tokio::test(start_paused = true)]

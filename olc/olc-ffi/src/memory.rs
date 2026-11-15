@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! The engine's memory for MemoryWatch (plan §9): `memory_stats()` replaces
-//! `MobileMemoryStats` and `trim()` replaces `MobileFreeOSMemory`.
+//! `MobileMemoryStats` and `trim()` replaces `MobileFreeOSMemory`;
+//! `set_byte_budget()` sets the process's byte budget, which the olcRTC
+//! client and the xray core share (`design.md` D11's relief).
 //!
 //! One JSON line, written beside the extension's `phys_footprint` four times
 //! a second:
@@ -11,7 +13,8 @@
 //! {"v":1,"heap":{"live":..,"peak":..,"allocs":..},
 //!  "rt":{"workers":1,"threads":2,"tasks":17},
 //!  "n":{"runs":1,"conns":3,"parked":0,"flows":2,"direct":0,"dns":0,"streams":3},
-//!  "layers":{"socks":[held,cap,budget],...},"budget":12582912}
+//!  "layers":{"socks":[held,cap,budget],...},"budget":12582912,
+//!  "bytes":{"cap":3000000,"floor":4096,"held":..,"peak":..,"windows":..}}
 //! ```
 //!
 //! `heap` is the counting allocator's (null when it is not installed),
@@ -19,7 +22,16 @@
 //! what it holds now, the hard bound in code (`olc_client::sizes`), and §9's
 //! budget for it. A layer this build does not have yet (KCP, the VP8
 //! channel, RTP, str0m, SCTP, signalling: M4 and M5) holds null.
+//!
+//! `bytes` is the process's byte budget (`ghostlane_runtime::memory_budget`):
+//! `cap` is `B`, the payload bytes in flight that the client's copies and
+//! UDP and the xray core's relays and HTTP/2 windows may take beyond their
+//! floors together, `floor` what each holder keeps outside `B`, `held` what
+//! is taken now, `peak` the most since the process began, `windows` the
+//! HTTP/2 windows' part of `held`. The socks and udp layers' caps are on
+//! the budget as it is now (`olc_client::sizes::budget`).
 
+use ghostlane_runtime::ByteBudgetSettings;
 use serde_json::{json, Value};
 
 const MIB: f64 = 1024.0 * 1024.0;
@@ -64,6 +76,7 @@ pub fn memory_stats() -> String {
 pub fn stats() -> Value {
     let g = olc_client::gauges::snapshot();
     let rows = olc_client::sizes::budget();
+    let bytes = ghostlane_runtime::byte_budget_usage();
     let heap = ghostlane_runtime::alloc::heap().map_or(
         Value::Null,
         |h| json!({"live": h.live, "peak": h.peak, "allocs": h.allocs}),
@@ -123,7 +136,33 @@ pub fn stats() -> Value {
         },
         "layers": layers,
         "budget": ENGINE_BUDGET,
+        "bytes": {
+            "cap": bytes.capacity,
+            "floor": bytes.floor,
+            "held": bytes.in_use,
+            "peak": bytes.peak,
+            "windows": bytes.window_bytes,
+        },
     })
+}
+
+/// Sets the process's byte budget `B`: the payload bytes in flight that the
+/// olcRTC client's copies and UDP and the xray core's relays and HTTP/2
+/// windows take, beyond each holder's floor, together. `0` returns it to
+/// the formula for the host's memory class (3,000,000 bytes on a phone,
+/// 15,000,000 elsewhere); the floor stays what it is.
+///
+/// The extension's relief (`design.md` D11) lowers it under memory pressure,
+/// beside `trim()`, and sets `0` again once the pressure has passed. A lower
+/// budget takes effect as held bytes come back: nothing held is revoked, and
+/// no connection is refused for it: each reads less, down to its floor.
+#[uniffi::export]
+pub fn set_byte_budget(bytes: u64) {
+    let settings = (bytes != 0).then(|| ByteBudgetSettings {
+        capacity: usize::try_from(bytes).unwrap_or(usize::MAX),
+        floor: ghostlane_runtime::byte_budget().floor,
+    });
+    ghostlane_runtime::set_byte_budget(settings);
 }
 
 /// `FreeOSMemory`: drops what the engine keeps for reuse (its pools), the
@@ -165,5 +204,28 @@ mod tests {
         assert!(layers["kcp"][0].is_null(), "not in this build");
         let line = memory_stats();
         assert!(!line.contains('\n') && line.len() < 1024, "{line}");
+    }
+
+    #[test]
+    fn set_byte_budget_sets_the_process_budget_and_zero_restores_the_formula() {
+        let formula = ByteBudgetSettings::for_class(ghostlane_runtime::memory_class());
+        set_byte_budget(1_000_000);
+        let s = stats();
+        set_byte_budget(0);
+        assert_eq!(s["bytes"]["cap"].as_u64(), Some(1_000_000), "{s}");
+        assert_eq!(s["bytes"]["floor"].as_u64(), Some(formula.floor as u64));
+        // The socks layer's cap is on the budget set: B, the floors of 512
+        // connections both ways, and the pool's kept buffers.
+        let socks = 1_000_000
+            + olc_client::socks::MAX_SOCKS_CONNS * 2 * formula.floor
+            + olc_client::copy::POOL_KEEP * olc_client::copy::COPY_BUFFER;
+        assert_eq!(s["layers"]["socks"][1].as_u64(), Some(socks as u64), "{s}");
+        let s = stats();
+        assert_eq!(
+            s["bytes"]["cap"].as_u64(),
+            Some(formula.capacity as u64),
+            "{s}"
+        );
+        assert!(memory_stats().len() < 1024);
     }
 }
