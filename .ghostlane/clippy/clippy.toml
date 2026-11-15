@@ -1,7 +1,8 @@
 # Size lints for the app's code, fork only (read through CLIPPY_CONF_DIR by the
-# "Size lints" step of .github/workflows/ci.yml; upstream's own Lint step does
-# not see this file). Each number is a share of the iOS packet tunnel's budget:
-# the extension is killed at about 50 MB, and the worst case is 256 flows.
+# "Size lints on the app's code" step of .github/workflows/ghostlane-guards.yml;
+# upstream's own Lint step in ci.yml does not see this file). Each number is a
+# share of the iOS packet tunnel's budget: the extension is killed at about
+# 50 MB, and the worst case is 256 flows.
 #
 # future-size-threshold: tokio's release box threshold. Above it a spawned
 # future is a second heap block, page-rounded on iOS. 16,384 B x 256 flows = 4 MiB.
