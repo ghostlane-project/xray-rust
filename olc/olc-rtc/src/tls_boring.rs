@@ -355,22 +355,22 @@ pub(crate) mod hello_util {
             );
         }
         assert_eq!(
-            u16s(ours.bodies[&0x000a], 2),
+            u16s(&ours.bodies[&0x000a], 2),
             u16s(&chrome.bodies[&0x000a], 2),
             "groups"
         );
         assert_eq!(
-            u16s(ours.bodies[&0x000d], 2),
+            u16s(&ours.bodies[&0x000d], 2),
             u16s(&chrome.bodies[&0x000d], 2),
             "sigalgs"
         );
         assert_eq!(
-            u16s(ours.bodies[&0x002b], 1),
+            u16s(&ours.bodies[&0x002b], 1),
             u16s(&chrome.bodies[&0x002b], 1),
             "versions"
         );
         assert_eq!(
-            shares(ours.bodies[&0x0033]),
+            shares(&ours.bodies[&0x0033]),
             shares(&chrome.bodies[&0x0033]),
             "key shares"
         );

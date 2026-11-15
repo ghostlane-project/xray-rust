@@ -10,11 +10,13 @@
 //! it through Sber's TURN or not at all. The Go engine at 2d4266af hands
 //! every `rtc:config` server to pion, which allocates on each: over UDP (the
 //! valid pairs of `t3-live-1` are `relay` at local preference 3, pion's
-//! UDP), over TCP, and over TLS (`turns:`). This module allocates over UDP
-//! and TCP, so a network that drops UDP still leaves the TCP path; TLS waits
-//! for a ClientHello that is libwebrtc's (port plan section 8, M8), as a
-//! TURN server's TLS hello from this client would otherwise be the one
-//! hello on the wire that is no browser's.
+//! UDP), over TCP, and over TLS (`turns:`). This module allocates over all
+//! three, so a network that drops UDP still leaves the TCP path and one that
+//! also inspects TCP leaves TLS. TLS is [`crate::turns`] (the `boring`
+//! feature): the same framing as TCP inside a TLS connection whose hello is
+//! Chrome 157's ([`crate::tls_boring`]), as a TURN server's TLS hello from a
+//! client of any other shape would be the one hello on the wire that is no
+//! browser's. Without the feature `turns:` URLs are left out.
 //!
 //! Over TCP (RFC 8656 section 3.1) a task per server ([`stream`]) dials it
 //! through the engine's protected dial and moves bytes both ways: what the
@@ -241,9 +243,8 @@ pub fn sni_name(host: &str) -> Option<&str> {
 
 /// The allocations one peer connection holds at most: SaluteJazz's
 /// `rtc:config` names two TURN hosts (`a-t`, `s-t`), each over UDP, TCP and
-/// TLS, and Chrome allocates on all six. This client takes the UDP and TCP
-/// four; six leaves room for TLS without letting a long list open sockets'
-/// worth of state.
+/// TLS, and Chrome allocates on all six; so does this client, and a longer
+/// list does not open more sockets' worth of state.
 pub const MAX_ALLOCATIONS: usize = 6;
 
 /// The remote addresses one allocation keeps permissions and channels for:
