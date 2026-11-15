@@ -43,7 +43,7 @@ pub enum SuperviseError {
     MaxCycles {
         /// Passes made.
         cycles: u32,
-        /// The last room.
+        /// The last room, by its label ([`Config::room_label`]).
         room: String,
         /// How it ended.
         why: String,
@@ -125,7 +125,9 @@ pub async fn run(
         }
         last = Some(idx);
         let room = &list[idx];
-        crate::info!("failover cycle={cycle} starting room={room}");
+        // Named by its label: a SaluteJazz room's password stays out of the log.
+        let label = cfg.room_label(room);
+        crate::info!("failover cycle={cycle} starting room={label}");
         let mut run_cfg = cfg.clone();
         run_cfg.url.clone_from(room);
         run_cfg.rooms.clear();
@@ -147,11 +149,11 @@ pub async fn run(
         }
         let why = match &ended {
             Ok(()) => {
-                crate::info!("failover cycle={cycle} room={room} ended");
+                crate::info!("failover cycle={cycle} room={label} ended");
                 "profile ended".to_owned()
             }
             Err(e) => {
-                crate::info!("failover cycle={cycle} room={room} ended with error: {e}");
+                crate::info!("failover cycle={cycle} room={label} ended with error: {e}");
                 e.to_string()
             }
         };
@@ -159,7 +161,7 @@ pub async fn run(
         if cycle >= MAX_CYCLES && done {
             return Err(SuperviseError::MaxCycles {
                 cycles: cycle,
-                room: room.clone(),
+                room: label,
                 why,
             });
         }
@@ -189,6 +191,55 @@ mod tests {
             p.wait(RETRY_DELAY, true);
         }
         assert_eq!(p.wait(RETRY_DELAY, false), MAX_RETRY_DELAY);
+    }
+
+    /// No line the walk writes, nor how it ends, nor the settings' `Debug`,
+    /// carries a room's password or the key: a SaluteJazz room is named by
+    /// its code. Offline: the preconnect goes to a loopback port nobody
+    /// listens on.
+    #[tokio::test]
+    async fn no_line_carries_a_room_password_or_the_key() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", closed.local_addr().unwrap());
+        drop(closed);
+        let key = "6b".repeat(32);
+        let json = format!(
+            r#"{{"provider":"salutejazz","url":"roomone:pwonesecret1","rooms":["roomtwo:pwtwosecret2"],"key":"{key}"}}"#
+        );
+        let mut cfg = Config::from_json(json.as_bytes()).unwrap();
+        cfg.preconnect_base = Some(base);
+        let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = lines.clone();
+        olc_net::log::set_sink(Some(Arc::new(move |l: &str| {
+            sink.lock().unwrap().push(l.to_owned());
+        })));
+        let walk = run(
+            cfg.clone(),
+            CancellationToken::new(),
+            Arc::new(|_| {}),
+            None,
+        );
+        let ended = tokio::time::timeout(Duration::from_secs(20), walk).await;
+        olc_net::log::set_sink(None);
+        let end = ended.expect("the walk ended").unwrap_err().to_string();
+        let lines = lines.lock().unwrap().clone();
+        let walked: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.contains("failover cycle="))
+            .collect();
+        for code in ["roomone", "roomtwo"] {
+            let start = format!("starting room={code}");
+            assert!(
+                walked.iter().any(|l| l.contains(&start)),
+                "no {start:?} in {walked:?}"
+            );
+        }
+        let debug = format!("{cfg:?}");
+        for text in lines.iter().chain([&end, &debug]) {
+            for secret in ["pwonesecret1", "pwtwosecret2", key.as_str()] {
+                assert!(!text.contains(secret), "{secret:?} in {text:?}");
+            }
+        }
     }
 
     #[test]

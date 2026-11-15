@@ -63,24 +63,25 @@ impl Link {
             ENGINE_INTEROP_PIPE => Ok(Link::Pipe(PipeLink::connect(&cfg.url, events).await?)),
             ENGINE_SALUTEJAZZ => {
                 let (url, password, room_id, refresh) = if cfg.provider == PROVIDER_SALUTEJAZZ {
-                    let c = olc_salutejazz::auth::issue(olc_salutejazz::auth::API_BASE, &cfg.url)
-                        .await?;
+                    let base = cfg
+                        .preconnect_base
+                        .clone()
+                        .unwrap_or_else(|| olc_salutejazz::auth::API_BASE.to_owned());
+                    let c = olc_salutejazz::auth::issue(&base, &cfg.url).await?;
                     // Go's provider hook: the preconnect again before each rejoin.
                     let room_ref = cfg.url.clone();
                     let refresh: olc_salutejazz::Refresh =
                         Arc::new(move || -> olc_salutejazz::RefreshFuture {
                             let room_ref = room_ref.clone();
+                            let base = base.clone();
                             Box::pin(async move {
-                                olc_salutejazz::auth::issue(
-                                    olc_salutejazz::auth::API_BASE,
-                                    &room_ref,
-                                )
-                                .await
-                                .map_err(|e| {
-                                    olc_salutejazz::Error::Other(format!(
-                                        "engineconn: provider refresh: {e}"
-                                    ))
-                                })
+                                olc_salutejazz::auth::issue(&base, &room_ref)
+                                    .await
+                                    .map_err(|e| {
+                                        olc_salutejazz::Error::Other(format!(
+                                            "engineconn: provider refresh: {e}"
+                                        ))
+                                    })
                             })
                         });
                     (c.url, c.token, c.room_id, Some(refresh))

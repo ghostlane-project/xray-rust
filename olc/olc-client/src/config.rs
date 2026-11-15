@@ -120,6 +120,11 @@ pub struct Config {
     /// rooms to try (set by the supervisor).
     #[serde(default)]
     pub end_on_empty_room: bool,
+    /// Where the SaluteJazz preconnect goes: [`olc_salutejazz::auth::API_BASE`]
+    /// when unset. No config file can set it; a test points it at a loopback
+    /// port, so no test reaches the service.
+    #[serde(skip)]
+    pub(crate) preconnect_base: Option<String>,
 }
 
 /// `control.Config`'s three numbers.
@@ -214,7 +219,7 @@ impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let hidden = |set: &str| if set.is_empty() { "" } else { "<hidden>" };
         f.debug_struct("Config")
-            .field("url", &self.url)
+            .field("url", &self.room_label(&self.url))
             .field("engine", &self.engine)
             .field("provider", &self.provider)
             .field("token", &hidden(&self.token))
@@ -223,7 +228,14 @@ impl std::fmt::Debug for Config {
             .field("ice_local_ip", &self.ice_local_ip)
             .field("ice_transport_policy", &self.ice_transport_policy)
             .field("max_joins", &self.max_joins)
-            .field("rooms", &self.rooms)
+            .field(
+                "rooms",
+                &self
+                    .rooms
+                    .iter()
+                    .map(|r| self.room_label(r))
+                    .collect::<Vec<_>>(),
+            )
             .field("key", &hidden(&self.key))
             .field("transport", &self.transport)
             .field("dns", &self.dns)
@@ -242,13 +254,17 @@ impl std::fmt::Debug for Config {
     }
 }
 
-/// The key's hex, the room's password and the SOCKS password are wiped when
-/// the settings go.
+/// The key's hex, the room's password, the SOCKS password and the rooms
+/// (a SaluteJazz room carries its password) are wiped when the settings go.
 impl Drop for Config {
     fn drop(&mut self) {
         wipe(&mut self.key);
         wipe(&mut self.token);
         wipe(&mut self.socks_pass);
+        wipe(&mut self.url);
+        for r in &mut self.rooms {
+            wipe(r);
+        }
     }
 }
 
@@ -259,6 +275,22 @@ fn wipe(s: &mut String) {
 }
 
 impl Config {
+    /// How a log line names `room`. A SaluteJazz room (`<code>:<password>`)
+    /// by its code alone, never its password (Go's mobile runtime prints the
+    /// whole reference); a reference that does not split as one by none of
+    /// it, since it may be the password alone. Another engine's room is an
+    /// address and is named as it is.
+    #[must_use]
+    pub fn room_label(&self, room: &str) -> String {
+        if self.provider != PROVIDER_SALUTEJAZZ {
+            return room.to_owned();
+        }
+        match olc_salutejazz::auth::split_room_ref(room) {
+            Ok((code, _)) => code.to_owned(),
+            Err(_) => "<malformed room reference>".to_owned(),
+        }
+    }
+
     /// Reads the JSON form.
     ///
     /// # Errors
