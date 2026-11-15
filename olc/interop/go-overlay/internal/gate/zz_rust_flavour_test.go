@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/openlibrecommunity/olcrtc/internal/engine/interoppipe"
+	"github.com/openlibrecommunity/olcrtc/internal/zzmem"
 	"github.com/openlibrecommunity/olcrtc/pkg/olcrtc/client"
 )
 
@@ -233,6 +234,10 @@ type rustChild struct {
 	err    error
 	peak   int64 // the highest VmRSS sampled, KiB
 	peakMu sync.Mutex
+	bin    string
+	// peakMem is the memory snapshot taken at the sample with the highest
+	// VmRSS (under peakMu).
+	peakMem zzmem.Peak
 	// samples is every sample, in time order, for S7 on the rust flavour
 	// (zz_rust_s6s7_test.go): VmRSS, RssAnon as the heap, the threads as
 	// the goroutines; under peakMu.
@@ -278,7 +283,7 @@ func startRust(ctx context.Context, bin string, ep Endpoint, extra func(*rustCon
 		_ = os.RemoveAll(dir)
 		return nil, fmt.Errorf("rust client: %w", err)
 	}
-	c := &rustChild{cmd: cmd, cancel: cancel, dir: dir, ready: make(chan string, 1), exited: make(chan struct{})}
+	c := &rustChild{bin: bin, cmd: cmd, cancel: cancel, dir: dir, ready: make(chan string, 1), exited: make(chan struct{})}
 	lines := make(chan struct{})
 	go func() {
 		defer close(lines)
@@ -303,6 +308,9 @@ func startRust(ctx context.Context, bin string, ep Endpoint, extra func(*rustCon
 	return c, nil
 }
 
+// memTopN is how many mappings the peak-memory line names.
+const memTopN = 12
+
 // childSampleEvery is how often the child is sampled: under the runner's
 // second, so what S7 reads at a mark is at most this much after it.
 const childSampleEvery = 250 * time.Millisecond
@@ -323,6 +331,7 @@ func (c *rustChild) sample() {
 			}
 			c.peakMu.Lock()
 			c.peak = max(c.peak, kb)
+			c.peakMem.Observe(pid, kb)
 			c.samples = append(c.samples, sm)
 			c.peakMu.Unlock()
 		}
@@ -370,6 +379,7 @@ func (c *rustChild) halt(budget time.Duration, logf func(string, ...any)) {
 		if logf != nil {
 			c.peakMu.Lock()
 			logf("rust client memory: VmHWM %d KiB, peak sampled VmRSS %d KiB", hwm, c.peak)
+			logf("rust client memory at peak RSS: %s", c.peakMem.Snap.Line(c.bin, memTopN))
 			c.peakMu.Unlock()
 		}
 	})

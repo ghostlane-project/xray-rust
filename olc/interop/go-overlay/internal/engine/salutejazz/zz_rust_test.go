@@ -62,6 +62,7 @@ import (
 	enginebuiltin "github.com/openlibrecommunity/olcrtc/internal/engine/builtin"
 	"github.com/openlibrecommunity/olcrtc/internal/engine/salutejazz"
 	"github.com/openlibrecommunity/olcrtc/internal/server"
+	"github.com/openlibrecommunity/olcrtc/internal/zzmem"
 )
 
 const (
@@ -146,6 +147,11 @@ type rustProc struct {
 	rssPeak atomic.Int64
 	// hwm is the VmHWM read just before the stop, KiB.
 	hwm atomic.Int64
+	// bin is the client's path; peakMem is the memory snapshot taken at the
+	// sample with the highest VmRSS (under memMu).
+	bin     string
+	memMu   sync.Mutex
+	peakMem zzmem.Peak
 	// finalLog is the whole log once the client has exited (its directory
 	// goes with the test's other cleanups).
 	finalLog atomic.Pointer[string]
@@ -186,7 +192,7 @@ func startRust(t *testing.T, cfg rustConfig, live *liveness) *rustProc {
 		cancel()
 		t.Fatal(err)
 	}
-	p := &rustProc{cmd: cmd, logPath: logFile.Name(), listen: make(chan string, 1), exited: make(chan struct{})}
+	p := &rustProc{bin: bin, cmd: cmd, logPath: logFile.Name(), listen: make(chan string, 1), exited: make(chan struct{})}
 	lines := make(chan struct{})
 	go func() {
 		defer close(lines)
@@ -225,6 +231,9 @@ func startRust(t *testing.T, cfg rustConfig, live *liveness) *rustProc {
 		}
 		t.Logf("rust client memory: VmHWM %d KiB, peak sampled VmRSS %d KiB, heap peak %d KiB",
 			p.hwm.Load(), p.rssPeak.Load(), p.heapPeak.Load())
+		p.memMu.Lock()
+		t.Logf("rust client memory at peak RSS: %s", p.peakMem.Snap.Line(p.bin, memTopN))
+		p.memMu.Unlock()
 		switch {
 		case os.Getenv(rustTraceEnv) != "":
 			t.Logf("rust client log (%s), first lines:\n%s", p.logPath, headFile(p.logPath, rustTraceLines))
@@ -302,6 +311,9 @@ func numberBefore(line, after, before string) (int64, bool) {
 	return n, err == nil
 }
 
+// memTopN is how many mappings the peak-memory line names.
+const memTopN = 12
+
 // sample keeps the client's peak resident memory, twice a second.
 func (p *rustProc) sample() {
 	tick := time.NewTicker(500 * time.Millisecond)
@@ -309,6 +321,9 @@ func (p *rustProc) sample() {
 	for {
 		if kb := procStatusKB(p.cmd.Process.Pid, "VmRSS:"); kb > p.rssPeak.Load() {
 			p.rssPeak.Store(kb)
+			p.memMu.Lock()
+			p.peakMem.Observe(p.cmd.Process.Pid, kb)
+			p.memMu.Unlock()
 		}
 		select {
 		case <-p.exited:
