@@ -222,6 +222,9 @@ func startRust(t *testing.T, cfg rustConfig, live *liveness) *rustProc {
 		if raw, err := os.ReadFile(p.logPath); err == nil {
 			s := string(raw)
 			p.finalLog.Store(&s)
+			if found := secretsIn(s, cfg); len(found) > 0 {
+				t.Errorf("the rust client's log (%s) carries %s", p.logPath, strings.Join(found, " and "))
+			}
 		}
 		t.Logf("rust client memory: VmHWM %d KiB, peak sampled VmRSS %d KiB, heap peak %d KiB",
 			p.hwm.Load(), p.rssPeak.Load(), p.heapPeak.Load())
@@ -278,6 +281,45 @@ func (p *rustProc) note(line string, live *liveness) {
 func (p *rustProc) logHas(text string) bool {
 	raw, err := os.ReadFile(p.logPath)
 	return err == nil && strings.Contains(string(raw), text)
+}
+
+// secretsIn names the configured secrets that log holds: the room's password
+// (cfg.Token) and the key (cfg.Key), each only when it is set. No line of the
+// client's may carry either: olc-client names a SaluteJazz room by its code
+// alone (config.rs, room_label), and the apps' LogScrubber masks UUIDs only.
+// It says which secret, never the secret.
+func secretsIn(log string, cfg rustConfig) []string {
+	var found []string
+	for _, s := range []struct{ name, value string }{
+		{"the room's password", cfg.Token},
+		{"the key", cfg.Key},
+	} {
+		if s.value != "" && strings.Contains(log, s.value) {
+			found = append(found, s.name)
+		}
+	}
+	return found
+}
+
+// TestRustLogSecretCheck holds secretsIn to what it names; it needs no
+// client binary.
+func TestRustLogSecretCheck(t *testing.T) {
+	cfg := rustConfig{RoomID: "fakeroom", Token: "passw0rd", Key: strings.Repeat("6b", 32)}
+	for _, c := range []struct {
+		log  string
+		cfg  rustConfig
+		want []string
+	}{
+		{"failover cycle=1 starting room=fakeroom\n", cfg, nil},
+		{"failover cycle=1 starting room=fakeroom:passw0rd\n", cfg, []string{"the room's password"}},
+		{"config key=" + cfg.Key + "\n", cfg, []string{"the key"}},
+		{"room=fakeroom:passw0rd key=" + cfg.Key + "\n", cfg, []string{"the room's password", "the key"}},
+		{"failover cycle=1 starting room=fakeroom\n", rustConfig{}, nil},
+	} {
+		if got := secretsIn(c.log, c.cfg); !slices.Equal(got, c.want) {
+			t.Errorf("secretsIn(%q) = %q, want %q", c.log, got, c.want)
+		}
+	}
 }
 
 // The apps' log contract (critique G1): pion's state lines, which Android's
