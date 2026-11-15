@@ -108,7 +108,7 @@ pub const TICKET_HEAP_MAX: usize = 32 * 1024;
 /// (its `SSL`, the handshake's keys, a record's buffers), at most: the cap
 /// the connection row of `olc-client`'s `sizes.rs` is made from. The lab's
 /// heap test (`heap_a_tls_connection_beside_a_tcp_one`) measures it.
-pub const TLS_BORINGSSL_MAX: usize = 64 * 1024;
+pub const TLS_BORINGSSL_MAX: usize = 32 * 1024;
 
 /// What one `turns:` connection holds beside a plain TCP relay's, at most:
 /// BoringSSL's state, the buffers of this module (a socket read, the
@@ -130,6 +130,13 @@ const _: () = {
     assert!(crate::turns_verify::MAX_CHAIN * 4096 <= TLS_MAX_CERT_LIST * 2);
     assert!(TICKET_MAX_DER * 4 <= TICKET_HEAP_MAX);
     assert!(TICKET_SERVERS >= MAX_ALLOCATIONS);
+    // A `turns:` connection in all, at the bounds: the TCP relay's (queue,
+    // read, one partial message, [`crate::turn`]'s 128 KiB) and what TLS
+    // adds ([`TLS_CONNECTION_MAX`]).
+    assert!(
+        crate::turn::STREAM_QUEUE * SEND_BUF + STREAM_READ + 65_556 + TLS_CONNECTION_MAX
+            <= 256 * 1024
+    );
 };
 
 /// The bounds of one connection, a test's to shorten.
@@ -269,10 +276,12 @@ struct Mem {
 
 impl Mem {
     fn new() -> Mem {
+        // Grown on use, never past their bounds: an idle connection holds
+        // what its last flight needed, not the bounds.
         Mem {
-            rx: Vec::with_capacity(STREAM_READ),
+            rx: Vec::new(),
             rx_at: 0,
-            tx: Vec::with_capacity(TLS_OUT_MAX),
+            tx: Vec::new(),
             tx_at: 0,
         }
     }
@@ -1601,14 +1610,17 @@ mod tests {
                 tls.saturating_sub(tcp),
                 tls_peak.saturating_sub(tcp_peak),
             );
+            // At rest: BoringSSL's state and this module's buffers; at the
+            // peak, the certificate chain's room too.
+            let ours = 3 * STREAM_READ + TLS_OUT_MAX + SEND_BUF;
             assert!(
-                tls.saturating_sub(tcp) <= TLS_BORINGSSL_MAX,
-                "TLS adds {} B at rest, over TLS_BORINGSSL_MAX {TLS_BORINGSSL_MAX}",
+                tls.saturating_sub(tcp) <= TLS_BORINGSSL_MAX + ours,
+                "TLS adds {} B at rest, over TLS_BORINGSSL_MAX {TLS_BORINGSSL_MAX} + {ours}",
                 tls.saturating_sub(tcp)
             );
             assert!(
-                tls_peak.saturating_sub(tcp_peak) <= TLS_BORINGSSL_MAX + TLS_MAX_CERT_LIST,
-                "TLS adds {} B at the peak",
+                tls_peak.saturating_sub(tcp_peak) <= TLS_CONNECTION_MAX,
+                "TLS adds {} B at the peak, over TLS_CONNECTION_MAX {TLS_CONNECTION_MAX}",
                 tls_peak.saturating_sub(tcp_peak)
             );
         }
