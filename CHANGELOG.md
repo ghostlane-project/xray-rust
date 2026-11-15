@@ -136,13 +136,17 @@ long-term supported release series.
   it at run time and `None` returns to the formula; `byte_budget()`,
   `byte_budget_usage()` and `reset_byte_budget_peak()` read it.
 - A TLS client session takes a write only once the records of the writes
-  before it have gone to its carrier. While the carrier waits it holds the
-  records of the one write it took last (32,812 B for a 32 KiB relay
-  write), which its relay counts as unflushed, where rustls took writes up
-  to 64 KiB ahead and part of a write that then waited, which the relay
-  buffer held too and the byte budget counted once. This holds for the raw
+  before it have gone to its carrier, and takes it whole, whatever its size.
+  While the carrier waits it holds the records of the one write it took
+  last (in TLS 1.3, 32,812 B for a 32 KiB relay write), which its relay
+  counts as unflushed. Before, rustls took writes up to 64 KiB ahead, and
+  part of a write that then waited: the first 64 KiB of a 128 KiB write, or
+  what fitted beside records already queued. The relay buffer held those
+  bytes too, and the byte budget counted them once. This holds for the raw
   transport's TLS and REALITY, TLS under the HTTP-based transports, WARP's
-  TLS, and DNS and probes over TLS. Records keep their sizes.
+  TLS, and DNS and probes over TLS. A write that meets an empty queue keeps
+  its records (16 KiB and the rest); the odd-sized records rustls cut from a
+  write that met a part-full queue under backpressure no longer occur.
 - A relay direction holds no buffer between reads: each read borrows one
   sized for it (1 KiB to 1 MiB) from the process's pool and gives it back
   once written, and a read that brings half of its size or less sets the

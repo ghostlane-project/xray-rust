@@ -351,24 +351,6 @@ impl TransportStream for tokio::io::DuplexStream {
     }
 }
 
-impl TransportStream for tokio_rustls::client::TlsStream<TcpStream> {
-    fn poll_read_direct(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        output: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        AsyncRead::poll_read(self, cx, output)
-    }
-
-    fn poll_write_direct(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        input: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        AsyncWrite::poll_write(self, cx, input)
-    }
-}
-
 pub type BoxedTransportStream = Box<dyn TransportStream>;
 
 /// Opens the raw TCP carrier used by [`TransportDialer`].

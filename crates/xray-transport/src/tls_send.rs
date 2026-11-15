@@ -14,16 +14,27 @@
 //! in a lab run.
 //!
 //! So a TLS client session takes a write only once the records of the
-//! writes before it have all gone to the carrier. While the carrier waits,
-//! the session holds the records of the one write it took last: its bytes
-//! and 22 B a record of at most 16 KiB, 32,812 B for a phone relay's largest
-//! write (32 KiB), where rustls held up to 64 KiB and more. Its writer counts
-//! those bytes as written, and a write that waits has given the session
-//! none of its bytes. The writer waits for the carrier instead.
+//! writes before it have all gone to the carrier, and takes it whole. The
+//! rule keeps the queue to one write, so the session's own limit is lifted
+//! ([`take_writes_whole`]): it only cut a write larger than 64 KiB in two,
+//! and the first 64 KiB then sat in both places while the rest waited. A
+//! relay writes up to 128 KiB at once by default on a desktop, and on a
+//! phone with a `bufferSize` of 128 or more.
 //!
-//! Records keep their sizes: rustls cuts a write it takes whole into 16 KiB
-//! records and the rest, as it always did. Only a write that met a nearly
-//! full queue was cut where the limit fell, and none meets a queue now.
+//! While the carrier waits, the session holds the records of the one write
+//! it took last: its bytes and, in TLS 1.3, 22 B a record of at most
+//! 16 KiB, 32,812 B for a phone relay's largest write (32 KiB). TLS 1.2
+//! with AES-GCM adds 29 B a record, 32,826 B. Its writer counts those
+//! bytes as written, and a write that waits has given the session none of
+//! its bytes. The writer waits for the carrier instead. How large that one
+//! write is, the writer decides: a relay's is at most its read cap, 1 MiB.
+//!
+//! Records: a write that meets an empty queue is cut as rustls always cut
+//! one, into 16 KiB records and the rest, whatever its size (the old limit,
+//! 64 KiB, fell at the end of a record). A write that met a queue holding
+//! records was cut where the limit fell, into records of odd sizes. No
+//! write meets a queue now, so under backpressure those odd-sized records
+//! are gone from the wire.
 
 use std::io::{self, IoSlice};
 use std::pin::Pin;
@@ -33,6 +44,12 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_rustls::client::TlsStream;
 
 use crate::{BoxedTransportStream, TransportStream};
+
+/// Lets `session` take any write whole: [`poll_write`] keeps its queue to
+/// the one write it took last, which its writer sized (module docs).
+pub(crate) fn take_writes_whole(session: &mut rustls::ClientConnection) {
+    session.set_buffer_limit(None);
+}
 
 /// `Ready` once `session` has handed its carrier every record it queued,
 /// and so may take a write. The session's flush writes them, and flushes
@@ -86,11 +103,14 @@ where
 /// removes only that layer, and the sessions `TlsConnector` dials for DNS
 /// and probes. Direct I/O therefore stays inside the session. The raw
 /// transport's TLS, which Vision does unwrap, is a `PenetratingTlsStream`.
-/// Both take a write only once their records have gone (module docs).
+/// Both take a write only once their records have gone, and take it whole
+/// (module docs). No bare tokio-rustls client stream is a
+/// `TransportStream`, so nothing boxes a session without the rule.
 pub(crate) struct TlsClientStream(TlsStream<BoxedTransportStream>);
 
 impl TlsClientStream {
-    pub(crate) fn new(session: TlsStream<BoxedTransportStream>) -> Self {
+    pub(crate) fn new(mut session: TlsStream<BoxedTransportStream>) -> Self {
+        take_writes_whole(session.get_mut().1);
         Self(session)
     }
 }

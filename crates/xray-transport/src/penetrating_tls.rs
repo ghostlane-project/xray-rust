@@ -249,7 +249,8 @@ impl<S> PenetratingTlsStream<S>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    pub(crate) fn new(stream: TlsStream<CapturedStream<S>>) -> Self {
+    pub(crate) fn new(mut stream: TlsStream<CapturedStream<S>>) -> Self {
+        crate::tls_send::take_writes_whole(stream.get_mut().1);
         Self {
             state: PenetratingTlsState::Tls(Some(Box::new(stream))),
         }
