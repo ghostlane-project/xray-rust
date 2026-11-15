@@ -715,7 +715,7 @@ mod tests {
     use crate::tls_boring::hello_util::{assert_is_chromes, parse, Hello};
     use crate::turn::{STREAM_INBOUND, STREAM_QUEUE};
     use crate::turns_verify::testpki::{self, Cert, Leaf};
-    use crate::turns_verify::{anchor_of, MAX_CHAIN};
+    use crate::turns_verify::anchor_of;
 
     // -----------------------------------------------------------------
     // Fixtures: a root, an intermediate and a server certificate.
