@@ -56,8 +56,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use boring::ssl::{
-    ErrorCode, HandshakeError, MidHandshakeSslStream, Ssl, SslAlert, SslContext, SslRef,
-    SslSession, SslStream, SslVerifyError, SslVerifyMode,
+    ErrorCode, HandshakeError, MidHandshakeSslStream, SslAlert, SslContext, SslRef, SslSession,
+    SslStream, SslVerifyError, SslVerifyMode,
 };
 use foreign_types::ForeignTypeRef;
 use rustls_pki_types::{ServerName, TrustAnchor, UnixTime};
@@ -102,6 +102,20 @@ pub const TICKET_MAX_DER: usize = 12 * 1024;
 /// `olc-client`'s `sizes.rs`; a test measures a session of a real-sized
 /// chain against it.
 pub const TICKET_HEAP_MAX: usize = 48 * 1024;
+
+/// The C heap BoringSSL's state of one connection adds to a plain TCP relay's
+/// (its `SSL`, the handshake's keys, a record's buffers), at most: the cap
+/// the connection row of `olc-client`'s `sizes.rs` is made from. The lab's
+/// heap test (`heap_a_tls_connection_beside_a_tcp_one`) measures it.
+pub const TLS_BORINGSSL_MAX: usize = 64 * 1024;
+
+/// What one `turns:` connection holds beside a plain TCP relay's, at most:
+/// BoringSSL's state, the buffers of this module (a socket read, the
+/// plaintext, the ciphertext in and out, the datagram held during the
+/// handshake) and, while the handshake runs, the certificate chain
+/// ([`TLS_MAX_CERT_LIST`]).
+pub const TLS_CONNECTION_MAX: usize =
+    TLS_BORINGSSL_MAX + 3 * STREAM_READ + TLS_OUT_MAX + SEND_BUF + TLS_MAX_CERT_LIST;
 
 /// The bounds of one connection, a test's to shorten.
 #[derive(Clone, Copy)]
@@ -680,7 +694,7 @@ mod tests {
     use std::thread::JoinHandle;
     use std::time::Instant as StdInstant;
 
-    use boring::ssl::{NameType, ShutdownState, SslContextBuilder, SslMethod};
+    use boring::ssl::{NameType, ShutdownState, Ssl, SslContextBuilder, SslMethod};
     use tokio::task::JoinHandle as TaskHandle;
 
     use super::*;
@@ -1221,7 +1235,7 @@ mod tests {
             let f = fixture(&[HOST], &[]);
             let s = setup(roots(&f));
             let mut servers = Vec::new();
-            for i in 0..TICKET_SERVERS + 2 {
+            for _ in 0..TICKET_SERVERS + 2 {
                 let srv = TestServer::start(server_ctx(&f), vec![5; 20], false);
                 let mut r = relay(0, HOST, srv.addr, s.clone());
                 r.send(vec![1; 40]).await;
@@ -1330,5 +1344,271 @@ mod tests {
         assert!(TLS_MAX_CERT_LIST >= 16 * 1024 && TLS_MAX_CERT_LIST <= 100 * 1024);
         assert!(MAX_CHAIN * 4096 <= TLS_MAX_CERT_LIST * 2);
         assert!(TICKET_MAX_DER < TICKET_HEAP_MAX);
+    }
+
+    // -----------------------------------------------------------------
+    // Heap, measured on the C heap (glibc's mallinfo2), in a process of its
+    // own (the lab runs these with --ignored --test-threads=1): the server
+    // of the connection measurement is a child process, so what is counted
+    // is the client's alone.
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    mod heap {
+        use std::io::BufRead;
+        use std::process::{Child, Command, Stdio};
+        use std::sync::atomic::AtomicUsize;
+
+        use super::*;
+
+        /// Bytes in use on the C heap, all arenas, mmapped blocks included.
+        fn used() -> usize {
+            // SAFETY: mallinfo2 only reads the allocator's counters.
+            let m = unsafe { libc::mallinfo2() };
+            m.uordblks + m.hblkhd
+        }
+
+        /// The measurement's server: a child process of this test binary
+        /// (a TLS echo server, or a plain TCP one), which says its port and
+        /// ends when its stdin does.
+        #[test]
+        #[ignore = "the heap measurement's server process; the test below starts it"]
+        fn heap_server_child() {
+            let Ok(dir) = std::env::var("OLC_TURNS_CHILD_DIR") else {
+                return;
+            };
+            let plain = std::env::var("OLC_TURNS_CHILD_MODE").as_deref() == Ok("plain");
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            println!("PORT {}", listener.local_addr().unwrap().port());
+            std::io::stdout().flush().unwrap();
+            let ctx = {
+                let mut b = SslContextBuilder::new(SslMethod::tls()).unwrap();
+                b.set_certificate_chain_file(format!("{dir}/chain.pem"))
+                    .unwrap();
+                b.set_private_key_file(format!("{dir}/key.pem"), boring::ssl::SslFiletype::PEM)
+                    .unwrap();
+                b.build()
+            };
+            std::thread::spawn(move || {
+                for tcp in listener.incoming().flatten() {
+                    let ctx = ctx.clone();
+                    std::thread::spawn(move || {
+                        let mut buf = vec![0u8; 4096];
+                        if plain {
+                            let mut tcp = tcp;
+                            while let Ok(n) = tcp.read(&mut buf) {
+                                if n == 0 || tcp.write_all(&buf[..n]).is_err() {
+                                    break;
+                                }
+                            }
+                        } else if let Ok(mut s) = Ssl::new(&ctx).unwrap().accept(tcp) {
+                            while let Ok(n) = s.read(&mut buf) {
+                                if n == 0 || s.write_all(&buf[..n]).is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+            let mut one = [0u8; 1];
+            while std::io::stdin().read(&mut one).unwrap_or(0) > 0 {}
+        }
+
+        struct ServerProcess {
+            child: Child,
+            port: u16,
+        }
+
+        impl Drop for ServerProcess {
+            fn drop(&mut self) {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+            }
+        }
+
+        fn server_process(dir: &str, plain: bool) -> ServerProcess {
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "turns::tests::heap::heap_server_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("OLC_TURNS_CHILD_DIR", dir)
+                .env("OLC_TURNS_CHILD_MODE", if plain { "plain" } else { "tls" })
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap();
+            let out = child.stdout.take().unwrap();
+            let mut port = 0;
+            for line in std::io::BufReader::new(out).lines() {
+                let line = line.unwrap();
+                if let Some(p) = line.strip_prefix("PORT ") {
+                    port = p.trim().parse().unwrap();
+                    break;
+                }
+            }
+            assert_ne!(port, 0, "the server process said no port");
+            ServerProcess { child, port }
+        }
+
+        /// What `n` idle connections hold, each, once they have each
+        /// echoed a datagram: at rest and at the highest the heap went while
+        /// they were made. A TLS connection's total includes its tasks,
+        /// queues, buffers and BoringSSL's state.
+        async fn per_connection(dir: &str, plain: bool, setup: &Setup, n: usize) -> (usize, usize) {
+            let server = server_process(dir, plain);
+            let addr = SocketAddr::from(([127, 0, 0, 1], server.port));
+            let make = |slot: usize| {
+                if plain {
+                    let (otx, orx) = mpsc::channel(STREAM_QUEUE);
+                    let (itx, irx) = mpsc::channel(STREAM_INBOUND);
+                    let task = tokio::spawn(crate::turn::stream(slot, addr, orx, itx));
+                    Relay {
+                        out: Some(otx),
+                        chunks: irx,
+                        task,
+                        biggest: 0,
+                    }
+                } else {
+                    relay(slot, HOST, addr, setup.clone())
+                }
+            };
+            // One connection first: the one-time state (the context, the
+            // roots, the runtime's own) is not a connection's.
+            let mut warm = make(99);
+            warm.send(vec![1; 100]).await;
+            assert!(warm.collect(100).await.is_some(), "the warm-up connection");
+            warm.close().await;
+            drop(warm);
+            tokio::time::sleep(Duration::from_millis(200)).await;
+
+            let peak = Arc::new(AtomicUsize::new(0));
+            let run = Arc::new(AtomicBool::new(true));
+            let before = used();
+            let sampler = {
+                let (peak, run) = (Arc::clone(&peak), Arc::clone(&run));
+                std::thread::spawn(move || {
+                    while run.load(Ordering::Relaxed) {
+                        peak.fetch_max(used(), Ordering::Relaxed);
+                        std::thread::sleep(Duration::from_micros(300));
+                    }
+                })
+            };
+            let mut relays: Vec<Relay> = (0..n).map(make).collect();
+            for r in &relays {
+                r.send(vec![1; 100]).await;
+            }
+            for r in &mut relays {
+                assert!(r.collect(100).await.is_some(), "a connection never echoed");
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let rest = used().saturating_sub(before);
+            run.store(false, Ordering::Relaxed);
+            sampler.join().unwrap();
+            let high = peak.load(Ordering::Relaxed).saturating_sub(before);
+            for r in &mut relays {
+                r.close().await;
+            }
+            (rest / n, high / n)
+        }
+
+        /// The C heap one `turns:` connection holds beside a TCP one's, and
+        /// the highest it went while 16 were made at once, against the
+        /// constants the budget states.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[ignore = "heap measurement: needs the process to itself (--test-threads=1)"]
+        async fn heap_a_tls_connection_beside_a_tcp_one() {
+            let names: Vec<String> = (0..60).map(|i| format!("pad{i:04}.olc.test")).collect();
+            let mut all: Vec<&str> = names.iter().map(String::as_str).collect();
+            all.push(HOST);
+            let f = fixture(&all, &[]);
+            let dir = std::env::temp_dir().join(format!("olc-turns-heap-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let chain = [f.leaf.x509.to_pem().unwrap(), f.mid.x509.to_pem().unwrap()].concat();
+            std::fs::write(dir.join("chain.pem"), chain).unwrap();
+            std::fs::write(
+                dir.join("key.pem"),
+                f.leaf.key.private_key_to_pem_pkcs8().unwrap(),
+            )
+            .unwrap();
+            let der_len = f.leaf.x509.to_der().unwrap().len() + f.mid.x509.to_der().unwrap().len();
+            let dir_s = dir.to_str().unwrap().to_owned();
+            let s = setup(roots(&f));
+            let n = 16;
+            let (tcp, tcp_peak) = per_connection(&dir_s, true, &s, n).await;
+            let (tls, tls_peak) = per_connection(&dir_s, false, &s, n).await;
+            let _ = std::fs::remove_dir_all(&dir);
+            eprintln!(
+                "TURNS-HEAP chain {der_len} B; per connection, {n} at once: plain TCP {tcp} B (peak {tcp_peak}), \
+                 TLS {tls} B (peak {tls_peak}); TLS adds {} B at rest, {} B at the peak",
+                tls.saturating_sub(tcp),
+                tls_peak.saturating_sub(tcp_peak),
+            );
+            assert!(
+                tls.saturating_sub(tcp) <= TLS_BORINGSSL_MAX,
+                "TLS adds {} B at rest, over TLS_BORINGSSL_MAX {TLS_BORINGSSL_MAX}",
+                tls.saturating_sub(tcp)
+            );
+            assert!(
+                tls_peak.saturating_sub(tcp_peak) <= TLS_BORINGSSL_MAX + TLS_MAX_CERT_LIST,
+                "TLS adds {} B at the peak",
+                tls_peak.saturating_sub(tcp_peak)
+            );
+        }
+
+        /// One kept session's heap (the serialised session, BoringSSL's copy
+        /// of the chain, the ticket), for a chain of about 5 KiB, against
+        /// [`TICKET_HEAP_MAX`].
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        #[ignore = "heap measurement: needs the process to itself (--test-threads=1)"]
+        async fn heap_a_kept_session() {
+            let names: Vec<String> = (0..160).map(|i| format!("pad{i:04}.olc.test")).collect();
+            let mut all: Vec<&str> = names.iter().map(String::as_str).collect();
+            all.push(HOST);
+            let f = fixture(&all, &[]);
+            let der_len = f.leaf.x509.to_der().unwrap().len() + f.mid.x509.to_der().unwrap().len();
+            let s = setup(roots(&f));
+            let servers: Vec<TestServer> = (0..TICKET_SERVERS)
+                .map(|_| TestServer::start(server_ctx(&f), vec![5; 20], false))
+                .collect();
+            // One connection first, for the one-time state.
+            {
+                let warm = TestServer::start(server_ctx(&f), vec![5; 20], false);
+                let mut r = relay(0, HOST, warm.addr, setup(roots(&f)));
+                r.send(vec![1; 40]).await;
+                assert!(r.collect(20).await.is_some());
+                r.close().await;
+                eventually("served", || warm.seen(|x| x.closed_clean == 1)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let before = used();
+            for srv in &servers {
+                let mut r = relay(0, HOST, srv.addr, s.clone());
+                r.send(vec![1; 40]).await;
+                assert!(r.collect(20).await.is_some());
+                r.close().await;
+                eventually("served", || srv.seen(|x| x.closed_clean == 1)).await;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let held = used().saturating_sub(before);
+            assert_eq!(locked(s.cache).len(), TICKET_SERVERS);
+            let der: usize = locked(s.cache)
+                .list
+                .iter()
+                .map(|(_, x)| x.to_der().unwrap().len())
+                .sum::<usize>()
+                / TICKET_SERVERS;
+            eprintln!(
+                "TURNS-HEAP chain {der_len} B; a kept session: {der} B serialised, {} B of heap \
+                 ({} B for {TICKET_SERVERS}); cap {TICKET_HEAP_MAX} B each",
+                held / TICKET_SERVERS,
+                held
+            );
+            assert!(held / TICKET_SERVERS <= TICKET_HEAP_MAX);
+        }
     }
 }

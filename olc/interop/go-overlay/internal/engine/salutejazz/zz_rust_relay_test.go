@@ -26,6 +26,7 @@
 package salutejazz_test
 
 import (
+	"crypto/tls"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -68,9 +69,12 @@ type turnRelay struct {
 	// allocated and moved through its relayed sockets.
 	allocations, relayedIn, relayedOut atomic.Int64
 
-	// accepted counts the TCP connections the TURN server took (a TCP
-	// relay only).
+	// accepted counts the TCP connections the TURN server took (a TCP or
+	// TLS relay only).
 	accepted atomic.Int64
+
+	// hellos are the ClientHellos a TLS relay's server read (zz_rust_turns_test.go).
+	hellos []turnsHello
 
 	mu         sync.Mutex
 	rewrites   int
@@ -104,6 +108,13 @@ func startTurnRelay(t testing.TB, upstream string) *turnRelay {
 // either way.
 func startTurnRelayOver(t testing.TB, upstream, transport string) *turnRelay {
 	t.Helper()
+	return startTurnRelayWith(t, upstream, transport, turnsOpts{})
+}
+
+// startTurnRelayWith is startTurnRelayOver with TLS's options (transport
+// "tls": a `turns:` URL naming opts.host, the server's certificate opts.cert).
+func startTurnRelayWith(t testing.TB, upstream, transport string, opts turnsOpts) *turnRelay {
+	t.Helper()
 	ip := hostIPv4(t)
 	x := &turnRelay{transport: transport}
 	gen := countingRelay{
@@ -133,6 +144,21 @@ func startTurnRelayOver(t testing.TB, upstream, transport string) *turnRelay {
 		}
 		port = ln.Addr().(*net.TCPAddr).Port
 		cfg.ListenerConfigs = []turn.ListenerConfig{{Listener: countingListener{Listener: ln, x: x}, RelayAddressGenerator: gen}}
+	case "tls":
+		ln, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port = ln.Addr().(*net.TCPAddr).Port
+		conf := &tls.Config{
+			Certificates: []tls.Certificate{opts.cert},
+			MinVersion:   tls.VersionTLS12,
+			GetConfigForClient: func(h *tls.ClientHelloInfo) (*tls.Config, error) {
+				x.noteHello(h)
+				return nil, nil
+			},
+		}
+		cfg.ListenerConfigs = []turn.ListenerConfig{{Listener: tls.NewListener(countingListener{Listener: ln, x: x}, conf), RelayAddressGenerator: gen}}
 	default:
 		t.Fatalf("no TURN transport %q", transport)
 	}
@@ -141,6 +167,9 @@ func startTurnRelayOver(t testing.TB, upstream, transport string) *turnRelay {
 		t.Fatal(err)
 	}
 	turnURL := "turn:" + ip.String() + ":" + strconv.Itoa(port) + "?transport=" + transport
+	if transport == "tls" {
+		turnURL = "turns:" + opts.host + ":" + strconv.Itoa(port) + "?transport=tcp"
+	}
 	servers := `[{"credential":"` + relayPass + `","urls":["` + turnURL + `"],"username":"` + relayUser + `"}]`
 
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -244,8 +273,8 @@ func (x *turnRelay) check(t *testing.T, moved int64) {
 	}
 	t.Logf("candidates: %q", lines)
 	// libwebrtc's type preference for a relayed candidate is its path to
-	// the TURN server's: 2 over UDP, 1 over TCP (p2p/base/port.h).
-	want := map[string]uint64{"udp": 2, "tcp": 1}[x.transport]
+	// the TURN server's: 2 over UDP, 1 over TCP, 0 over TLS (p2p/base/port.h).
+	want := map[string]uint64{"udp": 2, "tcp": 1, "tls": 0}[x.transport]
 	for _, l := range lines {
 		f := strings.Fields(l)
 		if len(f) < 4 {

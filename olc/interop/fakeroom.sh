@@ -16,14 +16,20 @@
 #         join as the capture says, the two slow-leg tests, the rejoin, and
 #         the relay-only join (zz_rust_relay_test.go);
 #   go    the engine's own two slow-leg tests with the Go client, the
-#         baseline the rust ones are read against.
+#         baseline the rust ones are read against;
+#   turns the relay-only tests through a pion TURN server over TLS
+#         (zz_rust_turns_test.go: TestRustTurns*). Needs one of two builds of
+#         the client, said by <mode> in OLCRTC_GATE_RUST_TURNS_ROOTS: with
+#         `testroots` (the turns-test-roots feature; the server's own CA) the
+#         relay comes up; with `shipped` (the shipped client) it must not.
+#         Usage: fakeroom.sh <bin> turns-testroots | turns-shipped
 # Extra flags go to go test; -run=<re> replaces the set's own.
 set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 
-bin=${1:?usage: fakeroom.sh <rust-client-bin> <gate|gate-relay|rust|go> [go test flags...]}
-what=${2:?usage: fakeroom.sh <rust-client-bin> <gate|gate-relay|rust|go> [go test flags...]}
+bin=${1:?usage: fakeroom.sh <rust-client-bin> <gate|gate-relay|rust|go|turns-testroots|turns-shipped> [go test flags...]}
+what=${2:?usage: fakeroom.sh <rust-client-bin> <gate|gate-relay|rust|go|turns-testroots|turns-shipped> [go test flags...]}
 shift 2
 engine=$OLC_WORK/engine
 olc_prepare "$engine"
@@ -35,8 +41,12 @@ gate | gate-relay)
 	extra=(-olcrtc.gate-target=fakeroom -olcrtc.gate-rust-bin="$bin" -olcrtc.gate-dir="$OLC_WORK/gate-artifacts")
 	;;
 rust) pkg=./internal/engine/salutejazz run='^TestRust' ;;
+turns-testroots | turns-shipped)
+	export OLCRTC_GATE_RUST_TURNS_ROOTS=${what#turns-}
+	pkg=./internal/engine/salutejazz run='^TestRustTurns'
+	;;
 go) pkg=./internal/engine/salutejazz run='^(TestATunnelOnASlowLegKeepsItsControlStreamUnderBulk|TestSixPullsOnTheSlowestLegKeepTheirPongs)$' ;;
-*) olc_die "unknown set $what: gate, gate-relay, rust or go" ;;
+*) olc_die "unknown set $what: gate, gate-relay, rust, go, turns-testroots or turns-shipped" ;;
 esac
 args=()
 for a in "$@"; do

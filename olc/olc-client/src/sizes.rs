@@ -37,7 +37,8 @@ pub const BURST_CONNECTIONS: usize = 64;
 pub fn budget() -> Vec<Row> {
     let smux = olc_smux::Config::client_data(DATACHANNEL.max_payload_size, false);
     let inbound = olc_muxconn::conn::inbound_capacity(DATACHANNEL.max_record_plaintext());
-    vec![
+    #[cfg_attr(not(feature = "boring"), allow(unused_mut))]
+    let mut rows = vec![
         Row {
             layer: "SOCKS front copy buffers (only while bytes move)",
             cap: (MAX_SOCKS_CONNS * 2 + POOL_KEEP) * COPY_BUFFER,
@@ -94,6 +95,36 @@ pub fn budget() -> Vec<Row> {
             burst: smux.max_receive_buffer / 2,
             formula: "olc_smux client_data MaxReceiveBuffer",
         },
+    ];
+    #[cfg(feature = "boring")]
+    rows.extend(turns_rows());
+    rows
+}
+
+/// TURN over TLS's rows (the `boring` build only): what a `turns:`
+/// connection holds beside the plain TCP relay's own queue (its bound is
+/// `olc_rtc::turn`'s), and the sessions kept for resumption.
+#[cfg(feature = "boring")]
+fn turns_rows() -> [Row; 2] {
+    use olc_rtc::turn::MAX_ALLOCATIONS;
+    use olc_rtc::turns::{TICKET_HEAP_MAX, TICKET_SERVERS, TLS_CONNECTION_MAX};
+    [
+        Row {
+            layer: "TURN over TLS connections (beside the TCP relay's queue)",
+            cap: MAX_ALLOCATIONS * TLS_CONNECTION_MAX,
+            // SaluteJazz lists two TURN hosts, each over TLS once.
+            burst: 2 * TLS_CONNECTION_MAX,
+            formula: "MAX_ALLOCATIONS (6) x TLS_CONNECTION_MAX: BoringSSL's C heap per \
+                      connection (measured, TLS_BORINGSSL_MAX) + the task's buffers + \
+                      TLS_MAX_CERT_LIST while the handshake runs",
+        },
+        Row {
+            layer: "TURN over TLS kept sessions",
+            cap: TICKET_SERVERS * TICKET_HEAP_MAX,
+            burst: 2 * TICKET_HEAP_MAX,
+            formula: "TICKET_SERVERS (6) x TICKET_HEAP_MAX: one session per server, \
+                      each at most TICKET_MAX_DER serialised, its heap measured",
+        },
     ]
 }
 
@@ -147,6 +178,25 @@ mod tests {
             entry <= FLOW_ENTRY,
             "a flow with an address host costs {entry}"
         );
+    }
+
+    /// TURN over TLS's rows are the module's constants multiplied, and the
+    /// whole of them is a small part of the engine's budget.
+    #[cfg(feature = "boring")]
+    #[test]
+    fn the_turns_rows_follow_the_constants() {
+        use olc_rtc::turns::{TICKET_HEAP_MAX, TICKET_SERVERS, TLS_CONNECTION_MAX};
+        let rows = budget();
+        let row = |name: &str| rows.iter().find(|r| r.layer.starts_with(name)).unwrap();
+        let conns = row("TURN over TLS connections");
+        assert_eq!(conns.cap, 6 * TLS_CONNECTION_MAX);
+        assert!(conns.cap <= 1 << 20, "{}", conns.cap);
+        let kept = row("TURN over TLS kept");
+        assert_eq!(kept.cap, TICKET_SERVERS * TICKET_HEAP_MAX);
+        assert!(kept.cap <= 512 << 10, "{}", kept.cap);
+        // One kept session is a heap-measured number; the stored entry
+        // itself (key, pointer) is small.
+        assert!(std::mem::size_of::<(String, usize)>() <= 64);
     }
 
     #[test]

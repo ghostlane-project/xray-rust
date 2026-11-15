@@ -223,10 +223,10 @@ pub(crate) mod testpki {
         b.set_issuer_name(&n).unwrap();
         b.set_pubkey(&key).unwrap();
         validity(&mut b, -1, 3650);
-        b.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+        b.append_extension(&BasicConstraints::new().critical().ca().build().unwrap())
             .unwrap();
         b.append_extension(
-            KU::new()
+            &KU::new()
                 .critical()
                 .key_cert_sign()
                 .crl_sign()
@@ -251,10 +251,10 @@ pub(crate) mod testpki {
         b.set_issuer_name(issuer.x509.subject_name()).unwrap();
         b.set_pubkey(&key).unwrap();
         validity(&mut b, -1, 3000);
-        b.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+        b.append_extension(&BasicConstraints::new().critical().ca().build().unwrap())
             .unwrap();
         b.append_extension(
-            KU::new()
+            &KU::new()
                 .critical()
                 .key_cert_sign()
                 .crl_sign()
@@ -280,16 +280,16 @@ pub(crate) mod testpki {
         b.set_issuer_name(issuer.x509.subject_name()).unwrap();
         b.set_pubkey(&key).unwrap();
         validity(&mut b, spec.from_days, spec.to_days);
-        b.append_extension(BasicConstraints::new().build().unwrap())
+        b.append_extension(&BasicConstraints::new().build().unwrap())
             .unwrap();
-        b.append_extension(KU::new().critical().digital_signature().build().unwrap())
+        b.append_extension(&KU::new().critical().digital_signature().build().unwrap())
             .unwrap();
         match spec.eku {
             Some("server") => b
-                .append_extension(ExtendedKeyUsage::new().server_auth().build().unwrap())
+                .append_extension(&ExtendedKeyUsage::new().server_auth().build().unwrap())
                 .unwrap(),
             Some("client") => b
-                .append_extension(ExtendedKeyUsage::new().client_auth().build().unwrap())
+                .append_extension(&ExtendedKeyUsage::new().client_auth().build().unwrap())
                 .unwrap(),
             _ => {}
         }
@@ -302,7 +302,7 @@ pub(crate) mod testpki {
         }
         let ctx = b.x509v3_context(Some(&issuer.x509), None);
         let ext = san.build(&ctx).unwrap();
-        b.append_extension(ext).unwrap();
+        b.append_extension(&ext).unwrap();
         b.sign(&issuer.key, MessageDigest::sha256()).unwrap();
         Cert {
             x509: b.build(),
