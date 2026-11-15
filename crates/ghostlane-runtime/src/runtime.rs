@@ -19,8 +19,13 @@ use tokio::runtime::{Builder, Handle, Runtime};
 pub const WORKER_STACK: usize = 512 * 1024;
 /// The most blocking threads (`design.md` D11: at most four).
 pub const MAX_BLOCKING: usize = 4;
-/// How long an idle blocking thread lives (Tokio's default).
-pub const KEEP_ALIVE: Duration = Duration::from_secs(10);
+/// How long an idle blocking thread lives on the phone: 2 s, not Tokio's
+/// 10 s, so the threads a burst of `getaddrinfo` calls started leave soon
+/// with their touched stacks. xray-ffi's own iOS plan (`runtime_plan_for`)
+/// reads this constant too.
+pub const PHONE_KEEP_ALIVE: Duration = Duration::from_secs(2);
+/// Elsewhere: Tokio's default, as xray-ffi's plan keeps it off iOS.
+pub const HOST_KEEP_ALIVE: Duration = Duration::from_secs(10);
 /// The threads' name.
 pub const THREAD_NAME: &str = "ghostlane-rt";
 
@@ -39,24 +44,27 @@ pub struct Profile {
 
 impl Profile {
     /// The iOS extension's: one worker (the lab showed one carries the
-    /// lines, D11) and four blocking threads.
+    /// lines, D11), four blocking threads, each idle one gone after
+    /// [`PHONE_KEEP_ALIVE`].
     #[must_use]
     pub const fn phone() -> Self {
         Self {
             workers: 1,
             max_blocking: MAX_BLOCKING,
             stack: WORKER_STACK,
-            keep_alive: KEEP_ALIVE,
+            keep_alive: PHONE_KEEP_ALIVE,
         }
     }
 
     /// Elsewhere: xray-ffi's own worker count (`runtime_worker_threads`, the
-    /// cores the machine has, 2 to 6), four blocking threads.
+    /// cores the machine has, 2 to 6), four blocking threads, Tokio's
+    /// keep-alive.
     #[must_use]
     pub fn host() -> Self {
         let available = std::thread::available_parallelism().map_or(2, usize::from);
         Self {
             workers: available.clamp(2, 6),
+            keep_alive: HOST_KEEP_ALIVE,
             ..Self::phone()
         }
     }
@@ -208,5 +216,15 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(5)).is_ok(),
             "a timer awaited from outside the runtime fires"
         );
+    }
+
+    /// xray-ffi's own plan idles a blocking thread 2 s on iOS, not Tokio's
+    /// 10 s, and keeps Tokio's elsewhere: the shared runtime does the same.
+    #[test]
+    fn an_idle_blocking_thread_lives_two_seconds_on_the_phone_and_ten_elsewhere() {
+        assert_eq!(Profile::phone().keep_alive, Duration::from_secs(2));
+        assert_eq!(Profile::phone().keep_alive, PHONE_KEEP_ALIVE);
+        assert_eq!(Profile::host().keep_alive, Duration::from_secs(10));
+        assert_eq!(Profile::host().keep_alive, HOST_KEEP_ALIVE);
     }
 }

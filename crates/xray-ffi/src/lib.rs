@@ -4560,12 +4560,13 @@ fn runtime_plan_for(
         // phone's link (300 Mbit/s). `XRAY_FFI_WORKER_THREADS` raises it.
         // The blocking pool (getaddrinfo for a domain dialed without the
         // core's DNS) is capped at 4 threads, each with its own touched
-        // stack, and a thread idles 2 s, not tokio's 10 s. A cap queues,
+        // stack, and a thread idles 2 s, not tokio's 10 s: the shared
+        // runtime's phone profile, one constant for both. A cap queues,
         // never refuses.
         RuntimePlan {
             workers: count(workers_override).unwrap_or(1),
             max_blocking: Some(count(blocking_override).unwrap_or(4)),
-            keep_alive: Some(Duration::from_secs(2)),
+            keep_alive: Some(ghostlane_runtime::runtime::PHONE_KEEP_ALIVE),
         }
     } else {
         // Every other platform keeps what it had: a phone-sized core count,
@@ -4829,6 +4830,23 @@ mod tests {
                 "{available} cores"
             );
         }
+    }
+
+    /// The core's own runtime and the shared one (`ghostlane-runtime`, the
+    /// `shared-runtime` feature) let an idle blocking thread go after the
+    /// same time: 2 s on iOS, from one constant; Tokio's 10 s elsewhere.
+    #[test]
+    fn runtime_plan_keeps_the_shared_runtimes_keep_alive() {
+        use ghostlane_runtime::runtime::{Profile, HOST_KEEP_ALIVE, PHONE_KEEP_ALIVE};
+        assert_eq!(PHONE_KEEP_ALIVE, Duration::from_secs(2));
+        assert_eq!(
+            runtime_plan_for(true, 4, None, None).keep_alive,
+            Some(Profile::phone().keep_alive)
+        );
+        // `None` is Tokio's own keep-alive, which the host profile names.
+        assert_eq!(runtime_plan_for(false, 4, None, None).keep_alive, None);
+        assert_eq!(Profile::host().keep_alive, HOST_KEEP_ALIVE);
+        assert_eq!(HOST_KEEP_ALIVE, Duration::from_secs(10));
     }
 
     #[test]

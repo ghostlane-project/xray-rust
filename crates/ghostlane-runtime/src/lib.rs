@@ -1,7 +1,8 @@
 //! What the two cores in `ghostlane-core` share in one process: one Tokio
-//! runtime ([`runtime`]), the allocator's gauges ([`alloc`]) and one budget
+//! runtime ([`runtime`]), the allocator's gauges ([`alloc`]), one budget
 //! of payload bytes in flight ([`memory_budget`], with the memory class it
-//! is sized by, [`memory_class`]).
+//! is sized by, [`memory_class`]) and the relief a trim asks of the system
+//! allocator ([`relief`]).
 //!
 //! The iOS packet-tunnel extension is killed at about 50 MB, so the library
 //! it links carries the xray core (`xray-ffi`) and the olcRTC client
@@ -22,6 +23,7 @@ pub mod alloc;
 pub mod memory_budget;
 #[allow(missing_docs)]
 pub mod memory_class;
+pub mod relief;
 pub mod runtime;
 
 pub use memory_budget::{

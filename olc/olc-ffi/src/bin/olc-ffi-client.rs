@@ -13,6 +13,26 @@
 //! n start / fetch / stop cycles and prints one line per cycle with the
 //! shared runtime's tasks and threads, the OS's thread count and the heap
 //! (`ffi cycle=...`), for the stop/start leak test.
+//!
+//! With `OLC_FFI_CONTROL=1` it is the footprint harness's host on Linux
+//! (Ghostlane `lab/olc-ffi/footprint/footprint.py`), fp-host's protocol
+//! (`host/main.swift`), one command per line on stdin, one answer per line
+//! on stdout, and a `TICK <unix ms> <footprint> <memory_stats json>` line
+//! four times a second between them; `<footprint>` is `RssAnon` (the
+//! anonymous resident bytes, Linux's nearest to `phys_footprint`):
+//!
+//! ```text
+//! start        start, wait_ready(35000)   READY ms=<n> | ERR start <text>
+//! stats        memory_stats()             STATS <json>
+//! trim         trim()                     TRIM <bytes> <footprint before> <after>
+//! mtrim        glibc's malloc_trim(0)     MTRIM <its result> <footprint before> <after>
+//! budget <n>   set_byte_budget(n)         BUDGET cap=<B>
+//! cycle <n>    n x (stop, start, ready)   CYCLED n=<n> ready_min=<ms> ready_max=<ms>
+//! stop         stop(5000)                 STOPPED ms=<n>
+//! quit         stop when running, exit    BYE releases=0
+//! ```
+//!
+//! The first line is `LOADED pid=<pid>`; end of input is a quit.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -265,6 +285,156 @@ fn cycles(rt: &OlcrtcRuntime, socks: SocketAddr, n: usize, url: &str) -> ExitCod
     ExitCode::SUCCESS
 }
 
+/// A field of `/proc/self/status` in bytes (its kB), 0 when absent.
+fn status_bytes(field: &str) -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix(field)?.strip_prefix(':'))
+                .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+        })
+        .map_or(0, |kib| kib * 1024)
+}
+
+/// The footprint the control mode reports: `RssAnon`.
+fn footprint() -> u64 {
+    status_bytes("RssAnon")
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+extern "C" {
+    fn malloc_trim(pad: usize) -> std::ffi::c_int;
+}
+
+/// glibc's `malloc_trim(0)`: every arena's free pages back to the system.
+fn glibc_trim() -> Option<i32> {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: malloc_trim takes no pointer; it walks the arenas under
+        // their own locks.
+        Some(unsafe { malloc_trim(0) })
+    }
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    {
+        None
+    }
+}
+
+fn say(line: &str) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{line}");
+    let _ = out.flush();
+}
+
+fn millis(since: Instant) -> u128 {
+    since.elapsed().as_millis()
+}
+
+/// An error on one line, as fp-host writes it.
+fn one_line(e: &OlcrtcError) -> String {
+    e.to_string().replace('\n', " ")
+}
+
+fn control(rt: &OlcrtcRuntime) -> ExitCode {
+    std::thread::spawn(|| loop {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        say(&format!(
+            "TICK {now} {} {}",
+            footprint(),
+            olc_ffi::memory_stats()
+        ));
+        std::thread::sleep(Duration::from_millis(250));
+    });
+    let start_ready = || -> Result<u128, OlcrtcError> {
+        let t0 = Instant::now();
+        rt.start()?;
+        rt.wait_ready(READY_MS)?;
+        Ok(millis(t0))
+    };
+    say(&format!("LOADED pid={}", std::process::id()));
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let mut words = line.split_whitespace();
+        let Some(command) = words.next() else {
+            continue;
+        };
+        let n = words.next().and_then(|w| w.parse::<u64>().ok());
+        match command {
+            "start" => match start_ready() {
+                Ok(ms) => say(&format!("READY ms={ms}")),
+                Err(e) => say(&format!("ERR start {}", one_line(&e))),
+            },
+            "stats" => say(&format!("STATS {}", olc_ffi::memory_stats())),
+            "trim" => {
+                let before = footprint();
+                let bytes = olc_ffi::trim();
+                say(&format!("TRIM {bytes} {before} {}", footprint()));
+            }
+            "mtrim" => {
+                let before = footprint();
+                match glibc_trim() {
+                    Some(r) => say(&format!("MTRIM {r} {before} {}", footprint())),
+                    None => say("ERR mtrim not glibc"),
+                }
+            }
+            "budget" => {
+                olc_ffi::set_byte_budget(n.unwrap_or(0));
+                say(&format!(
+                    "BUDGET cap={}",
+                    ghostlane_runtime::byte_budget().capacity
+                ));
+            }
+            "cycle" => {
+                let n = n.unwrap_or(1);
+                let mut readies = Vec::new();
+                let mut failed = None;
+                for _ in 0..n {
+                    if let Err(e) = rt.stop(STOP_MS) {
+                        failed = Some(e);
+                        break;
+                    }
+                    match start_ready() {
+                        Ok(ms) => readies.push(ms),
+                        Err(e) => {
+                            failed = Some(e);
+                            break;
+                        }
+                    }
+                }
+                match failed {
+                    None => say(&format!(
+                        "CYCLED n={n} ready_min={} ready_max={}",
+                        readies.iter().min().unwrap_or(&0),
+                        readies.iter().max().unwrap_or(&0)
+                    )),
+                    Some(e) => say(&format!("ERR cycle {} {}", readies.len(), one_line(&e))),
+                }
+            }
+            "stop" => {
+                let t0 = Instant::now();
+                match rt.stop(STOP_MS) {
+                    Ok(()) => say(&format!("STOPPED ms={}", millis(t0))),
+                    Err(e) => say(&format!("ERR stop {}", one_line(&e))),
+                }
+            }
+            "quit" => break,
+            other => say(&format!("ERR unknown {other}")),
+        }
+    }
+    if rt.is_running() {
+        let _ = rt.stop(STOP_MS);
+    }
+    say("BYE releases=0");
+    ExitCode::SUCCESS
+}
+
 fn main() -> ExitCode {
     olc_ffi::set_log_writer(Some(Arc::new(Stderr)));
     match olc_client::sys::raise_nofile_limit() {
@@ -293,6 +463,9 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if std::env::var("OLC_FFI_CONTROL").is_ok_and(|v| v == "1") {
+        return control(&rt);
+    }
     match (
         std::env::var("OLC_FFI_CYCLES")
             .ok()
