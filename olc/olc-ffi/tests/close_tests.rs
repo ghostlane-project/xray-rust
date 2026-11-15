@@ -89,12 +89,12 @@ impl Gate {
 #[derive(Clone)]
 enum Ends {
     /// At the stop, as the client does.
-    AtTheStop,
+    Stop,
     /// When the gate opens, deaf to the stop (a transport that will not let
     /// go).
-    AtTheGate(Gate),
+    Gate(Gate),
     /// At the stop, once the gate opens and a session has opened.
-    AtTheStopAfterASession(Gate),
+    SessionThenStop(Gate),
 }
 
 /// The client's SOCKS front, stood in: it listens on a loopback port of its
@@ -110,12 +110,12 @@ fn front(ends: Ends, ports: mpsc::Sender<u16>) -> Runner {
             let _ = ports.send(at.port());
             (run.on_ready)(at);
             match ends {
-                Ends::AtTheStop => run.stop.cancelled().await,
-                Ends::AtTheGate(g) => {
+                Ends::Stop => run.stop.cancelled().await,
+                Ends::Gate(g) => {
                     g.wait().await;
                     return Ok(());
                 }
-                Ends::AtTheStopAfterASession(g) => {
+                Ends::SessionThenStop(g) => {
                     g.wait().await;
                     (run.on_session_open)("session-1");
                     run.stop.cancelled().await;
@@ -170,7 +170,7 @@ fn a_running_runtime_closed_stops_its_run() {
         let base = tasks();
         eprintln!("tasks before the test: {base}");
         let (tx, ports) = mpsc::channel();
-        let rt = configured(front(Ends::AtTheStop, tx));
+        let rt = configured(front(Ends::Stop, tx));
         let sessions = Arc::new(Sessions::default());
         rt.set_session_listener(Some(sessions.clone()));
         let port = running(&rt, &ports, base);
@@ -178,6 +178,7 @@ fn a_running_runtime_closed_stops_its_run() {
         let t0 = Instant::now();
         drop(rt);
         let took = t0.elapsed();
+        eprintln!("the close took {took:?}");
 
         assert!(took < Duration::from_secs(2), "the close took {took:?}");
         assert_eq!(tasks_left(base), base, "tasks left after the close");
@@ -197,7 +198,7 @@ fn a_close_waits_for_a_run_deaf_to_the_stop_as_long_as_stop_does() {
         eprintln!("tasks before the test: {base}");
         let (tx, ports) = mpsc::channel();
         let gate = Gate::new();
-        let rt = configured(front(Ends::AtTheGate(gate.clone()), tx));
+        let rt = configured(front(Ends::Gate(gate.clone()), tx));
         let sessions = Arc::new(Sessions::default());
         rt.set_session_listener(Some(sessions.clone()));
         let port = running(&rt, &ports, base);
@@ -205,6 +206,7 @@ fn a_close_waits_for_a_run_deaf_to_the_stop_as_long_as_stop_does() {
         let t0 = Instant::now();
         drop(rt);
         let took = t0.elapsed();
+        eprintln!("the close took {took:?}");
 
         let early = DEFAULT_STOP_TIMEOUT - Duration::from_millis(50);
         let late = DEFAULT_STOP_TIMEOUT + Duration::from_secs(2);
@@ -246,7 +248,7 @@ fn a_close_inside_the_runs_own_callback_does_not_wait_for_itself() {
         eprintln!("tasks before the test: {base}");
         let (tx, ports) = mpsc::channel();
         let gate = Gate::new();
-        let rt = configured(front(Ends::AtTheStopAfterASession(gate.clone()), tx));
+        let rt = configured(front(Ends::SessionThenStop(gate.clone()), tx));
         let (took_tx, took) = mpsc::channel();
         let closer = Arc::new(Closer {
             rt: Mutex::new(None),
@@ -260,6 +262,7 @@ fn a_close_inside_the_runs_own_callback_does_not_wait_for_itself() {
         let took = took
             .recv_timeout(Duration::from_secs(10))
             .expect("the session callback never returned");
+        eprintln!("the close in the callback took {took:?}");
         assert!(took < Duration::from_secs(1), "the close took {took:?}");
         assert_eq!(tasks_left(base), base, "tasks left after the close");
         assert_eq!(
@@ -277,18 +280,30 @@ fn closing_an_idle_or_a_stopped_runtime_waits_for_nothing() {
     bounded(|| {
         let base = tasks();
         let (tx, ports) = mpsc::channel();
-        let idle = configured(front(Ends::AtTheStop, tx.clone()));
+        let idle = configured(front(Ends::Stop, tx.clone()));
         let t0 = Instant::now();
         drop(idle);
-        assert!(t0.elapsed() < Duration::from_millis(200), "{:?}", t0.elapsed());
+        assert!(
+            t0.elapsed() < Duration::from_millis(200),
+            "{:?}",
+            t0.elapsed()
+        );
 
-        let rt = configured(front(Ends::AtTheStop, tx));
+        let rt = configured(front(Ends::Stop, tx));
         let port = running(&rt, &ports, base);
         rt.stop(5_000).unwrap();
         let t0 = Instant::now();
         drop(rt);
-        assert!(t0.elapsed() < Duration::from_millis(200), "{:?}", t0.elapsed());
-        assert_eq!(tasks_left(base), base, "tasks left after the stop and the close");
+        assert!(
+            t0.elapsed() < Duration::from_millis(200),
+            "{:?}",
+            t0.elapsed()
+        );
+        assert_eq!(
+            tasks_left(base),
+            base,
+            "tasks left after the stop and the close"
+        );
         assert_port_free(port);
     });
 }

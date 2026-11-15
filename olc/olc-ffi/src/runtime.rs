@@ -316,6 +316,32 @@ impl std::fmt::Debug for OlcrtcRuntime {
     }
 }
 
+/// A runtime closed while it runs (Kotlin's `close()`, Swift's last
+/// reference: UniFFI frees the object either way) stops its run as
+/// `stop(5_000)` does, so no run outlives the app's object: not its task,
+/// its SOCKS port, nor its session in the room, where a later client's hello
+/// would reach it. This is beyond Go: `mobile/` at 2d4266af sets no
+/// finalizer, so a Go runtime the app let go of runs on. The session
+/// listener goes first, so nothing calls the app after this. On one of the
+/// runtime's own threads (the app letting go from a callback the run is
+/// making) the run is told to stop and not waited for: it would be waiting
+/// on itself. A close with nothing running waits for nothing.
+impl Drop for OlcrtcRuntime {
+    fn drop(&mut self) {
+        // Dropped outside the lock: a foreign listener's release calls into
+        // the app.
+        let listener = self.shared.lock().listener.take();
+        drop(listener);
+        let Some(gen) = self.request_stop() else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return;
+        }
+        let _ = self.wait_stopped(&gen, DEFAULT_STOP_TIMEOUT);
+    }
+}
+
 impl OlcrtcRuntime {
     /// A runtime whose rooms are run by `runner` (`newRuntime(runner)`: the
     /// tests' stand-in for the client), pausing `retry_delay` between rooms
@@ -685,27 +711,13 @@ impl OlcrtcRuntime {
     /// # Errors
     /// `olcRTC runtime stop timed out`.
     pub fn stop(&self, timeout_millis: i64) -> Result<(), OlcrtcError> {
-        let gen = {
-            let mut st = self.shared.lock();
-            let Some(gen) = st.current.clone() else {
-                return Ok(());
-            };
-            if matches!(st.phase, Phase::Idle | Phase::Stopped) {
-                return Ok(());
-            }
-            if st.phase != Phase::Stopping {
-                st.phase = Phase::Stopping;
-                gen.flags().stop_requested = true;
-                gen.cancel.cancel();
-            }
-            gen
-        };
-        let until = deadline(timeout_from_millis(timeout_millis, DEFAULT_STOP_TIMEOUT));
-        if gen.wait(until, |f| f.done).done {
+        let Some(gen) = self.request_stop() else {
             return Ok(());
-        }
-        self.shared.abandon(&gen);
-        Err(OlcrtcError::StopTimeout)
+        };
+        self.wait_stopped(
+            &gen,
+            timeout_from_millis(timeout_millis, DEFAULT_STOP_TIMEOUT),
+        )
     }
 
     /// `IsRunning`: starting, running or stopping.
@@ -787,6 +799,32 @@ impl OlcrtcRuntime {
 }
 
 impl OlcrtcRuntime {
+    /// `Stop`'s first half: the active generation, told to stop; `None`
+    /// when nothing is active.
+    fn request_stop(&self) -> Option<Arc<Generation>> {
+        let mut st = self.shared.lock();
+        let gen = st.current.clone()?;
+        if matches!(st.phase, Phase::Idle | Phase::Stopped) {
+            return None;
+        }
+        if st.phase != Phase::Stopping {
+            st.phase = Phase::Stopping;
+            gen.flags().stop_requested = true;
+            gen.cancel.cancel();
+        }
+        Some(gen)
+    }
+
+    /// `Stop`'s second half: waits `timeout` for `gen` to end, else lets it
+    /// go.
+    fn wait_stopped(&self, gen: &Generation, timeout: Duration) -> Result<(), OlcrtcError> {
+        if gen.wait(deadline(timeout), |f| f.done).done {
+            return Ok(());
+        }
+        self.shared.abandon(gen);
+        Err(OlcrtcError::StopTimeout)
+    }
+
     /// `waitGenerationReady`: one generation, whatever is current by then.
     fn wait_generation_ready(gen: &Generation, timeout: Duration) -> Result<(), OlcrtcError> {
         let f = gen.wait(deadline(timeout), |f| f.done || f.ready);
