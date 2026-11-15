@@ -554,15 +554,17 @@ fn run_relays(
 
 /// A relayed candidate as libwebrtc makes one: its address is UDP either way,
 /// its type preference follows how the allocation reaches its server (2 over
-/// UDP, 1 over TCP), so ICE prefers a relay over UDP, as Chrome does.
+/// UDP, 1 over TCP, 0 over TLS: libwebrtc's `ICE_TYPE_PREFERENCE_RELAY_*`), so
+/// ICE prefers a relay over UDP, then TCP, then TLS, as Chrome does.
 fn relayed_candidate(
     relayed: SocketAddr,
     base: SocketAddr,
     via: TurnTransport,
 ) -> Result<Candidate, String> {
     let via = match via {
-        TurnTransport::Udp => "udp",
-        TurnTransport::Tcp => "tcp",
+        TurnTransport::Udp => is::Protocol::Udp,
+        TurnTransport::Tcp => is::Protocol::Tcp,
+        TurnTransport::Tls => is::Protocol::Tls,
     };
     Candidate::relayed_via(relayed, base, "udp", via).map_err(|e| e.to_string())
 }
@@ -727,9 +729,11 @@ mod tests {
         let base: SocketAddr = "192.0.2.1:5000".parse().unwrap();
         let udp = relayed_candidate(relayed, base, TurnTransport::Udp).unwrap();
         let tcp = relayed_candidate(relayed, base, TurnTransport::Tcp).unwrap();
+        let tls = relayed_candidate(relayed, base, TurnTransport::Tls).unwrap();
         assert_eq!(udp.prio() >> 24, 2, "{}", udp.to_sdp_string());
         assert_eq!(tcp.prio() >> 24, 1, "{}", tcp.to_sdp_string());
-        for c in [&udp, &tcp] {
+        assert_eq!(tls.prio() >> 24, 0, "{}", tls.to_sdp_string());
+        for c in [&udp, &tcp, &tls] {
             let line = c.to_sdp_string();
             assert!(
                 line.contains(" udp ") && line.contains(" typ relay"),

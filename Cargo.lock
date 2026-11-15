@@ -1866,6 +1866,7 @@ dependencies = [
  "libc",
  "olc-muxconn",
  "olc-net",
+ "olc-rtc",
  "olc-salutejazz",
  "olc-smux",
  "olc-wire",
@@ -1928,6 +1929,8 @@ dependencies = [
  "libc",
  "olc-net",
  "rand 0.8.6",
+ "rustls-pki-types",
+ "rustls-webpki",
  "str0m",
  "str0m-aws-lc-rs",
  "str0m-proto",
@@ -1935,6 +1938,7 @@ dependencies = [
  "tokio",
  "turn",
  "turn-client-proto",
+ "webpki-roots",
  "webrtc-util",
 ]
 

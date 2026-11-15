@@ -11,6 +11,7 @@ publish = false
 libc.workspace = true
 olc-muxconn = { path = "../olc-muxconn" }
 olc-net = { path = "../olc-net" }
+olc-rtc = { path = "../olc-rtc" }
 olc-salutejazz = { path = "../olc-salutejazz" }
 olc-smux = { path = "../olc-smux" }
 olc-wire = { path = "../olc-wire" }
@@ -35,6 +36,9 @@ shaped-tls = ["olc-net/shaped-tls"]
 # censored network needs it. Built on a GitHub runner: it needs cmake and
 # libclang.
 boring = ["olc-salutejazz/boring"]
+# A test build only: TURN over TLS trusts the root OLC_TURNS_TEST_ROOT names
+# (the lab's end-to-end test). The shipped client is built without it.
+turns-test-roots = ["olc-salutejazz/turns-test-roots"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

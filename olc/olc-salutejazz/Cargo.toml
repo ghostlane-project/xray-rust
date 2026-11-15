@@ -21,6 +21,8 @@ uuid.workspace = true
 [features]
 # olc-rtc's DTLS from BoringSSL, shaped as Chrome's.
 boring = ["olc-rtc/boring"]
+# A test build only: see olc-rtc's feature of the name.
+turns-test-roots = ["olc-rtc/turns-test-roots"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

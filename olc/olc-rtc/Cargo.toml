@@ -23,6 +23,11 @@ brotli-decompressor = { version = "=5.0.3", optional = true }
 boring-sys = { version = "=5.5.0", optional = true }
 foreign-types = { version = "0.5", optional = true }
 libc = { workspace = true, optional = true }
+# TURN over TLS's certificate check (turns_verify): rustls-webpki against
+# webpki-roots' trust anchors, both already in the workspace's lock.
+rustls-pki-types = { version = "=1.14.1", default-features = false, features = ["std"], optional = true }
+rustls-webpki = { version = "=0.103.16", default-features = false, features = ["std", "aws-lc-rs"], optional = true }
+webpki-roots = { workspace = true, optional = true }
 str0m-proto = { version = "=0.8.0", default-features = false, features = ["dtls"], optional = true }
 
 [features]
@@ -31,7 +36,15 @@ str0m-proto = { version = "=0.8.0", default-features = false, features = ["dtls"
 # and the TLS of TURN over TLS, configured as Chrome's network stack's.
 # Building it needs cmake and libclang, which the build box does not have:
 # it is built and tested on a GitHub runner (ghostlane lab/olc-rtc).
-boring = ["dep:boring", "dep:boring-sys", "dep:brotli-decompressor", "dep:foreign-types", "dep:libc", "dep:str0m-proto"]
+boring = [
+    "dep:boring", "dep:boring-sys", "dep:brotli-decompressor", "dep:foreign-types", "dep:libc", "dep:str0m-proto",
+    "dep:rustls-pki-types", "dep:rustls-webpki", "dep:webpki-roots",
+]
+# A test build only: TURN over TLS trusts one more root, the PEM file the
+# environment variable OLC_TURNS_TEST_ROOT names (the lab's end-to-end test
+# has a TURN server of its own certificate). The shipped features never
+# read it.
+turns-test-roots = ["boring"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
