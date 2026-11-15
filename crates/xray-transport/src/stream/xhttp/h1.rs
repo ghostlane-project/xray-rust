@@ -122,6 +122,12 @@ where
         .allow_reuse(request_allows_reuse(request.headers)))
 }
 
+/// Writes `input` whole, handing `writer` at most `MAX_UPLOAD_CHUNK_BYTES`
+/// (16 KiB) a write. The caller holds `input` until its response, and a TLS
+/// session seals a write whole (`tls_send`): a packet-up body, up to
+/// 1,000,000 B by default, in one write would also sit sealed beside it
+/// until the carrier took it. A slice meets an empty queue, so a session
+/// cuts the same records as from one write: 16 KiB records and the rest.
 async fn write_all_counted<W>(
     writer: &mut W,
     mut input: &[u8],
@@ -131,7 +137,8 @@ where
     W: AsyncWrite + Unpin,
 {
     while !input.is_empty() {
-        let written = writer.write(input).await?;
+        let slice = &input[..input.len().min(MAX_UPLOAD_CHUNK_BYTES)];
+        let written = writer.write(slice).await?;
         if written == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::WriteZero,
