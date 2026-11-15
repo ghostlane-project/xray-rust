@@ -3,7 +3,7 @@
 
 //! The engine's memory for MemoryWatch (plan §9): `memory_stats()` replaces
 //! `MobileMemoryStats` and `trim()` replaces `MobileFreeOSMemory` (with the
-//! system allocator's relief on Apple targets);
+//! system allocator's relief on Apple and Android targets);
 //! `set_byte_budget()` sets the process's byte budget, which the olcRTC
 //! client and the xray core share (`design.md` D11's relief).
 //!
@@ -167,13 +167,14 @@ pub fn set_byte_budget(bytes: u64) {
 }
 
 /// `FreeOSMemory`: drops what the engine keeps for reuse (its pools) and,
-/// on Apple targets, asks the system allocator for its free pages back
-/// (`malloc_zone_pressure_relief(NULL, 0)`): the relief MemoryWatch asks for
-/// above its threshold (`design.md` D11), in the core, so the app needs no
-/// call of its own. Returns the bytes given back: the pools' bytes, or the
-/// fall of `phys_footprint` across the pools and the relief when that is
-/// more (`ghostlane_runtime::relief`). Elsewhere the allocator is not
-/// asked, and it returns the pools' bytes.
+/// on Apple and Android targets, asks the system allocator for its free
+/// pages back (`malloc_zone_pressure_relief(NULL, 0)`; bionic's
+/// `mallopt(M_PURGE_ALL, 0)`, else `M_PURGE`): the relief MemoryWatch asks
+/// for above its threshold (`design.md` D11), in the core, so the app needs
+/// no call of its own. Returns the bytes given back: the pools' bytes, or
+/// the fall of the footprint (`phys_footprint`; Android's `RssAnon`) across
+/// the pools and the relief when that is more (`ghostlane_runtime::relief`).
+/// Elsewhere the allocator is not asked, and it returns the pools' bytes.
 #[uniffi::export]
 pub fn trim() -> u64 {
     u64::try_from(ghostlane_runtime::relief::trim(olc_client::gauges::trim)).unwrap_or(u64::MAX)

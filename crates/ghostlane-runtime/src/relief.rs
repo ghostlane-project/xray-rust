@@ -3,46 +3,73 @@
 //!
 //! The extension's relief under memory pressure (`design.md` D11) is the
 //! core's, not the app's: `olc_ffi::trim()` drops the olcRTC client's pools
-//! (the spare buffers it keeps for reuse) and then, on Apple targets, asks
-//! the system allocator for its free pages back,
-//! `malloc_zone_pressure_relief(NULL, 0)` (every zone, as much as it can).
+//! (the spare buffers it keeps for reuse) and then, on Apple and Android
+//! targets, asks the system allocator for its free pages back. On Apple
+//! targets that is `malloc_zone_pressure_relief(NULL, 0)` (every zone, as
+//! much as it can).
 //! Freed buffers stay the allocator's until it is asked or it decides; on
 //! iOS, xzone malloc has no deferred-reclaim ring to decide for it
 //! (Ghostlane lab/core-footprint, 09-allocator-rows.md), so without the call
 //! the pages a burst leaves stay in the footprint jetsam counts.
 //!
+//! On Android the system allocator is bionic's (Scudo since Android 11),
+//! which keeps a burst's freed pages too until it is asked (no release
+//! interval is set for the process): the relief is `mallopt(M_PURGE_ALL, 0)`
+//! (API 34: Scudo drains its thread caches first), else `mallopt(M_PURGE,
+//! 0)` (API 28). `mallopt` is in libc from API 26 and the app's minSdk is 23,
+//! so it is looked up at run time; before API 28 nothing is purged. Ghostlane
+//! lab/olc-ffi-android measured it on the emulator after a burst of 256
+//! downloads: the core in a process of its own gave back 508-516 kB with
+//! `M_PURGE` and 240-248 kB more with `M_PURGE_ALL` (of 2.1-2.3 MB private),
+//! and inside the app's process 3.7-4.0 MB of Scudo's private pages, where
+//! the pools alone had moved nothing.
+//!
 //! The bytes a trim reports are the larger of what the pools dropped and
-//! the fall of `phys_footprint` across the pools and the relief: the pools'
+//! the fall of the footprint across the pools and the relief
+//! (`phys_footprint` on Apple targets, `RssAnon` on Android): the pools'
 //! buffers are freed into the allocator and the relief hands those same
 //! pages to the system, so a sum would count them twice.
 //!
 //! Elsewhere nothing more is asked of the allocator (the footprint is not
-//! read, and a trim reports the pools' bytes).
+//! read, and a trim reports the pools' bytes): glibc's `malloc_trim` gave
+//! back about 1.1 MiB on Linux, but desktop Linux has no memory limit to
+//! defend.
 
 /// The process's footprint as the system counts it against its limit:
 /// `phys_footprint` from `task_info(TASK_VM_INFO)` on Apple targets (what
-/// MemoryWatch reads and jetsam kills on), `None` elsewhere.
+/// MemoryWatch reads and jetsam kills on), `RssAnon` from
+/// `/proc/self/status` on Android (the anonymous resident pages, where the
+/// heap is), `None` elsewhere.
 #[must_use]
 pub fn footprint() -> Option<u64> {
     #[cfg(target_vendor = "apple")]
     {
         apple::footprint()
     }
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(target_os = "android")]
+    {
+        android::footprint()
+    }
+    #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
     {
         None
     }
 }
 
 /// Asks the system allocator for its free pages back; the bytes it says it
-/// released. On Apple targets `malloc_zone_pressure_relief(NULL, 0)`;
-/// elsewhere nothing is asked and it is 0.
+/// released. On Apple targets `malloc_zone_pressure_relief(NULL, 0)`; on
+/// Android bionic's `mallopt(M_PURGE_ALL, 0)`, else `mallopt(M_PURGE, 0)`,
+/// which say nothing of bytes (0); elsewhere nothing is asked and it is 0.
 pub fn allocator_relief() -> usize {
     #[cfg(target_vendor = "apple")]
     {
         apple::pressure_relief()
     }
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(target_os = "android")]
+    {
+        android::purge()
+    }
+    #[cfg(not(any(target_vendor = "apple", target_os = "android")))]
     {
         0
     }
@@ -67,6 +94,81 @@ fn given_back(dropped: usize, before: Option<u64>, after: Option<u64>) -> usize 
         _ => 0,
     };
     dropped.max(usize::try_from(fell).unwrap_or(usize::MAX))
+}
+
+/// `RssAnon` of a `/proc/<pid>/status`, in bytes.
+#[cfg(any(target_os = "android", test))]
+fn rss_anon(status: &str) -> Option<u64> {
+    let kb = status
+        .lines()
+        .find_map(|l| l.strip_prefix("RssAnon:"))?
+        .trim()
+        .strip_suffix("kB")?
+        .trim_end()
+        .parse::<u64>()
+        .ok()?;
+    kb.checked_mul(1024)
+}
+
+#[cfg(target_os = "android")]
+mod android {
+    use std::ffi::{c_char, c_int, c_void};
+
+    /// `M_PURGE` (`<malloc.h>`, API 28): the allocator releases the free
+    /// pages it can.
+    const M_PURGE: c_int = -101;
+    /// `M_PURGE_ALL` (API 34): the same after Scudo drains its thread
+    /// caches into its free lists, so their blocks' pages can go too.
+    const M_PURGE_ALL: c_int = -104;
+
+    extern "C" {
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+    }
+
+    /// `RTLD_DEFAULT` (`<dlfcn.h>`): every loaded library, in load order.
+    #[cfg(target_pointer_width = "64")]
+    fn rtld_default() -> *mut c_void {
+        std::ptr::null_mut()
+    }
+    #[cfg(not(target_pointer_width = "64"))]
+    fn rtld_default() -> *mut c_void {
+        std::ptr::without_provenance_mut(0xffff_ffff)
+    }
+
+    type Mallopt = unsafe extern "C" fn(c_int, c_int) -> c_int;
+
+    /// libc's `mallopt`, looked up when it is asked for: it is in libc from
+    /// API 26 and the app's minSdk is 23, so it cannot be linked.
+    fn mallopt() -> Option<Mallopt> {
+        // SAFETY: RTLD_DEFAULT and a C string, as dlsym takes them.
+        let f = unsafe { dlsym(rtld_default(), c"mallopt".as_ptr()) };
+        if f.is_null() {
+            return None;
+        }
+        // SAFETY: the symbol is libc's `int mallopt(int, int)`.
+        Some(unsafe { std::mem::transmute::<*mut c_void, Mallopt>(f) })
+    }
+
+    /// `mallopt(M_PURGE_ALL, 0)`, else (an API level or an allocator that
+    /// does not know it answers 0) `mallopt(M_PURGE, 0)`. Neither says how
+    /// many bytes it released: 0.
+    pub(super) fn purge() -> usize {
+        if let Some(mallopt) = mallopt() {
+            // SAFETY: mallopt takes any parameter and answers 0 for one it
+            // does not know; a purge touches only the allocator's free
+            // memory.
+            unsafe {
+                if mallopt(M_PURGE_ALL, 0) == 0 {
+                    mallopt(M_PURGE, 0);
+                }
+            }
+        }
+        0
+    }
+
+    pub(super) fn footprint() -> Option<u64> {
+        super::rss_anon(&std::fs::read_to_string("/proc/self/status").ok()?)
+    }
 }
 
 #[cfg(target_vendor = "apple")]
@@ -149,6 +251,16 @@ mod tests {
         );
         assert_eq!(given_back(pools, None, None), pools, "no footprint here");
         assert_eq!(given_back(pools, Some(10 * MIB), None), pools);
+    }
+
+    #[test]
+    fn rss_anon_is_read_from_a_status_in_bytes() {
+        let status =
+            "Name:\tolc\nVmRSS:\t   6680 kB\nRssAnon:\t    2344 kB\nRssFile:\t    4336 kB\n";
+        assert_eq!(rss_anon(status), Some(2344 * 1024));
+        assert_eq!(rss_anon("VmRSS:\t 6680 kB\n"), None, "no RssAnon line");
+        assert_eq!(rss_anon("RssAnon:\t 2344 MB\n"), None, "not kB");
+        assert_eq!(rss_anon("RssAnon:\t lots kB\n"), None);
     }
 
     #[test]
