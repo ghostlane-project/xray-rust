@@ -494,10 +494,11 @@ fn upload_bound(flows: isize) -> isize {
 
 /// T10: T4's 64 flows under its budget, their uploads beginning while
 /// Vision still pads, so that each flow's first upload writes are padded
-/// frames. The uploads hold no more than T4's bound, with the pool's room,
-/// and, for each flow, what the one write its TLS session holds to send
-/// carries beside the payload its relay counts: a frame's head and padding,
-/// `VISION_FRAME_EXTRA`, and a record's framing more.
+/// frames. The uploads hold no more than T4's bound, with the pool's room
+/// and the writes the workers are sealing, and, for each flow, what the one
+/// write its TLS session holds to send carries beside the payload its relay
+/// counts: a frame's head and padding, `VISION_FRAME_EXTRA`, and a record's
+/// framing more.
 ///
 /// The padded frames here are a flow's first upload writes, a few KiB each
 /// as its relay's reads grow again from the download's one-byte request,
@@ -516,6 +517,7 @@ fn sixty_four_new_vision_flows_pad_their_uploads_within_the_budget() {
     xray_transport::set_byte_budget(None);
     let bound = upload_bound(flows)
         + pool_room(run.kept)
+        + sealing(CONSTRAINED_READ)
         + flows * (VISION_FRAME_EXTRA + TLS_RECORD_FRAMING);
     let spares = thread_spares(CONSTRAINED_READ);
     eprintln!(
