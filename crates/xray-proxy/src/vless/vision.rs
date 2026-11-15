@@ -1,4 +1,4 @@
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
 use rand::Rng;
 use thiserror::Error;
 
@@ -45,6 +45,25 @@ pub enum VisionError {
     LengthMismatch,
     #[error("vision payload length {len} exceeds u16 content length limit")]
     PayloadTooLarge { len: usize },
+}
+
+/// The longest head a frame has: the user ID the first frame names, then
+/// the command and the payload's and the padding's lengths.
+pub(crate) const FRAME_HEAD_MAX: usize = USER_ID_LEN + HEADER_LEN;
+
+/// A padded frame's head and the length of the padding after its payload.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FrameHead {
+    bytes: [u8; FRAME_HEAD_MAX],
+    len: u8,
+    /// Zeros after the payload, at most `u16::MAX`.
+    pub(crate) padding_len: u16,
+}
+
+impl FrameHead {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
 }
 
 pub struct VisionPadding {
@@ -94,27 +113,52 @@ impl VisionPadding {
         deterministic_extra_padding: u16,
         output: &mut BytesMut,
     ) -> Result<(), VisionError> {
-        let content_len = payload.len();
+        let head = self.frame_head(
+            payload.len(),
+            command,
+            long_padding,
+            deterministic_extra_padding,
+        )?;
+        output.reserve(head.bytes().len() + payload.len() + usize::from(head.padding_len));
+        output.extend_from_slice(head.bytes());
+        output.extend_from_slice(payload);
+        output.resize(output.len() + usize::from(head.padding_len), 0);
+
+        Ok(())
+    }
+
+    /// What a padded frame of `content_len` payload bytes carries around
+    /// them: its head and how many zeros follow. The same draw, and the
+    /// same bytes, as [`Self::pad_into_with_long_padding`] writes before and
+    /// after the payload, which a writer may then send from where it is.
+    pub(crate) fn frame_head(
+        &mut self,
+        content_len: usize,
+        command: VisionCommand,
+        long_padding: bool,
+        deterministic_extra_padding: u16,
+    ) -> Result<FrameHead, VisionError> {
         if content_len > MAX_CONTENT_LEN {
             return Err(VisionError::PayloadTooLarge { len: content_len });
         }
 
         let padding_len = self.padding_len(content_len, long_padding, deterministic_extra_padding);
-        let user_prefix_len = if self.user_id_emitted { 0 } else { USER_ID_LEN };
-        output.reserve(user_prefix_len + HEADER_LEN + content_len + padding_len);
-
+        let mut head = FrameHead {
+            bytes: [0; FRAME_HEAD_MAX],
+            len: 0,
+            padding_len: padding_len as u16,
+        };
+        let mut at = 0;
         if !self.user_id_emitted {
-            output.extend_from_slice(&self.user_id);
+            head.bytes[..USER_ID_LEN].copy_from_slice(&self.user_id);
+            at = USER_ID_LEN;
             self.user_id_emitted = true;
         }
-
-        output.put_u8(command as u8);
-        output.put_u16(content_len as u16);
-        output.put_u16(padding_len as u16);
-        output.extend_from_slice(payload);
-        output.resize(output.len() + padding_len, 0);
-
-        Ok(())
+        head.bytes[at] = command as u8;
+        head.bytes[at + 1..at + 3].copy_from_slice(&(content_len as u16).to_be_bytes());
+        head.bytes[at + 3..at + 5].copy_from_slice(&(padding_len as u16).to_be_bytes());
+        head.len = (at + HEADER_LEN) as u8;
+        Ok(head)
     }
 
     fn padding_len(

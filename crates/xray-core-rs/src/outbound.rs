@@ -212,6 +212,19 @@ impl AsyncWrite for VisionTransportStream {
         Pin::new(&mut *self.get_mut().inner).poll_write(cx, input)
     }
 
+    /// Vision's padded frames, gathered: see `VlessResponseStream`.
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        inputs: &[std::io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut *self.get_mut().inner).poll_write_vectored(cx, inputs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         Pin::new(&mut *self.get_mut().inner).poll_flush(cx)
     }

@@ -158,6 +158,15 @@ long-term supported release series.
   and the threads keep, for a host under memory pressure.
 - Vision gives back its frame buffers once a frame is written or read,
   rather than keeping up to 64 KiB and its padding for the flow's life.
+- A padded Vision write copies nothing: it hands its carrier the frame's
+  head, the writer's own bytes and its padding in one write, gathered when
+  the carrier gathers (TLS and REALITY sessions do), so a write whose
+  carrier waits holds 30 B of its frame in the stream and none of its bytes.
+  It copied its input and padding into a buffer of its own, which held them,
+  outside the byte budget, while the carrier waited. The carrier sees the
+  same writes with the same bytes, and a TLS session seals the same records.
+  A VLESS request header held for the first payload goes out gathered with
+  it, uncopied, when its carrier gathers.
 - Vendored h2: the reader takes each frame into an allocation of its own
   size, `9 + length`, which grows while the frame arrives from at most
   16,393 B and so never holds more than twice what has arrived, and it holds

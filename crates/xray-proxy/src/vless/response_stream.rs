@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, IoSlice};
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 
@@ -130,6 +130,20 @@ where
         input: &[u8],
     ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.get_mut().inner).poll_write(cx, input)
+    }
+
+    /// Vision hands a padded frame's head, payload and padding over as one
+    /// gathered write when the carrier gathers.
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        inputs: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, inputs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
