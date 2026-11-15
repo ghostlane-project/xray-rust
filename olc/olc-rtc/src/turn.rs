@@ -61,6 +61,9 @@ pub enum TurnTransport {
     Udp,
     /// A TCP connection of its own, STUN and ChannelData framed on it.
     Tcp,
+    /// The same framing inside a TLS connection of its own (`turns:`,
+    /// RFC 7350's TURN over TLS), the hello Chrome's (`tls_boring`).
+    Tls,
 }
 
 /// A TURN server from the carrier's ICE servers (WebRTC's `RTCIceServer`,
@@ -93,33 +96,47 @@ impl std::fmt::Debug for TurnServer {
 
 /// TURN's default port (RFC 8656 §3.1, pion's `DefaultPort` for `turn:`).
 pub const DEFAULT_PORT: u16 = 3478;
+/// TURN over TLS's default port (pion's `DefaultTLSPort` for `turns:`).
+pub const DEFAULT_TLS_PORT: u16 = 5349;
 
 /// The TURN servers of one ICE server entry this client allocates on: each
 /// `turn:` URL over UDP (named or by default) or TCP, as pion's `ParseURL`
-/// reads `turn:host[:port][?transport=udp|tcp]`, in the list's order.
-/// `turns:` (TLS) is left out until its ClientHello is libwebrtc's (M8);
-/// so are `stun:` and a URL that does not parse.
+/// reads `turn:host[:port][?transport=udp|tcp]`, in the list's order; and
+/// each `turns:` URL (TLS over TCP, port 5349 by default) when this build
+/// has Chrome's TLS (the `boring` feature: without it the one TLS hello
+/// this client would send is no browser's, so `turns:` stays skipped).
+/// `stun:` and a URL that does not parse are left out.
 #[must_use]
 pub fn servers(urls: &[String], username: &str, password: &str) -> Vec<TurnServer> {
+    servers_with(urls, username, password, cfg!(feature = "boring"))
+}
+
+/// [`servers`], with `tls` saying whether `turns:` URLs are taken.
+#[must_use]
+pub fn servers_with(urls: &[String], username: &str, password: &str, tls: bool) -> Vec<TurnServer> {
     let mut out = Vec::new();
     for url in urls {
-        let Some(rest) = url.strip_prefix("turn:") else {
-            continue;
+        let (secure, rest) = match (url.strip_prefix("turn:"), url.strip_prefix("turns:")) {
+            (Some(rest), _) => (false, rest),
+            (None, Some(rest)) if tls => (true, rest),
+            _ => continue,
         };
         let (addr, query) = rest.split_once('?').unwrap_or((rest, ""));
-        let mut transport = "udp";
+        let mut transport = if secure { "tcp" } else { "udp" };
         for kv in query.split('&').filter(|kv| !kv.is_empty()) {
             match kv.split_once('=') {
                 Some(("transport", t)) => transport = t,
                 _ => transport = "",
             }
         }
-        let transport = match transport.to_ascii_lowercase().as_str() {
-            "udp" => TurnTransport::Udp,
-            "tcp" => TurnTransport::Tcp,
+        let transport = match (transport.to_ascii_lowercase().as_str(), secure) {
+            ("udp", false) => TurnTransport::Udp,
+            ("tcp", false) => TurnTransport::Tcp,
+            // TURN over TLS runs on TCP; `turns:` over UDP would be DTLS.
+            ("tcp", true) => TurnTransport::Tls,
             _ => continue,
         };
-        let Some((host, port)) = split_host_port(addr) else {
+        let Some((host, port)) = split_host_port(addr, secure) else {
             continue;
         };
         let s = TurnServer {
@@ -137,7 +154,7 @@ pub fn servers(urls: &[String], username: &str, password: &str) -> Vec<TurnServe
 }
 
 /// `host`, `host:port`, `[v6]` and `[v6]:port`.
-fn split_host_port(s: &str) -> Option<(&str, u16)> {
+fn split_host_port(s: &str, secure: bool) -> Option<(&str, u16)> {
     let (host, port) = if let Some(rest) = s.strip_prefix('[') {
         let (host, after) = rest.split_once(']')?;
         match after {
@@ -155,6 +172,7 @@ fn split_host_port(s: &str) -> Option<(&str, u16)> {
         return None;
     }
     let port = match port {
+        None if secure => DEFAULT_TLS_PORT,
         None => DEFAULT_PORT,
         Some(p) => p.parse().ok().filter(|p| *p != 0)?,
     };
@@ -164,6 +182,9 @@ fn split_host_port(s: &str) -> Option<(&str, u16)> {
 /// A [`TurnServer`] whose host resolved.
 #[derive(Clone)]
 pub(crate) struct Resolved {
+    /// The URL's host as written: a TLS server's name (or address literal),
+    /// which its certificate is checked for ([`sni_name`]).
+    pub(crate) host: String,
     pub(crate) addr: SocketAddr,
     pub(crate) transport: TurnTransport,
     pub(crate) username: String,
@@ -195,6 +216,7 @@ pub(crate) async fn resolve(servers: &[TurnServer], v4: bool) -> Vec<Resolved> {
             continue;
         }
         out.push(Resolved {
+            host: s.host.clone(),
             addr,
             transport: s.transport,
             username: s.username.clone(),
@@ -202,6 +224,19 @@ pub(crate) async fn resolve(servers: &[TurnServer], v4: bool) -> Vec<Resolved> {
         });
     }
     out
+}
+
+/// The name a TLS hello to `host` sends as its server name: the URL's host
+/// when it is a name, nothing when it is an address literal (Chrome's TLS
+/// never sends an IP in SNI, RFC 6066 section 3).
+#[must_use]
+pub fn sni_name(host: &str) -> Option<&str> {
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() || bare.parse::<IpAddr>().is_ok() {
+        None
+    } else {
+        Some(host)
+    }
 }
 
 /// The allocations one peer connection holds at most: SaluteJazz's
@@ -335,6 +370,8 @@ struct Relay {
     server: SocketAddr,
     /// How what the client sends reaches the server.
     path: Path,
+    /// How the allocation reaches its server (the relayed candidate's rank).
+    via: TurnTransport,
     /// The server's nonce was looked at for RFC 8489's cookie (logged once;
     /// the client ignores the cookie, as Chrome does).
     cookie_seen: bool,
@@ -483,9 +520,19 @@ impl Relays {
                         TurnClient::Udp(TurnClientUdp::allocate(local, s.addr, cfg)),
                         Path::Udp,
                     ),
-                    TurnTransport::Tcp => {
+                    TurnTransport::Tcp | TurnTransport::Tls => {
                         let (tx, rx) = mpsc::channel(STREAM_QUEUE);
-                        tokio::spawn(stream(slot, s.addr, rx, inbound.clone()));
+                        if s.transport == TurnTransport::Tls {
+                            tokio::spawn(stream_tls(
+                                slot,
+                                s.host.clone(),
+                                s.addr,
+                                rx,
+                                inbound.clone(),
+                            ));
+                        } else {
+                            tokio::spawn(stream(slot, s.addr, rx, inbound.clone()));
+                        }
                         (
                             TurnClient::Tcp(TurnClientTcp::allocate(local, s.addr, cfg)),
                             Path::Stream(tx),
@@ -496,6 +543,7 @@ impl Relays {
                     client,
                     server: s.addr,
                     path,
+                    via: s.transport,
                     cookie_seen: false,
                     relayed: None,
                     permitted: Vec::with_capacity(MAX_PEERS),
@@ -742,11 +790,7 @@ impl Relays {
                     TurnEvent::AllocationCreated(TransportType::Udp, relayed) => {
                         olc_net::debug!("webrtc: {name} TURN allocation {relayed} on {}", r.server);
                         r.relayed = Some(relayed);
-                        let via = match r.path {
-                            Path::Udp => TurnTransport::Udp,
-                            Path::Stream(_) => TurnTransport::Tcp,
-                        };
-                        events.push(RelayEvent::Allocated(relayed, via));
+                        events.push(RelayEvent::Allocated(relayed, r.via));
                     }
                     TurnEvent::AllocationCreateFailed(family) => {
                         olc_net::debug!(
@@ -857,6 +901,37 @@ async fn stream(
     }
 }
 
+/// One TURN server's TLS connection ([`crate::turns`]): the same framing as
+/// [`stream`] inside Chrome's TLS. A build without the `boring` feature never
+/// lists a `turns:` server, so this only ends the relay.
+#[cfg(feature = "boring")]
+async fn stream_tls(
+    slot: usize,
+    host: String,
+    server: SocketAddr,
+    out: mpsc::Receiver<Vec<u8>>,
+    inbound: mpsc::Sender<StreamChunk>,
+) {
+    crate::turns::stream(slot, host, server, out, inbound).await;
+}
+
+#[cfg(not(feature = "boring"))]
+async fn stream_tls(
+    slot: usize,
+    _host: String,
+    server: SocketAddr,
+    _out: mpsc::Receiver<Vec<u8>>,
+    inbound: mpsc::Sender<StreamChunk>,
+) {
+    olc_net::debug!("webrtc: TURN server {server} over TLS: this build has no Chrome TLS");
+    let _ = inbound
+        .send(StreamChunk {
+            slot,
+            data: Vec::new(),
+        })
+        .await;
+}
+
 /// RFC 8489's nonce cookie (§9.2): a server that sends it offers the
 /// security features its nonce encodes.
 const RFC8489_COOKIE: &[u8] = b"obMatJos2";
@@ -895,7 +970,7 @@ mod tests {
     /// (`turns:` waits for libwebrtc's TLS hello).
     #[test]
     fn the_udp_and_tcp_turn_urls_are_taken() {
-        let got = servers(
+        let got = servers_with(
             &urls(&[
                 "turn:a-t.salutejazz.ru:3478?transport=udp",
                 "turn:s-t.salutejazz.ru:3478?transport=udp",
@@ -906,6 +981,7 @@ mod tests {
             ]),
             "u",
             "p",
+            false,
         );
         let hosts: Vec<_> = got
             .iter()
@@ -925,7 +1001,7 @@ mod tests {
 
     #[test]
     fn a_turn_url_reads_as_pion_reads_it() {
-        let one = |u: &str| servers(&urls(&[u]), "u", "p");
+        let one = |u: &str| servers_with(&urls(&[u]), "u", "p", false);
         assert_eq!(one("turn:192.0.2.1")[0].port, DEFAULT_PORT);
         assert_eq!(one("turn:192.0.2.1")[0].transport, TurnTransport::Udp);
         assert_eq!(one("turn:[2001:db8::1]:5000")[0].host, "2001:db8::1");
@@ -950,13 +1026,106 @@ mod tests {
         // The same server twice is allocated on once; over UDP and over TCP
         // it is two.
         assert_eq!(
-            servers(&urls(&["turn:h", "turn:h:3478?transport=udp"]), "u", "p").len(),
+            servers_with(
+                &urls(&["turn:h", "turn:h:3478?transport=udp"]),
+                "u",
+                "p",
+                false
+            )
+            .len(),
             1
         );
         assert_eq!(
-            servers(&urls(&["turn:h", "turn:h?transport=tcp"]), "u", "p").len(),
+            servers_with(&urls(&["turn:h", "turn:h?transport=tcp"]), "u", "p", false).len(),
             2
         );
+    }
+
+    /// `turns:` URLs, as SaluteJazz's `rtc:config` lists them (TLS on 443,
+    /// `transport=tcp`), are TLS servers when the build has Chrome's TLS and
+    /// nothing when it has not; the port is 5349 when the URL names none; a
+    /// `turns:` over UDP (DTLS) is not ours.
+    #[test]
+    fn a_turns_url_is_a_tls_server_only_where_the_build_has_chromes_tls() {
+        let list = urls(&[
+            "turn:a-t.salutejazz.ru:3478?transport=udp",
+            "turns:a-t.salutejazz.ru:443?transport=tcp",
+            "turns:s-t.salutejazz.ru:443?transport=tcp",
+        ]);
+        let with = servers_with(&list, "u", "p", true);
+        let got: Vec<_> = with
+            .iter()
+            .map(|s| (s.host.as_str(), s.port, s.transport))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("a-t.salutejazz.ru", 3478, TurnTransport::Udp),
+                ("a-t.salutejazz.ru", 443, TurnTransport::Tls),
+                ("s-t.salutejazz.ru", 443, TurnTransport::Tls),
+            ]
+        );
+        let without = servers_with(&list, "u", "p", false);
+        assert_eq!(without.len(), 1, "{without:?}");
+        assert_eq!(without[0].transport, TurnTransport::Udp);
+        // The shipped entry point follows the feature.
+        assert_eq!(
+            servers(&list, "u", "p").len(),
+            if cfg!(feature = "boring") { 3 } else { 1 }
+        );
+        let one = |u: &str| servers_with(&urls(&[u]), "u", "p", true);
+        assert_eq!(one("turns:h")[0].port, DEFAULT_TLS_PORT);
+        assert_eq!(one("turns:h")[0].transport, TurnTransport::Tls);
+        assert_eq!(
+            one("turns:[2001:db8::1]:5000?transport=TCP")[0].host,
+            "2001:db8::1"
+        );
+        assert!(one("turns:h?transport=udp").is_empty());
+        assert!(one("turns:h?transport=sctp").is_empty());
+        assert!(one("turns:").is_empty());
+        // TLS and TCP to one address are two servers.
+        assert_eq!(
+            servers_with(
+                &urls(&["turn:h:443?transport=tcp", "turns:h:443"]),
+                "u",
+                "p",
+                true
+            )
+            .len(),
+            2
+        );
+    }
+
+    /// A name is the hello's server name; an address literal never is.
+    #[test]
+    fn an_address_literal_is_no_server_name() {
+        assert_eq!(sni_name("a-t.salutejazz.ru"), Some("a-t.salutejazz.ru"));
+        assert_eq!(sni_name("localhost"), Some("localhost"));
+        assert_eq!(sni_name("192.0.2.1"), None);
+        assert_eq!(sni_name("2001:db8::1"), None);
+        assert_eq!(sni_name("[2001:db8::1]"), None);
+        assert_eq!(sni_name("1.2.3.4.example"), Some("1.2.3.4.example"));
+        assert_eq!(sni_name(""), None);
+    }
+
+    /// The host of a `turns:` URL is kept through resolution, for the TLS
+    /// name and the certificate's check.
+    #[tokio::test]
+    async fn a_resolved_tls_server_keeps_its_host() {
+        let list = servers_with(
+            &urls(&[
+                "turns:192.0.2.9:443?transport=tcp",
+                "turn:192.0.2.9:443?transport=tcp",
+            ]),
+            "u",
+            "p",
+            true,
+        );
+        let got = crate::testing::bounded(resolve(&list, true)).await;
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].transport, TurnTransport::Tls);
+        assert_eq!(got[0].host, "192.0.2.9");
+        assert_eq!(got[1].transport, TurnTransport::Tcp);
     }
 
     #[tokio::test]
@@ -1049,6 +1218,7 @@ mod tests {
             let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let local = sock.local_addr().unwrap();
             let resolved = [Resolved {
+                host: String::new(),
                 addr: server.local_addr().unwrap(),
                 transport: TurnTransport::Udp,
                 username: "u".into(),
@@ -1150,6 +1320,7 @@ mod tests {
             let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let local = sock.local_addr().unwrap();
             let resolved = [Resolved {
+                host: String::new(),
                 addr: server.local_addr().unwrap(),
                 transport: TurnTransport::Udp,
                 username: "u".into(),
@@ -1285,6 +1456,7 @@ mod tests {
             let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
             let local = sock.local_addr().unwrap();
             let resolved = [Resolved {
+                host: String::new(),
                 addr: server,
                 transport: TurnTransport::Tcp,
                 username: "u".into(),
@@ -1335,6 +1507,41 @@ mod tests {
             // is the test's own.
             drop(inbound);
             assert!(chunks.recv().await.is_none());
+        })
+        .await;
+    }
+
+    /// A build without Chrome's TLS never lists a `turns:` server; a TLS
+    /// server handed to it anyway ends its relay at once and says so (no
+    /// plain TCP, which would put a TURN request where a TLS hello belongs).
+    #[cfg(not(feature = "boring"))]
+    #[tokio::test]
+    async fn a_tls_relay_without_chromes_tls_ends_at_once() {
+        crate::testing::bounded(async {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let server = listener.local_addr().unwrap();
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let resolved = [Resolved {
+                host: "turn.olc.test".into(),
+                addr: server,
+                transport: TurnTransport::Tls,
+                username: "u".into(),
+                password: "p".into(),
+            }];
+            let (inbound, mut chunks) = mpsc::channel(STREAM_INBOUND);
+            let mut relays = Relays::new(
+                &resolved,
+                sock.local_addr().unwrap(),
+                Instant::now(),
+                &inbound,
+            );
+            let chunk = chunks.recv().await.unwrap();
+            assert!(chunk.data.is_empty());
+            relays.recv_stream(&chunk, Instant::now(), |_, _, _| panic!("no data"));
+            assert!(relays.list[0].done);
+            // Nothing was dialled.
+            let none = tokio::time::timeout(Duration::from_millis(200), listener.accept()).await;
+            assert!(none.is_err(), "a connection was opened");
         })
         .await;
     }
