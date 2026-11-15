@@ -217,11 +217,42 @@ mod tests {
         closed: bool,
         waiting: Option<Waker>,
         taken: usize,
+        /// While closed, the bytes the carrier still takes before it waits.
+        allowance: usize,
+        /// What the carrier took since `record_wire`.
+        wire: Option<Vec<u8>>,
     }
 
     impl Gate {
         fn close(&self) {
-            self.0.lock().unwrap().closed = true;
+            self.close_after(0);
+        }
+
+        /// Closes the gate once the carrier has taken `allowance` more bytes.
+        fn close_after(&self, allowance: usize) {
+            let mut gate = self.0.lock().unwrap();
+            gate.closed = true;
+            gate.allowance = allowance;
+        }
+
+        fn record_wire(&self) {
+            self.0.lock().unwrap().wire = Some(Vec::new());
+        }
+
+        /// The lengths of the TLS records the carrier took since
+        /// `record_wire`, each with its 5-byte header.
+        fn records(&self) -> Vec<usize> {
+            let gate = self.0.lock().unwrap();
+            let mut wire = gate.wire.as_deref().expect("the wire is recorded");
+            let mut records = Vec::new();
+            while !wire.is_empty() {
+                assert!(wire.len() >= 5, "a record header is cut");
+                let len = 5 + usize::from(u16::from_be_bytes([wire[3], wire[4]]));
+                assert!(wire.len() >= len, "a record is cut");
+                records.push(len);
+                wire = &wire[len..];
+            }
+            records
         }
 
         fn open(&self) {
@@ -239,14 +270,17 @@ mod tests {
             self.0.lock().unwrap().taken
         }
 
-        /// `Pending` while the gate is closed, remembering `cx` to wake.
-        fn poll_open(&self, cx: &mut Context<'_>) -> Poll<()> {
+        /// `Pending` while the gate is closed and its allowance spent,
+        /// remembering `cx` to wake; otherwise the most the carrier takes.
+        fn poll_open(&self, cx: &mut Context<'_>) -> Poll<usize> {
             let mut gate = self.0.lock().unwrap();
-            if gate.closed {
+            if !gate.closed {
+                Poll::Ready(usize::MAX)
+            } else if gate.allowance > 0 {
+                Poll::Ready(gate.allowance)
+            } else {
                 gate.waiting = Some(cx.waker().clone());
                 Poll::Pending
-            } else {
-                Poll::Ready(())
             }
         }
     }
@@ -273,9 +307,17 @@ mod tests {
             cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<io::Result<usize>> {
-            std::task::ready!(self.gate.poll_open(cx));
+            let most = std::task::ready!(self.gate.poll_open(cx));
+            let buf = &buf[..buf.len().min(most)];
             let written = std::task::ready!(Pin::new(&mut self.io).poll_write(cx, buf))?;
-            self.gate.0.lock().unwrap().taken += written;
+            let mut gate = self.gate.0.lock().unwrap();
+            gate.taken += written;
+            if gate.closed {
+                gate.allowance -= written;
+            }
+            if let Some(wire) = &mut gate.wire {
+                wire.extend_from_slice(&buf[..written]);
+            }
             Poll::Ready(Ok(written))
         }
 
@@ -496,6 +538,126 @@ mod tests {
                     assert!(arrived == expected, "{case}: the bytes arrived changed");
                 }
             }
+        }
+    }
+
+    /// What a session's writer handed it, a write at a time.
+    struct Takes {
+        inner: BoxedTransportStream,
+        took: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl AsyncRead for Takes {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_read(cx, buf)
+        }
+    }
+
+    impl AsyncWrite for Takes {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let written = std::task::ready!(Pin::new(&mut self.inner).poll_write(cx, buf))?;
+            self.took.lock().unwrap().push(written);
+            Poll::Ready(Ok(written))
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.inner).poll_shutdown(cx)
+        }
+    }
+
+    /// XHTTP's packet-up POST over HTTP/1.1 and TLS, whose body (up to
+    /// 1,000,000 B by default) its writer holds until the response. The
+    /// session gets the body 16 KiB at a time: while the carrier waits, it
+    /// holds one such slice's records beside the body, not the whole body
+    /// sealed. Each slice meets an empty queue, so the records are those of
+    /// the body written at once: 16 KiB records and the rest.
+    #[tokio::test]
+    async fn a_fixed_request_hands_the_session_its_body_a_record_at_a_time() {
+        use std::future::Future;
+
+        use crate::stream::http_headers::HeaderMap;
+        use crate::stream::xhttp::h1::{start_fixed_request, H1Request};
+
+        const BODY: usize = 1_000_000;
+        const SLICE: usize = 16 * 1024;
+        let headers = HeaderMap::new();
+        let request = H1Request {
+            method: "POST",
+            target: "/up/0",
+            host: "server.test",
+            headers: &headers,
+        };
+        let body: Vec<u8> = (0..BODY).map(|i| (i % 251) as u8).collect();
+        for path in [Path::Plain, Path::Penetrating] {
+            // The carrier takes about the head's record, then waits.
+            let (client, _server, gate) = connected(path).await;
+            gate.close_after(2048);
+            let took = Arc::new(Mutex::new(Vec::new()));
+            let takes = Takes {
+                inner: client,
+                took: Arc::clone(&took),
+            };
+            let mut sending = Box::pin(start_fixed_request(takes, &request, &body));
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(
+                sending.as_mut().poll(&mut cx).is_pending(),
+                "{path:?}: the request waits for the carrier"
+            );
+            let took = took.lock().unwrap().clone();
+            let of_body: usize = took.iter().skip(1).sum();
+            assert!(
+                of_body <= SLICE,
+                "{path:?}: while the carrier waited the session took {of_body} B of the \
+                 body ({took:?}); one {SLICE} B slice at most"
+            );
+            drop(sending);
+
+            // With the carrier open, the body arrives whole, in the records
+            // of one write.
+            let (client, mut server, gate) = connected(path).await;
+            gate.record_wire();
+            let reader = tokio::spawn(async move {
+                let mut received = Vec::new();
+                let mut chunk = vec![0; 64 * 1024];
+                loop {
+                    if let Some(end) = received.windows(4).position(|w| w == b"\r\n\r\n") {
+                        if received.len() >= end + 4 + BODY {
+                            return received.split_off(end + 4);
+                        }
+                    }
+                    let read = server.read(&mut chunk).await.expect("read");
+                    assert!(read > 0, "the request ended early");
+                    received.extend_from_slice(&chunk[..read]);
+                }
+            });
+            let pending = start_fixed_request(client, &request, &body)
+                .await
+                .expect("send the request");
+            let arrived = reader.await.expect("reader");
+            drop(pending);
+            assert!(arrived == body, "{path:?}: the body arrived changed");
+            let records = gate.records();
+            let body_records: Vec<usize> = records[1..].to_vec();
+            let whole: Vec<usize> = (0..BODY)
+                .step_by(SLICE)
+                .map(|from| 5 + (BODY - from).min(SLICE) + 17)
+                .collect();
+            assert_eq!(
+                body_records, whole,
+                "{path:?}: the body's records, against those of one write"
+            );
         }
     }
 }
