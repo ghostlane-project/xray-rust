@@ -1,0 +1,50 @@
+name: tls-send-lab
+
+# Lab for gl/tls-send-limit: the fork CI rust job's Check formatting, Lint,
+# Test and documentation steps, as ci.yml runs them, on the topic head's code
+# unchanged (this file is the only addition). Throwaway gl/tls-send-lab-*
+# branches only; never merged.
+
+on:
+  push:
+    branches: ['gl/tls-send-lab-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tls-send-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.96.0 --profile minimal --component clippy,rustfmt
+      - name: Select pinned Rust toolchain
+        run: rustup default 1.96.0
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -W clippy::perf -W clippy::suspicious
+      - name: Test
+        if: ${{ !cancelled() }}
+        run: cargo test --workspace --exclude xray-rust-fuzz --all-targets --locked --no-fail-fast
+      - name: Build public API documentation
+        if: ${{ !cancelled() }}
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --locked
