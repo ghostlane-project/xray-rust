@@ -95,7 +95,7 @@ pub const TICKET_SERVERS: usize = MAX_ALLOCATIONS;
 
 /// A session longer than this serialised (`i2d_SSL_SESSION`: the ticket and
 /// the server's certificate chain) is not kept.
-pub const TICKET_MAX_DER: usize = 12 * 1024;
+pub const TICKET_MAX_DER: usize = 8 * 1024;
 
 /// The C heap one kept session holds, at most (its serialised form,
 /// BoringSSL's parsed copy of the chain, the ticket): the cap of the row in
@@ -116,6 +116,20 @@ pub const TLS_BORINGSSL_MAX: usize = 64 * 1024;
 /// ([`TLS_MAX_CERT_LIST`]).
 pub const TLS_CONNECTION_MAX: usize =
     TLS_BORINGSSL_MAX + 3 * STREAM_READ + TLS_OUT_MAX + SEND_BUF + TLS_MAX_CERT_LIST;
+
+// The bounds fit together, checked when this builds: a datagram's record
+// and the one before it fit the output buffer, the certificate bound is
+// between a real chain's size and Chrome's 100 KiB, a chain over the
+// session bound is not kept, and a kept session's heap bound holds the
+// serialised bound several times over (BoringSSL's parsed copy of the
+// chain: measured at 5 times).
+const _: () = {
+    assert!(TLS_OUT_MAX >= 2 * (SEND_BUF + RECORD_OVERHEAD));
+    assert!(TLS_MAX_CERT_LIST >= 16 * 1024 && TLS_MAX_CERT_LIST <= 100 * 1024);
+    assert!(crate::turns_verify::MAX_CHAIN * 4096 <= TLS_MAX_CERT_LIST * 2);
+    assert!(TICKET_MAX_DER * 6 <= TICKET_HEAP_MAX);
+    assert!(TICKET_SERVERS >= MAX_ALLOCATIONS);
+};
 
 /// The bounds of one connection, a test's to shorten.
 #[derive(Clone, Copy)]
@@ -1267,6 +1281,19 @@ mod tests {
             eventually("served", || last.seen(|x| x.closed_clean == 2)).await;
             assert_eq!(locked(s.cache).len(), TICKET_SERVERS);
             drop(r);
+            // One server's sessions, stored again and again: still one.
+            let (key, session) = {
+                let c = locked(s.cache);
+                let (k, x) = c.list.last().unwrap();
+                (k.clone(), x.clone())
+            };
+            for _ in 0..4 {
+                assert!(locked(s.cache).store(&key, session.clone()));
+            }
+            let c = locked(s.cache);
+            assert_eq!(c.list.iter().filter(|(k, _)| *k == key).count(), 1);
+            assert_eq!(c.len(), TICKET_SERVERS);
+            drop(c);
 
             // A chain too long to keep.
             let names: Vec<String> = (0..900).map(|i| format!("pad{i:04}.olc.test")).collect();
@@ -1335,18 +1362,6 @@ mod tests {
             "a read past STREAM_READ"
         );
         assert!(m.feed(&[1, 2, 3]).is_ok());
-    }
-
-    /// The chain bound and the per-connection bounds fit the budget the
-    /// module states: what BoringSSL may be handed is capped, and the cache
-    /// is [`TICKET_SERVERS`] sessions.
-    #[test]
-    fn the_bounds_are_consistent() {
-        assert!(TICKET_SERVERS >= MAX_ALLOCATIONS);
-        assert!(TLS_OUT_MAX >= 2 * (SEND_BUF + RECORD_OVERHEAD));
-        assert!(TLS_MAX_CERT_LIST >= 16 * 1024 && TLS_MAX_CERT_LIST <= 100 * 1024);
-        assert!(MAX_CHAIN * 4096 <= TLS_MAX_CERT_LIST * 2);
-        assert!(TICKET_MAX_DER < TICKET_HEAP_MAX);
     }
 
     // -----------------------------------------------------------------
@@ -1442,19 +1457,39 @@ mod tests {
                 .env("OLC_TURNS_CHILD_MODE", if plain { "plain" } else { "tls" })
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::null())
+                .stderr(Stdio::inherit())
                 .spawn()
                 .unwrap();
             let out = child.stdout.take().unwrap();
+            // Read on a thread of its own, so a silent child fails the test
+            // instead of blocking a runtime worker.
+            let (tx, rx) = std::sync::mpsc::channel::<String>();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                    eprintln!("TURNS-CHILD {line}");
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
             let mut port = 0;
-            for line in std::io::BufReader::new(out).lines() {
-                let line = line.unwrap();
-                if let Some(p) = line.strip_prefix("PORT ") {
-                    port = p.trim().parse().unwrap();
-                    break;
+            let until = StdInstant::now() + Duration::from_secs(30);
+            while let Some(left) = until.checked_duration_since(StdInstant::now()) {
+                match rx.recv_timeout(left) {
+                    Ok(line) => {
+                        if let Some(p) = line.strip_prefix("PORT ") {
+                            port = p.trim().parse().unwrap();
+                            break;
+                        }
+                    }
+                    Err(_) => break,
                 }
             }
-            assert_ne!(port, 0, "the server process said no port");
+            if port == 0 {
+                let _ = child.kill();
+                let status = child.wait();
+                panic!("the server process said no port within 30 s ({status:?})");
+            }
             ServerProcess { child, port }
         }
 
@@ -1587,7 +1622,14 @@ mod tests {
         }
 
         async fn heap_session_measurement() {
-            let names: Vec<String> = (0..160).map(|i| format!("pad{i:04}.olc.test")).collect();
+            // A chain of about 3.6 KiB (a real one's size) and one whose
+            // session is near TICKET_MAX_DER.
+            heap_session_measurement_of(160).await;
+            heap_session_measurement_of(330).await;
+        }
+
+        async fn heap_session_measurement_of(pad: usize) {
+            let names: Vec<String> = (0..pad).map(|i| format!("pad{i:04}.olc.test")).collect();
             let mut all: Vec<&str> = names.iter().map(String::as_str).collect();
             all.push(HOST);
             let f = fixture(&all, &[]);
