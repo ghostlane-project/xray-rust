@@ -29,6 +29,23 @@
 //! its bytes. The writer waits for the carrier instead. How large that one
 //! write is, the writer decides: a relay's is at most its read cap, 1 MiB.
 //!
+//! Under XHTTP and gRPC the session's writer is the transport, and what the
+//! session holds no relay counts. Under XHTTP over HTTP/2 and gRPC a relay
+//! writes into a stream of h2's and counts its bytes until its flush, which
+//! returns once h2 has them: at once under XHTTP (`stream/xhttp/h2.rs`),
+//! once the whole Hunk is h2's under gRPC (`stream/grpc/stream.rs`). h2's
+//! connection writes them into the session later. Until then h2 queues at
+//! most what it grants a stream: the peer's window, and 400 KiB
+//! (`max_send_buffer_size`). The session holds one of h2's writes: its
+//! frame buffer, 16 KiB, and one DATA frame, a piece the transport handed
+//! h2 cut to the peer's largest frame. XHTTP hands h2 16 KiB at a time, so
+//! a write is 32 KiB and its framing; gRPC hands it what it grants, so a
+//! write is 32 KiB against grpc-go's 16 KiB frames and up to 416 KiB
+//! through a peer that advertises larger ones. XHTTP over HTTP/1.1 writes a
+//! request 16 KiB at a time (`stream/xhttp/h1.rs`), so the session holds
+//! 16,406 B of it at most; a packet-up body, 1,000,000 B by default, waits
+//! in its uploader for the response, not also sealed in the session.
+//!
 //! Inside the write call, the session seals the write's records while the
 //! writer's buffer still holds the same bytes, which the budget counts once,
 //! as the buffer until the call returns. A worker thread makes one such call
