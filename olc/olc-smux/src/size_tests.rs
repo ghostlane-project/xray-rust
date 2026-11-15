@@ -11,9 +11,11 @@ use crate::{Driver, Session, Stream};
 
 #[test]
 fn handle_and_state_sizes() {
-    // A session handle is one pointer; a stream handle a pointer and two ids.
-    assert_eq!(size_of::<Session>(), 8);
-    assert_eq!(size_of::<Stream>(), 16);
+    // A session handle is one pointer; a stream handle a pointer and two
+    // ids (u32 each), on 64-bit and 32-bit targets alike (armeabi-v7a).
+    let ptr = size_of::<usize>();
+    assert_eq!(size_of::<Session>(), ptr);
+    assert_eq!(size_of::<Stream>(), ptr + 8);
     // A queue is four indices and a length; it owns no memory while empty.
     assert_eq!(size_of::<ByteQueue>(), 16);
     assert_eq!(size_of::<FrameQueue>(), 20);
