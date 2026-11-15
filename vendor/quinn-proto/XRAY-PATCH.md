@@ -264,6 +264,9 @@ granted new credit for a `MAX_DATA`; a growth past the window before the
 shrink still grants the difference at once. Nothing changes for a window that
 only grows. `a_window_shrunk_and_grown_back_grants_no_credit_beyond_it` runs
 eight shrink and growth cycles with reads between them and checks that the
-peer's credit never exceeds the window; without the change it fails on the
-first growth. The complete 314-test library suite passes in the
-reconstruction.
+peer's credit never exceeds the window, and that each read's credit reaches
+the peer whole: the `ShouldTransmit` of every read asks for a `MAX_DATA` once
+what was read and not announced reaches an eighth of the window; without the
+change it fails on the first growth. The complete 314-test library suite
+passes in the reconstruction, compiled with the workspace's `-Dwarnings`
+(`.cargo/config.toml`) as `scripts/check-vendored-sources.sh` compiles it.
