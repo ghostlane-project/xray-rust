@@ -91,7 +91,7 @@ impl CertificateCompressor for Brotli {
 /// # Errors
 /// BoringSSL refused a setting.
 pub fn chrome_tls_context() -> Result<SslContext, ErrorStack> {
-    let mut ctx = SslContextBuilder::new(SslMethod::tls_client())?;
+    let mut ctx = SslContextBuilder::new(SslMethod::tls())?;
     ctx.set_min_proto_version(Some(SslVersion::TLS1_2))?;
     ctx.set_max_proto_version(Some(SslVersion::TLS1_3))?;
     ctx.set_cipher_list(CHROME_TLS_CIPHERS)?;
