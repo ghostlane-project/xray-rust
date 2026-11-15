@@ -99,9 +99,10 @@ pub const TICKET_MAX_DER: usize = 8 * 1024;
 
 /// The C heap one kept session holds, at most (its serialised form,
 /// BoringSSL's parsed copy of the chain, the ticket): the cap of the row in
-/// `olc-client`'s `sizes.rs`; a test measures a session of a real-sized
-/// chain against it.
-pub const TICKET_HEAP_MAX: usize = 48 * 1024;
+/// `olc-client`'s `sizes.rs`. The lab's heap test measures a session of a
+/// real-sized chain (3.9 KiB serialised: 20.7 KiB of heap) and one near
+/// [`TICKET_MAX_DER`] (7.0 KiB: 24.2 KiB) against it.
+pub const TICKET_HEAP_MAX: usize = 32 * 1024;
 
 /// The C heap BoringSSL's state of one connection adds to a plain TCP relay's
 /// (its `SSL`, the handshake's keys, a record's buffers), at most: the cap
@@ -122,12 +123,12 @@ pub const TLS_CONNECTION_MAX: usize =
 // between a real chain's size and Chrome's 100 KiB, a chain over the
 // session bound is not kept, and a kept session's heap bound holds the
 // serialised bound several times over (BoringSSL's parsed copy of the
-// chain: measured at 5 times).
+// chain: a 3.9 KiB session measured 20.7 KiB of heap, a 7.0 KiB one 24.2).
 const _: () = {
     assert!(TLS_OUT_MAX >= 2 * (SEND_BUF + RECORD_OVERHEAD));
     assert!(TLS_MAX_CERT_LIST >= 16 * 1024 && TLS_MAX_CERT_LIST <= 100 * 1024);
     assert!(crate::turns_verify::MAX_CHAIN * 4096 <= TLS_MAX_CERT_LIST * 2);
-    assert!(TICKET_MAX_DER * 6 <= TICKET_HEAP_MAX);
+    assert!(TICKET_MAX_DER * 4 <= TICKET_HEAP_MAX);
     assert!(TICKET_SERVERS >= MAX_ALLOCATIONS);
 };
 
@@ -714,8 +715,8 @@ mod tests {
     use super::*;
     use crate::tls_boring::hello_util::{assert_is_chromes, parse, Hello};
     use crate::turn::{STREAM_INBOUND, STREAM_QUEUE};
-    use crate::turns_verify::testpki::{self, Cert, Leaf};
     use crate::turns_verify::anchor_of;
+    use crate::turns_verify::testpki::{self, Cert, Leaf};
 
     // -----------------------------------------------------------------
     // Fixtures: a root, an intermediate and a server certificate.
@@ -1290,10 +1291,11 @@ mod tests {
             for _ in 0..4 {
                 assert!(locked(s.cache).store(&key, session.clone()));
             }
-            let c = locked(s.cache);
-            assert_eq!(c.list.iter().filter(|(k, _)| *k == key).count(), 1);
-            assert_eq!(c.len(), TICKET_SERVERS);
-            drop(c);
+            {
+                let c = locked(s.cache);
+                assert_eq!(c.list.iter().filter(|(k, _)| *k == key).count(), 1);
+                assert_eq!(c.len(), TICKET_SERVERS);
+            }
 
             // A chain too long to keep.
             let names: Vec<String> = (0..900).map(|i| format!("pad{i:04}.olc.test")).collect();
@@ -1477,8 +1479,9 @@ mod tests {
             while let Some(left) = until.checked_duration_since(StdInstant::now()) {
                 match rx.recv_timeout(left) {
                     Ok(line) => {
-                        if let Some(p) = line.strip_prefix("PORT ") {
-                            port = p.trim().parse().unwrap();
+                        // libtest has written "test <name> ... " on this line.
+                        if let Some(at) = line.find("PORT ") {
+                            port = line[at + 5..].trim().parse().unwrap();
                             break;
                         }
                     }
