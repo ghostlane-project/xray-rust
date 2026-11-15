@@ -32,7 +32,12 @@
 //! quit         stop when running, exit    BYE releases=0
 //! ```
 //!
-//! The first line is `LOADED pid=<pid>`; end of input is a quit.
+//! The first line is `LOADED pid=<pid>`; end of input is a quit. A command
+//! it does not know goes to the build's own (`main`'s `extra`: the dhat
+//! example's `profile` and `dump`), else it is `ERR unknown <command>`.
+//!
+//! This file is the driver; `main.rs` gives it the counting allocator, and
+//! `examples/olc-ffi-dhat.rs` the same driver with dhat-rs's.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -44,9 +49,6 @@ use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use olc_ffi::{LogWriter, OlcrtcError, OlcrtcRuntime, SessionListener, SocketProtector};
-
-#[global_allocator]
-static ALLOC: ghostlane_runtime::alloc::CountingAlloc = ghostlane_runtime::alloc::CountingAlloc;
 
 /// `OLCRTC_READY_TIMEOUT_MS`, as the apps pass it.
 const READY_MS: i64 = 35_000;
@@ -336,7 +338,11 @@ fn one_line(e: &OlcrtcError) -> String {
     e.to_string().replace('\n', " ")
 }
 
-fn control(rt: &OlcrtcRuntime) -> ExitCode {
+/// A build's own control commands: `(command, the rest of its line)` to the
+/// answer line, `None` for a command it does not know either.
+pub type Extra<'a> = &'a mut dyn FnMut(&str, &str) -> Option<String>;
+
+fn control(rt: &OlcrtcRuntime, extra: Extra<'_>) -> ExitCode {
     std::thread::spawn(|| loop {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -361,11 +367,13 @@ fn control(rt: &OlcrtcRuntime) -> ExitCode {
         if std::io::stdin().read_line(&mut line).unwrap_or(0) == 0 {
             break;
         }
-        let mut words = line.split_whitespace();
-        let Some(command) = words.next() else {
+        let text = line.trim();
+        if text.is_empty() {
             continue;
-        };
-        let n = words.next().and_then(|w| w.parse::<u64>().ok());
+        }
+        let (command, rest) = text.split_once(' ').unwrap_or((text, ""));
+        let rest = rest.trim();
+        let n = rest.parse::<u64>().ok();
         match command {
             "start" => match start_ready() {
                 Ok(ms) => say(&format!("READY ms={ms}")),
@@ -425,7 +433,10 @@ fn control(rt: &OlcrtcRuntime) -> ExitCode {
                 }
             }
             "quit" => break,
-            other => say(&format!("ERR unknown {other}")),
+            other => match extra(other, rest) {
+                Some(answer) => say(&answer),
+                None => say(&format!("ERR unknown {other}")),
+            },
         }
     }
     if rt.is_running() {
@@ -435,7 +446,8 @@ fn control(rt: &OlcrtcRuntime) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn main() -> ExitCode {
+/// The driver's `main`, with the build's own control commands.
+pub fn main(extra: Extra<'_>) -> ExitCode {
     olc_ffi::set_log_writer(Some(Arc::new(Stderr)));
     match olc_client::sys::raise_nofile_limit() {
         Some(l) => olc_client::info!("file limit: {} (hard {})", l.soft, l.hard),
@@ -464,7 +476,7 @@ fn main() -> ExitCode {
         }
     };
     if std::env::var("OLC_FFI_CONTROL").is_ok_and(|v| v == "1") {
-        return control(&rt);
+        return control(&rt, extra);
     }
     match (
         std::env::var("OLC_FFI_CYCLES")
