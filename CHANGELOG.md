@@ -147,6 +147,8 @@ long-term supported release series.
   TLS, and DNS and probes over TLS. A write that meets an empty queue keeps
   its records (16 KiB and the rest); the odd-sized records rustls cut from a
   write that met a part-full queue under backpressure no longer occur.
+  Inside the write call a session seals the write while the relay buffer
+  still holds its bytes: one write per worker thread at most, for that call.
 - A relay direction holds no buffer between reads: each read borrows one
   sized for it (1 KiB to 1 MiB) from the process's pool and gives it back
   once written, and a read that brings half of its size or less sets the
@@ -155,7 +157,8 @@ long-term supported release series.
   host keeps 128 KiB): 200 Mbit/s × a 1 ms scheduler slice. The pool keeps
   at most four 128 KiB buffers' worth on a constrained host (sixteen
   before), sixty-four on a standard one. `xray_core_rs::release_relay_buffers()` frees what the pool
-  and the threads keep, for a host under memory pressure.
+  and the threads keep, for a host under memory pressure, and
+  `xray_core_rs::relay_buffers_kept()` reads what they keep now.
 - Vision gives back its frame buffers once a frame is written or read,
   rather than keeping up to 64 KiB and its padding for the flow's life.
 - Vendored h2: the reader takes each frame into an allocation of its own
