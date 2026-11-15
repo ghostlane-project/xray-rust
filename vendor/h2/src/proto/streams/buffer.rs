@@ -1,5 +1,13 @@
 use slab::Slab;
 
+/// xray-rust: the slots a buffer keeps once it is empty, in bytes: 4 KiB, what
+/// an idle connection may keep of it. Upstream kept every slot the buffer had
+/// ever grown to, one per frame queued at once: a burst of 8 KiB DATA frames
+/// queued in a 4 MiB window is 512 slots, and they stayed. Up to this size a
+/// buffer that drains keeps its slots, so a stream that queues a few frames
+/// between reads does not reallocate at each read.
+const EMPTY_BUFFER_KEEP_BYTES: usize = 4 * 1024;
+
 /// Buffers frames for multiple streams.
 #[derive(Debug)]
 pub struct Buffer<T> {
@@ -32,6 +40,19 @@ impl<T> Buffer<T> {
 
     pub fn is_empty(&self) -> bool {
         self.slab.is_empty()
+    }
+
+    /// xray-rust: an empty buffer gives back slots beyond
+    /// `EMPTY_BUFFER_KEEP_BYTES`. No key is held once it is empty: every
+    /// `Deque` on it is empty too.
+    fn release_slots(&mut self) {
+        let kept = self
+            .slab
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Slot<T>>());
+        if self.slab.is_empty() && kept > EMPTY_BUFFER_KEEP_BYTES {
+            self.slab = Slab::new();
+        }
     }
 }
 
@@ -82,6 +103,7 @@ impl Deque {
         match self.indices {
             Some(mut idxs) => {
                 let mut slot = buf.slab.remove(idxs.head);
+                buf.release_slots();
 
                 if idxs.head == idxs.tail {
                     assert!(slot.next.is_none());
@@ -95,5 +117,34 @@ impl Deque {
             }
             None => None,
         }
+    }
+}
+
+/// xray-rust: the slots a drained buffer keeps.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A buffer that queued many frames and was drained gives their slots
+    /// back, keeping at most 4 KiB of them; one that queued a few keeps them.
+    #[test]
+    fn a_drained_buffer_gives_its_slots_back() {
+        let slot = std::mem::size_of::<Slot<[u8; 200]>>();
+        let mut buf: Buffer<[u8; 200]> = Buffer::new();
+        let mut deque = Deque::new();
+        for _ in 0..512 {
+            deque.push_back(&mut buf, [0; 200]);
+        }
+        while deque.pop_front(&mut buf).is_some() {}
+        assert!(buf.is_empty());
+        let kept = buf.slab.capacity() * slot;
+        assert!(kept <= 4 * 1024, "a drained buffer keeps {} B of slots", kept);
+
+        for _ in 0..4 {
+            deque.push_back(&mut buf, [0; 200]);
+        }
+        let capacity = buf.slab.capacity();
+        while deque.pop_front(&mut buf).is_some() {}
+        assert_eq!(buf.slab.capacity(), capacity, "a few slots are kept");
     }
 }

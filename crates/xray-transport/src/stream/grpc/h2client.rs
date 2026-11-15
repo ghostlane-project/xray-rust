@@ -31,6 +31,7 @@ use super::framing::HunkMode;
 use super::keepalive::{OpenCalls, Pings, WatchedIo};
 use super::path::grpc_request_path;
 use super::stream::GrpcStream;
+use crate::memory_budget::ByteBudget;
 use crate::stream::h2_bdp::{
     connection_window_for, grpc_bdp_limit, BdpEstimator, BdpPings, BdpSampler,
 };
@@ -503,9 +504,12 @@ pub(crate) fn build_grpc_call(config: &GrpcConfig) -> Result<GrpcCall, Transport
 /// (`internal/transport/http2_server.go:1142-1146`), and Xray's inbound has
 /// nothing to send until the tunnel it opened does, so waiting would deadlock
 /// every dial. The returned stream awaits it on its first read.
+///
+/// The call's downlink queue is held within `byte_budget`.
 pub(crate) async fn open_grpc_call(
     connection: &H2Connection,
     call: GrpcCall,
+    byte_budget: &'static ByteBudget,
 ) -> Result<GrpcStream, TransportError> {
     // Not a concurrency gate despite the name — h2 parks a stream past the
     // peer's advertised MAX_CONCURRENT_STREAMS rather than refusing it — but
@@ -537,6 +541,7 @@ pub(crate) async fn open_grpc_call(
         call.mode,
         Arc::clone(&connection.driver),
         connection.calls.open(),
+        byte_budget,
     ))
 }
 
@@ -562,7 +567,7 @@ pub async fn open_grpc_h2_stream(
 ) -> Result<GrpcStream, TransportError> {
     let call = build_grpc_call(config)?;
     let connection = h2_handshake(io, config).await?;
-    open_grpc_call(&connection, call).await
+    open_grpc_call(&connection, call, ByteBudget::process()).await
     // `connection` is dropped here on purpose. Its `SendRequest` is the last
     // outside reference, and h2 closes a connection once nothing references it
     // and no stream is left, so letting it go is what makes this connection

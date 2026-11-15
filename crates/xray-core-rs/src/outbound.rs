@@ -5430,6 +5430,9 @@ pub(crate) fn validate_udp_noise(stream: &StreamSettings) -> Result<(), CoreErro
 }
 
 #[cfg(test)]
+mod size_tests;
+
+#[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::num::NonZeroUsize;

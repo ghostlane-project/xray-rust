@@ -15,17 +15,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{ready, Context, Poll, Waker};
 
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use futures_util::FutureExt;
 use h2::client::{self, ResponseFuture, SendRequest};
-use h2::{FlowControl, Ping, PingPong, Reason, RecvStream, SendStream};
+use h2::{Ping, PingPong, Reason, RecvStream, SendStream};
 use http::{HeaderMap, Method, Request, StatusCode};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant};
 
+use crate::memory_budget::ByteBudget;
 use crate::stream::h2_bdp::{BdpEstimator, BdpPings, BdpSampler};
+use crate::stream::h2_budget::SharedGate;
 use crate::{BoxedTransportStream, MemoryClass};
 
 use super::config::{
@@ -187,6 +189,8 @@ pub struct H2Client {
     driver: Arc<H2ConnectionDriver>,
     /// Where responses count the DATA they read, for an adaptive window.
     bdp: Option<Arc<BdpSampler>>,
+    /// The budget the responses' queues are held within.
+    byte_budget: &'static ByteBudget,
 }
 
 #[derive(Debug)]
@@ -195,6 +199,14 @@ struct H2ConnectionDriver {
 }
 
 impl H2Client {
+    /// Holds the queues of the responses this client opens from now on
+    /// within `budget` instead of the process's ([`ByteBudget::process`]),
+    /// which every client starts with.
+    pub fn with_byte_budget(mut self, budget: &'static ByteBudget) -> Self {
+        self.byte_budget = budget;
+        self
+    }
+
     /// Whether the connection driver is still running.
     ///
     /// A graceful GOAWAY completes the driver successfully but still makes
@@ -299,6 +311,7 @@ impl H2Client {
                 response_is_bodyless,
                 cancel_on_drop: true,
                 bdp: self.bdp.clone(),
+                byte_budget: self.byte_budget,
             },
         ))
     }
@@ -397,6 +410,7 @@ pub async fn connect_h2_with_window(
         send_request,
         driver,
         bdp: sampler,
+        byte_budget: ByteBudget::process(),
     })
 }
 
@@ -635,8 +649,13 @@ pub struct H2Upload {
 }
 
 impl H2Upload {
-    pub(crate) async fn send_owned(&mut self, mut body: Bytes) -> Result<(), H2Error> {
-        while !body.is_empty() {
+    /// Sends `body` and ends the request with it. Each DATA frame is as large
+    /// as h2 grants, at most [`MAX_UPLOAD_DATA_BYTES`], and is taken with
+    /// [`Buf::copy_to_bytes`]: a `Bytes` body is shared, never copied, and a
+    /// packet-up payload shares its chunks and copies only a frame that
+    /// crosses a chunk's end.
+    pub(crate) async fn send_owned<B: Buf>(&mut self, mut body: B) -> Result<(), H2Error> {
+        while body.has_remaining() {
             poll_fn(|cx| {
                 let mut state = match self.shared.lock() {
                     Ok(state) => state,
@@ -652,7 +671,7 @@ impl H2Upload {
                     }
                 }
 
-                let wanted = body.len().min(MAX_UPLOAD_DATA_BYTES);
+                let wanted = body.remaining().min(MAX_UPLOAD_DATA_BYTES);
                 state.stream.reserve_capacity(wanted);
                 let granted = match ready!(state.stream.poll_capacity(cx)) {
                     Some(Ok(granted)) => granted.min(wanted),
@@ -677,8 +696,8 @@ impl H2Upload {
                     return Poll::Ready(Err(H2Error::ZeroCapacityGrant));
                 }
 
-                let chunk = body.split_to(granted);
-                let end_of_stream = body.is_empty();
+                let chunk = body.copy_to_bytes(granted);
+                let end_of_stream = !body.has_remaining();
                 if let Err(source) = state.stream.send_data(chunk, end_of_stream) {
                     state.stream.reserve_capacity(0);
                     state.phase = SendPhase::Reset;
@@ -832,6 +851,7 @@ pub struct H2PendingResponse {
     response_is_bodyless: bool,
     cancel_on_drop: bool,
     bdp: Option<Arc<BdpSampler>>,
+    byte_budget: &'static ByteBudget,
 }
 
 impl H2PendingResponse {
@@ -871,6 +891,7 @@ impl H2PendingResponse {
                 None,
                 self.shared.clone(),
                 None,
+                self.byte_budget,
             ));
         }
 
@@ -879,6 +900,7 @@ impl H2PendingResponse {
             Some(recv),
             self.shared.clone(),
             self.bdp.take(),
+            self.byte_budget,
         ))
     }
 }
@@ -901,7 +923,6 @@ pub struct H2ResponseBody {
     headers: HeaderMap,
     /// Absent for a response that ended with its HEADERS.
     received: Option<Arc<Mutex<ReceivedBody>>>,
-    flow: Option<FlowControl>,
     drain: Option<JoinHandle<()>>,
     pending: Bytes,
     trailers: Option<HeaderMap>,
@@ -909,6 +930,9 @@ pub struct H2ResponseBody {
     failure: Option<String>,
     shared: Arc<SharedSend>,
     bdp: Option<Arc<BdpSampler>>,
+    /// The response's queue within the client's byte budget, and the
+    /// credit its reads free, with the stream's flow control.
+    window: Arc<SharedGate>,
 }
 
 /// DATA received for one response and not yet read, filled by
@@ -934,12 +958,16 @@ fn lock_received(received: &Mutex<ReceivedBody>) -> MutexGuard<'_, ReceivedBody>
 
 /// Moves response DATA out of h2 as it arrives.
 ///
-/// h2 keeps every received frame as a slice of its shared read buffer, so
-/// frames queued behind a slow or paused reader pin roughly twice their size:
-/// eight stalled streams held about 60 MiB for 32 MiB of window. A frame that
-/// has to wait is therefore copied to an exact-size buffer; a frame the reader
-/// takes at once is passed through. Flow control is unchanged: credit returns
-/// to the peer only as the reader consumes bytes.
+/// A frame the reader takes at once is passed through. A frame that has to
+/// wait is copied into a buffer of exactly its payload, so a queue behind a
+/// slow or paused reader holds its payload and nothing the frame was read
+/// with. Upstream h2 hands a frame out as a slice of the connection's shared
+/// read buffer: eight stalled streams held about 60 MiB for 32 MiB of window.
+/// A reader that reads each frame into an allocation of its own holds 9 bytes
+/// of frame header with each payload, in an allocation the allocator rounds
+/// up from an odd size; the copy costs one allocation and one copy of the
+/// payload per waiting frame. Flow control is unchanged: credit returns to the
+/// peer only as the reader consumes bytes.
 async fn drain_response(mut recv: RecvStream, received: Arc<Mutex<ReceivedBody>>) {
     let end = loop {
         let Some(first) = recv.data().await else {
@@ -995,12 +1023,12 @@ impl H2ResponseBody {
         recv: Option<RecvStream>,
         shared: Arc<SharedSend>,
         bdp: Option<Arc<BdpSampler>>,
+        byte_budget: &'static ByteBudget,
     ) -> Self {
         let Some(mut recv) = recv else {
             return Self {
                 headers,
                 received: None,
-                flow: None,
                 drain: None,
                 pending: Bytes::new(),
                 trailers: None,
@@ -1008,6 +1036,7 @@ impl H2ResponseBody {
                 failure: None,
                 shared,
                 bdp,
+                window: SharedGate::new(byte_budget, None),
             };
         };
         let flow = recv.flow_control().clone();
@@ -1016,7 +1045,6 @@ impl H2ResponseBody {
         Self {
             headers,
             received: Some(received),
-            flow: Some(flow),
             drain: Some(drain),
             pending: Bytes::new(),
             trailers: None,
@@ -1024,7 +1052,26 @@ impl H2ResponseBody {
             failure: None,
             shared,
             bdp,
+            window: SharedGate::new(byte_budget, Some(flow)),
         }
+    }
+
+    /// Settles the response's queue with the budget, `consumed` bytes read
+    /// since the last time, and hands back the credit it grants.
+    fn hand_back(&mut self, consumed: usize) -> Result<(), io::Error> {
+        if let Err(source) = self.window.hand_back(consumed) {
+            return Err(self.fail(format!("HTTP/2 response flow control failed: {source}")));
+        }
+        Ok(())
+    }
+
+    /// Ends the response's part in the budget. Credit its reader took that
+    /// the budget held back goes to the connection now, as it would have
+    /// without the budget, rather than when h2 lets the stream go: an upload
+    /// half still open keeps the stream, and with it that credit, until it
+    /// ends too. Then the queue's bytes of the budget come back.
+    fn close_window(&mut self) {
+        self.window.close();
     }
 
     /// Response headers excluding the HTTP/2 pseudo-headers.
@@ -1049,6 +1096,7 @@ impl Drop for H2ResponseBody {
         if !self.eof {
             self.shared.cancel();
         }
+        self.close_window();
         // Dropping the receive stream with the flow-control handle returns
         // any unread credit to the connection.
         if let Some(drain) = self.drain.take() {
@@ -1104,7 +1152,7 @@ impl AsyncRead for H2ResponseBody {
                     drop(guard);
                     this.trailers = trailers;
                     this.received = None;
-                    this.flow = None;
+                    this.close_window();
                     this.eof = true;
                     return Poll::Ready(Ok(()));
                 }
@@ -1114,20 +1162,22 @@ impl AsyncRead for H2ResponseBody {
                 }
                 None => {
                     guard.reader = Some(cx.waker().clone());
+                    drop(guard);
+                    // Nothing is queued: credit held back goes out now.
+                    if let Err(error) = this.hand_back(0) {
+                        return Poll::Ready(Err(error));
+                    }
                     return Poll::Pending;
                 }
             }
         }
 
         if copied > 0 {
-            let release = match this.flow.as_mut() {
-                Some(flow) => flow.release_capacity(copied),
-                None => Ok(()),
-            };
-            if let Err(source) = release {
-                return Poll::Ready(Err(
-                    this.fail(format!("HTTP/2 response flow control failed: {source}"))
-                ));
+            // Credit goes back as the reader takes bytes, at once unless the
+            // queue holds more than the floor and the stream's gate cannot
+            // hold it within the byte budget.
+            if let Err(error) = this.hand_back(copied) {
+                return Poll::Ready(Err(error));
             }
             if let Some(bdp) = &this.bdp {
                 bdp.record_data(copied);

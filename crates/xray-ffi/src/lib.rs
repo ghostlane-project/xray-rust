@@ -558,12 +558,19 @@ impl FfiRuntime {
         }
         #[cfg(not(feature = "shared-runtime"))]
         {
-            tokio::runtime::Builder::new_multi_thread()
+            let plan = runtime_plan();
+            let mut builder = tokio::runtime::Builder::new_multi_thread();
+            builder
                 .enable_all()
                 .thread_name("xray-ffi")
-                .worker_threads(runtime_worker_threads())
-                .build()
-                .map(Self::Own)
+                .worker_threads(plan.workers);
+            if let Some(max) = plan.max_blocking {
+                builder.max_blocking_threads(max);
+            }
+            if let Some(keep_alive) = plan.keep_alive {
+                builder.thread_keep_alive(keep_alive);
+            }
+            builder.build().map(Self::Own)
         }
     }
 
@@ -4495,33 +4502,96 @@ fn c_string_lossy_without_nuls(message: &str) -> CString {
     CString::new(filtered).unwrap_or_else(|_| CString::default())
 }
 
+/// What the tokio runtime of a core is built with.
+#[derive(Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "shared-runtime", allow(dead_code))]
-fn runtime_worker_threads() -> usize {
+struct RuntimePlan {
+    workers: usize,
+    /// `None` keeps tokio's own bound (512).
+    max_blocking: Option<usize>,
+    keep_alive: Option<Duration>,
+}
+
+/// The runtime a core gets on this platform, from `XRAY_FFI_WORKER_THREADS`
+/// and `XRAY_FFI_MAX_BLOCKING_THREADS` when set. They are read from the
+/// process that calls `xray_core_new`: on iOS the packet tunnel extension, so
+/// they must be `setenv`'d there, not in the containing app. A value that is
+/// not a number from 1 to 64 is ignored. Without them every platform but iOS
+/// keeps its old plan; the overrides themselves apply on every platform.
+/// `cfg!(target_os = "ios")` is also true for Mac Catalyst. With the
+/// `shared-runtime` feature the core runs on `ghostlane-runtime`'s runtime
+/// instead, and this plan is not used.
+#[cfg_attr(feature = "shared-runtime", allow(dead_code))]
+fn runtime_plan() -> RuntimePlan {
     let available = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(2);
-    runtime_worker_threads_for_available_parallelism(available)
+    runtime_plan_for(
+        cfg!(target_os = "ios"),
+        available,
+        std::env::var("XRAY_FFI_WORKER_THREADS").ok().as_deref(),
+        std::env::var("XRAY_FFI_MAX_BLOCKING_THREADS")
+            .ok()
+            .as_deref(),
+    )
 }
 
-fn runtime_worker_threads_for_available_parallelism(available: usize) -> usize {
-    // Modern phones expose 6 cores; capping below that leaves cores idle when
-    // many parallel flows (e.g. a speedtest) need TLS and relay work at once.
-    available.clamp(2, 6)
+#[cfg_attr(feature = "shared-runtime", allow(dead_code))]
+fn runtime_plan_for(
+    ios: bool,
+    available: usize,
+    workers_override: Option<&str>,
+    blocking_override: Option<&str>,
+) -> RuntimePlan {
+    // 1 to 64: a count outside it is a typo, not a request.
+    let count = |value: Option<&str>| {
+        value
+            .and_then(|value| value.trim().parse::<usize>().ok())
+            .filter(|count| (1..=64).contains(count))
+    };
+    if ios {
+        // iOS (the packet tunnel extension is killed at about 50 MB). One
+        // worker: each costs about 32-64 KiB of touched stack + 128 KiB of
+        // relay pool spare + 6 KB of tokio state, and in the lab (p2/09,
+        // section 7) one worker cut XHTTP's CPU per GB by about 30 % on Linux
+        // and macOS with downloads as fast or faster, WebTunnel about the
+        // same. Earlier (run 43553887055) one worker carried Reality at
+        // 4.5-10.9 Gbit/s and Hysteria2 at 0.6-1.2 Gbit/s, far above a
+        // phone's link (300 Mbit/s). `XRAY_FFI_WORKER_THREADS` raises it.
+        // The blocking pool (getaddrinfo for a domain dialed without the
+        // core's DNS) is capped at 4 threads, each with its own touched
+        // stack, and a thread idles 2 s, not tokio's 10 s. A cap queues,
+        // never refuses.
+        RuntimePlan {
+            workers: count(workers_override).unwrap_or(1),
+            max_blocking: Some(count(blocking_override).unwrap_or(4)),
+            keep_alive: Some(Duration::from_secs(2)),
+        }
+    } else {
+        // Every other platform keeps what it had: a phone-sized core count,
+        // clamped, and tokio's blocking pool.
+        RuntimePlan {
+            workers: count(workers_override).unwrap_or_else(|| available.clamp(2, 6)),
+            max_blocking: count(blocking_override),
+            keep_alive: None,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::ffi::{CStr, CString};
     use std::ptr;
+    use std::time::Duration;
 
     use libc::c_char;
 
     use super::{
-        ffi_panic_message, ffi_status, free_error,
-        runtime_worker_threads_for_available_parallelism, xray_core_free,
+        ffi_panic_message, ffi_status, free_error, runtime_plan_for, xray_core_free,
         xray_core_load_config_json, xray_core_new, xray_core_replace_routing_policy_json,
         xray_core_routing_policy_snapshot_json, xray_core_set_dns_bootstrap_mode, DnsBootstrapMode,
-        OutStrArgs, OutStrBuf, XrayCoreHandle, XrayDnsBootstrapMode, XrayError, XrayStatus,
+        OutStrArgs, OutStrBuf, RuntimePlan, XrayCoreHandle, XrayDnsBootstrapMode, XrayError,
+        XrayStatus,
     };
 
     #[test]
@@ -4732,13 +4802,45 @@ mod tests {
     }
 
     #[test]
-    fn runtime_worker_threads_use_available_parallelism_with_mobile_bounds() {
-        assert_eq!(runtime_worker_threads_for_available_parallelism(1), 2);
-        assert_eq!(runtime_worker_threads_for_available_parallelism(2), 2);
-        assert_eq!(runtime_worker_threads_for_available_parallelism(3), 3);
-        assert_eq!(runtime_worker_threads_for_available_parallelism(4), 4);
-        assert_eq!(runtime_worker_threads_for_available_parallelism(6), 6);
-        assert_eq!(runtime_worker_threads_for_available_parallelism(8), 6);
+    fn runtime_plan_off_ios_keeps_the_parallelism_bounds_and_tokios_blocking_pool() {
+        for (available, workers) in [(1, 2), (2, 2), (3, 3), (4, 4), (6, 6), (8, 6)] {
+            let plan = runtime_plan_for(false, available, None, None);
+            assert_eq!(plan.workers, workers, "{available} cores");
+            assert_eq!(plan.max_blocking, None);
+            assert_eq!(plan.keep_alive, None);
+        }
+    }
+
+    /// The packet tunnel extension is killed at about 50 MB: every worker is
+    /// 32-64 KiB of touched stack, 128 KiB of relay pool spare and 6 KB of
+    /// tokio state, and the blocking pool is bounded by tokio at 512 threads.
+    /// One worker carried Hysteria2 at 0.6-1.2 Gbit/s in the lab (run
+    /// 43553887055), above a phone's link; the override gives it more.
+    #[test]
+    fn runtime_plan_on_ios_is_one_worker_and_four_blocking_threads() {
+        for available in [1, 2, 4, 6, 8] {
+            assert_eq!(
+                runtime_plan_for(true, available, None, None),
+                RuntimePlan {
+                    workers: 1,
+                    max_blocking: Some(4),
+                    keep_alive: Some(Duration::from_secs(2)),
+                },
+                "{available} cores"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_plan_overrides_are_honoured_and_bad_ones_ignored() {
+        let plan = runtime_plan_for(true, 6, Some("3"), Some("8"));
+        assert_eq!((plan.workers, plan.max_blocking), (3, Some(8)));
+        let plan = runtime_plan_for(false, 6, Some("1"), Some("2"));
+        assert_eq!((plan.workers, plan.max_blocking), (1, Some(2)));
+        for bad in ["0", "65", "-1", "two", ""] {
+            let plan = runtime_plan_for(true, 6, Some(bad), Some(bad));
+            assert_eq!((plan.workers, plan.max_blocking), (1, Some(4)), "{bad:?}");
+        }
     }
 
     #[test]

@@ -62,15 +62,32 @@ pub fn compose_stream_request<R: RngCore + ?Sized>(
     body: XhttpStreamBody,
     rng: &mut R,
 ) -> Result<XhttpRequest, XhttpRequestError> {
+    compose_stream_request_from(
+        &XhttpRequestBase::new(config, endpoint),
+        config,
+        session_id,
+        body,
+        rng,
+    )
+}
+
+/// [`compose_stream_request`] from a base built once for `config` and its
+/// endpoint.
+pub(crate) fn compose_stream_request_from<R: RngCore + ?Sized>(
+    base: &XhttpRequestBase,
+    config: &XhttpConfig,
+    session_id: &str,
+    body: XhttpStreamBody,
+    rng: &mut R,
+) -> Result<XhttpRequest, XhttpRequestError> {
     validate_query(config)?;
     let method = match body {
         XhttpStreamBody::None => "GET".to_owned(),
         XhttpStreamBody::Streaming => validated_uplink_method(config)?.to_owned(),
     };
-    let mut parts = request_parts(config);
+    let mut parts = base.parts();
 
-    let padding_base_url = absolute_url(endpoint, &parts);
-    apply_padding(config, &padding_base_url, &mut parts, rng)?;
+    apply_padding(config, &base.padding_base_url, &mut parts, rng)?;
     apply_metadata(&config.session, session_id, &mut parts);
 
     if body == XhttpStreamBody::Streaming && !config.no_grpc_header {
@@ -96,15 +113,36 @@ pub fn compose_packet_request<R: RngCore + ?Sized>(
     payload: Vec<u8>,
     rng: &mut R,
 ) -> Result<XhttpRequest, XhttpRequestError> {
+    compose_packet_request_from(
+        &XhttpRequestBase::new(config, endpoint),
+        config,
+        session_id,
+        sequence,
+        payload,
+        rng,
+    )
+}
+
+/// [`compose_packet_request`] from a base built once for `config` and its
+/// endpoint.
+pub(crate) fn compose_packet_request_from<R: RngCore + ?Sized>(
+    base: &XhttpRequestBase,
+    config: &XhttpConfig,
+    session_id: &str,
+    sequence: &str,
+    payload: Vec<u8>,
+    rng: &mut R,
+) -> Result<XhttpRequest, XhttpRequestError> {
     validate_query(config)?;
     let method = validated_uplink_method(config)?.to_owned();
-    let mut parts = request_parts(config);
+    let mut parts = base.parts();
     let body = place_packet_payload(config, payload, &mut parts.headers, rng)?;
 
     // Xray snapshots URL.String before padding and before either metadata
     // value. In particular, a Referer never exposes the session identifier.
-    let padding_base_url = absolute_url(endpoint, &parts);
-    apply_padding(config, &padding_base_url, &mut parts, rng)?;
+    // The payload's placement touches only headers, so the snapshot is the
+    // base's.
+    apply_padding(config, &base.padding_base_url, &mut parts, rng)?;
     apply_metadata(&config.session, session_id, &mut parts);
     apply_metadata(&config.sequence, sequence, &mut parts);
 
@@ -132,6 +170,7 @@ fn validate_query(config: &XhttpConfig) -> Result<(), XhttpRequestError> {
     }
 }
 
+#[derive(Debug)]
 struct RequestParts {
     path: String,
     raw_query: String,
@@ -147,6 +186,56 @@ impl RequestParts {
             target.push_str(&self.raw_query);
         }
         target
+    }
+}
+
+/// Fields one request adds to its base's: padding, session, sequence,
+/// `Content-Type` and `Accept-Encoding`, 5. Payload chunks placed in headers
+/// may add more, and the vector grows for them as it did before.
+const REQUEST_HEADER_HEADROOM: usize = 5;
+
+/// Bytes one request may add to its base's path: a `/` and the session ID
+/// (36, a UUID), a `/` and the sequence number (at most 20 digits).
+const REQUEST_PATH_HEADROOM: usize = 1 + 36 + 1 + 20;
+
+/// What every request of one XHTTP transport starts from: the configured
+/// headers with the browser masquerade applied, the path, query and fragment,
+/// and the URL padding is computed against. Composing it is a pure function
+/// of the configuration, the endpoint and the browser versions, which are
+/// drawn once per process, so a transport builds it once.
+#[derive(Debug)]
+pub(crate) struct XhttpRequestBase {
+    parts: RequestParts,
+    padding_base_url: String,
+}
+
+impl XhttpRequestBase {
+    pub(crate) fn new(config: &XhttpConfig, endpoint: &XhttpEndpoint) -> Self {
+        let parts = request_parts(config);
+        let padding_base_url = absolute_url(endpoint, &parts);
+        Self {
+            parts,
+            padding_base_url,
+        }
+    }
+
+    /// The base's headers, which every request composed from it starts with.
+    pub(crate) fn headers(&self) -> &HeaderMap {
+        &self.parts.headers
+    }
+
+    fn parts(&self) -> RequestParts {
+        let mut path = String::with_capacity(self.parts.path.len() + REQUEST_PATH_HEADROOM);
+        path.push_str(&self.parts.path);
+        RequestParts {
+            path,
+            raw_query: self.parts.raw_query.clone(),
+            fragment: self.parts.fragment.clone(),
+            headers: self
+                .parts
+                .headers
+                .clone_with_headroom(REQUEST_HEADER_HEADROOM),
+        }
     }
 }
 

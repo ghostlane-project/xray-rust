@@ -35,6 +35,9 @@ enum Mode {
     Hold,
     /// Answers every TCP request and echoes the stream.
     Echo,
+    /// Answers every TCP request, then, once the client sends a byte, writes
+    /// until the client stops the stream.
+    Stream,
 }
 
 struct Mock {
@@ -143,14 +146,14 @@ impl Mock {
                         .unwrap();
                     send.finish().unwrap();
                 }
-            } else if matches!(mode, Mode::Hold | Mode::Echo) {
+            } else if matches!(mode, Mode::Hold | Mode::Echo | Mode::Stream) {
                 let mut streams = tokio::task::JoinSet::new();
                 while let Ok((send, recv)) = connection.accept_bi().await {
-                    if matches!(mode, Mode::Hold) {
-                        streams.spawn(hold(send, recv, held_tx.clone()));
-                    } else {
-                        streams.spawn(echo(send, recv));
-                    }
+                    match mode {
+                        Mode::Hold => streams.spawn(hold(send, recv, held_tx.clone())),
+                        Mode::Stream => streams.spawn(stream_out(send, recv)),
+                        _ => streams.spawn(echo(send, recv)),
+                    };
                 }
             }
             connection.closed().await;
@@ -306,6 +309,15 @@ async fn echo(mut send: quinn::SendStream, mut recv: quinn::RecvStream) {
     answer_tcp(&mut send, &mut recv).await;
     tokio::io::copy(&mut recv, &mut send).await.unwrap();
     send.finish().unwrap();
+}
+
+/// Writes for as long as the client reads: unlike [`hold`], a write that
+/// waits for credit does not end the stream.
+async fn stream_out(mut send: quinn::SendStream, mut recv: quinn::RecvStream) {
+    answer_tcp(&mut send, &mut recv).await;
+    recv.read_exact(&mut [0; 1]).await.unwrap();
+    let chunk = [0; 64 * 1024];
+    while send.write_all(&chunk).await.is_ok() {}
 }
 
 fn target() -> Target {
@@ -684,4 +696,123 @@ async fn rebind_protection_failure_closes_live_connection() {
     assert!(client.local_addr().is_err());
     assert!(!client.rebind());
     assert_eq!(protector.0.load(Ordering::SeqCst), 2);
+}
+
+/// A UDP relay that holds every datagram `one_way` in each direction: the
+/// client sends to its address, and it speaks to `server` from one socket.
+async fn delay_relay(
+    server: std::net::SocketAddr,
+    one_way: Duration,
+) -> (std::net::SocketAddr, support::Task) {
+    use tokio::net::UdpSocket;
+    use tokio::time::{sleep_until, Instant};
+
+    let front = Arc::new(UdpSocket::bind(support::localhost()).await.unwrap());
+    let back = Arc::new(UdpSocket::bind(support::localhost()).await.unwrap());
+    back.connect(server).await.unwrap();
+    let address = front.local_addr().unwrap();
+    let task = tokio::spawn(async move {
+        let (to_server, mut for_server) = mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+        let (to_client, mut for_client) = mpsc::unbounded_channel::<(Instant, Vec<u8>)>();
+        let client = Arc::new(std::sync::Mutex::new(None));
+        let mut tasks = tokio::task::JoinSet::new();
+        let (socket, peer) = (Arc::clone(&front), Arc::clone(&client));
+        tasks.spawn(async move {
+            let mut buffer = vec![0; 65_536];
+            while let Ok((read, from)) = socket.recv_from(&mut buffer).await {
+                *peer.lock().unwrap() = Some(from);
+                let _ = to_server.send((Instant::now() + one_way, buffer[..read].to_vec()));
+            }
+        });
+        let socket = Arc::clone(&back);
+        tasks.spawn(async move {
+            let mut buffer = vec![0; 65_536];
+            while let Ok(read) = socket.recv(&mut buffer).await {
+                let _ = to_client.send((Instant::now() + one_way, buffer[..read].to_vec()));
+            }
+        });
+        let socket = Arc::clone(&back);
+        tasks.spawn(async move {
+            while let Some((due, datagram)) = for_server.recv().await {
+                sleep_until(due).await;
+                let _ = socket.send(&datagram).await;
+            }
+        });
+        tasks.spawn(async move {
+            while let Some((due, datagram)) = for_client.recv().await {
+                sleep_until(due).await;
+                let peer = *client.lock().unwrap();
+                if let Some(peer) = peer {
+                    let _ = front.send_to(&datagram, peer).await;
+                }
+            }
+        });
+        while tasks.join_next().await.is_some() {}
+    });
+    (address, support::Task(task))
+}
+
+/// Mbit/s of `flows` downloads of `each` bytes at once, through a 120 ms
+/// round trip with a phone's windows; `None` if they did not all finish
+/// within 20 s.
+async fn download_at_120ms(flows: usize, each: usize) -> Option<f64> {
+    let (server, tls) = Mock::start(Mode::Stream);
+    let mut config = server.config_on(MemoryClass::Constrained);
+    let (relay, _relay) = delay_relay(config.remote_addr, Duration::from_millis(60)).await;
+    config.remote_addr = relay;
+    let client = HysteriaClient::connect(config, &tls).await.unwrap();
+    // Every stream is open before any asks for data: a stream that streams
+    // while later ones open would leave their answers no connection credit.
+    let mut streams = Vec::new();
+    for _ in 0..flows {
+        streams.push(client.open_tcp(&target()).await.unwrap());
+    }
+    let started = std::time::Instant::now();
+    for stream in &mut streams {
+        stream.write_all(b"g").await.unwrap();
+    }
+    // A stream goes as soon as it has its bytes: the mock writes for as long
+    // as a stream is open, and an open stream nobody reads would hold
+    // connection credit the others need.
+    let reads = streams.into_iter().map(|mut stream| async move {
+        let mut bytes = vec![0; each];
+        stream.read_exact(&mut bytes).await.is_ok()
+    });
+    let all = futures_util::future::join_all(reads);
+    let stall = Duration::from_secs(20);
+    let finished = timeout(stall, all)
+        .await
+        .is_ok_and(|reads| reads.into_iter().all(|read| read));
+    let elapsed = started.elapsed();
+    client.close();
+    let mbit = (flows * each) as f64 * 8.0 / elapsed.as_secs_f64() / 1e6;
+    finished.then_some(mbit)
+}
+
+/// Hysteria2 downloads at a simulated 120 ms round trip with a phone's
+/// windows: one stream (held by its stream window), four (held by the
+/// connection window) and 32: numbers for the tables, run by hand with
+/// `--ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "a benchmark: prints Mbit/s at a simulated 120 ms round trip"]
+async fn hysteria_downloads_at_a_120ms_round_trip() {
+    const MIB: usize = 1024 * 1024;
+    for (flows, each) in [(1, 16 * MIB), (4, 4 * MIB), (32, MIB)] {
+        let mut runs = Vec::new();
+        for _ in 0..3 {
+            runs.push(download_at_120ms(flows, each).await);
+        }
+        let best = runs.iter().flatten().copied().fold(0.0, f64::max);
+        let mut shown = Vec::new();
+        for run in &runs {
+            shown.push(match run {
+                Some(mbit) => format!("{mbit:.0}"),
+                None => "stalled".to_owned(),
+            });
+        }
+        eprintln!(
+            "HYSTERIA-RTT120 flows {flows}: best {best:.0} Mbit/s of [{}]",
+            shown.join(", ")
+        );
+    }
 }

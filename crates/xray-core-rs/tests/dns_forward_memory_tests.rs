@@ -29,8 +29,16 @@ const PEAK_BOUND_ON_THE_LINE: usize = 1_280 << 10;
 /// the boxed exchange, with the line server's end of the connection, which
 /// runs in this process. Measured about 12 KB.
 const PER_FORWARD_BOUND: usize = 24 << 10;
-/// What may stay after a round's flows have closed. Measured under 2 KB.
-const LEFT_BOUND: isize = 64 << 10;
+/// The runtime's workers in the test below.
+const WORKERS: isize = 2;
+/// The SOCKS UDP receive scratch: 64 KiB, allocated by the first read on each
+/// worker and never freed (`socks/udp_scratch.rs`). The warm-up round may have
+/// run its association on one worker only, so another worker's scratch can
+/// first appear in a measured round and stay.
+const SCRATCH: isize = WORKERS * 65_536;
+/// What may stay after a round's flows have closed: 64 KiB, measured under
+/// 2 KB, plus the scratch.
+const LEFT_BOUND: isize = (64 << 10) + SCRATCH;
 const WAIT: Duration = Duration::from_secs(3);
 
 struct CountingAllocator;

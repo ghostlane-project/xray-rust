@@ -104,6 +104,98 @@ long-term supported release series.
   not be a `dns`, `blackhole` or `loopback` one. Xray-core has no such action
   and refuses a config that uses it. Configs without a forward rule behave as
   before.
+- iOS (Mac Catalyst too): `xray_core_new` builds the core's tokio runtime
+  with one worker, at most four blocking threads and a 2 s keep-alive for an
+  idle one, instead of `available_parallelism()` clamped to 2 to 6 workers
+  and tokio's 512 blocking threads. The packet tunnel extension is killed at
+  about 50 MB and each worker costs 32 to 64 KiB of stack, a 128 KiB relay
+  pool spare and 6 KB of runtime state, while in the lab one worker carried
+  Reality and Hysteria2 far above a phone's link. Every other platform keeps
+  its plan. On every platform `XRAY_FFI_WORKER_THREADS` and
+  `XRAY_FFI_MAX_BLOCKING_THREADS` (a number from 1 to 64, anything else is
+  ignored) set the workers and the blocking threads' cap. They are read in
+  the process that calls `xray_core_new`: on iOS the packet tunnel
+  extension, so a host sets them there, not in the containing app.
+- The SOCKS inbound's long-lived futures are smaller: a UDP flow's task
+  holds 2,288 B instead of 36,192 B and a SOCKS5 connection 5,776 B instead
+  of 9,264 B (x86_64, release); a SOCKS4 or HTTP connection now holds about
+  11.5 or 13 KB (9.3 KB before). A UDP association and a freedom UDP flow
+  read their datagrams through one 64 KiB scratch buffer per worker thread
+  instead of keeping a 64 KiB buffer each; a flow under `finalmask.udp`
+  keeps its own.
+
+- One byte budget for the payload a process holds in flight
+  (`xray_transport::memory_budget`): `B = rate × RTT`, 3,000,000 bytes on a
+  constrained host (200 Mbit/s over 120 ms) and 15,000,000 on a standard
+  one, with a 4 KiB floor per flow outside it. Relay reads and the bytes a
+  relay wrote into a TLS session and has not flushed take bytes of it
+  before they hold payload and give them back once written and flushed;
+  when it is spent a relay reads less, down to its floor, or flushes
+  first, and never allocates past it. Nothing on the wire changes.
+  `set_byte_budget(Some(ByteBudgetSettings { capacity, floor }))` changes
+  it at run time and `None` returns to the formula; `byte_budget()`,
+  `byte_budget_usage()` and `reset_byte_budget_peak()` read it.
+- A relay direction holds no buffer between reads: each read borrows one
+  sized for it (1 KiB to 1 MiB) from the process's pool and gives it back
+  once written, and a read that brings half of its size or less sets the
+  next size from what it brought. A constrained host's reads stop at
+  32 KiB when the config sets no `bufferSize` (128 KiB before; a standard
+  host keeps 128 KiB): 200 Mbit/s × a 1 ms scheduler slice. The pool keeps
+  at most four 128 KiB buffers' worth on a constrained host (sixteen
+  before), sixty-four on a standard one. `xray_core_rs::release_relay_buffers()` frees what the pool
+  and the threads keep, for a host under memory pressure.
+- Vision gives back its frame buffers once a frame is written or read,
+  rather than keeping up to 64 KiB and its padding for the flow's life.
+- Vendored h2: the reader takes each frame into an allocation of its own
+  size, `9 + length`, which grows while the frame arrives from at most
+  16,393 B and so never holds more than twice what has arrived, and it holds
+  no heap between frames. Before, every frame was split off one buffer that
+  stayed at the largest frame the connection had read, and a frame waiting
+  in a stream's queue kept that buffer alive. A stream's frame queue that has
+  drained gives its slots back once they pass 4 KiB. Frame size errors, EOF
+  inside a frame and read errors are reported as before; the cost is a
+  second read per frame. XHTTP builds the static part of its request headers
+  once per transport instead of for every request (25 allocations a
+  packet-up POST instead of 123), and sends a packet-up POST over HTTP/2 or
+  HTTP/3 from the chunks its bytes were written into, not from a joined copy
+  held until its last DATA frame. The bytes on the wire are unchanged.
+- The byte budget also counts what an HTTP/2 response has received and its
+  reader has not taken: XHTTP's HTTP/2 responses, the HTTP outbound's
+  HTTP/2 CONNECT tunnels, DNS over HTTPS on HTTP/2, and gRPC calls'
+  downlinks. Each holds bytes of it for that queue beyond its floor (a
+  public `memory_budget::ReceiveGate`), all of them together at most
+  `ByteBudget::window_cap()`, `B` less `B / RELAY_RESERVE_DIVISOR` (an
+  eighth, the relays' alone), and hands each read's credit back at that read
+  unless its queue is above the floor and does not fit what it may hold, or
+  `B` was lowered below what is held. Then the credit waits until the queue
+  fits: until the windows' part, less what the other streams hold, covers
+  it and `B` can hold it, at the latest until the stream's reads take the
+  queue down to the floor. One task per budget settles every stream that
+  holds credit back whenever bytes come back to the budget while it has
+  room, whether or not its reader reads again; no gate and no reader waits
+  in the budget's queue. Until the queue fits, credit a paused reader took
+  still counts in its connection's window (h2 releases a stream's and the
+  connection's together), so the connection's other streams can wait on it,
+  up to that stream's window. Room in `B` is not enough: while other paused
+  streams' queues hold the windows' part, a paused stream's credit waits on
+  their readers, and a queue larger than the whole part waits on its own
+  reader. A stream read and left open holds nothing, and a body dropped
+  mid-download hands back the credit its reader took. The
+  queue is counted in payload bytes, as h2 counts it; a gRPC message the
+  call's decoder holds until it is whole (up to 4 MiB) is not counted.
+  `H2Client::with_byte_budget` and `GrpcTransport::with_byte_budget` hold a
+  client's streams within a budget other than the process's; XHTTP's
+  transport and the HTTP outbound use the process's.
+  `ByteBudgetUsage` gains `window_bytes`. SETTINGS, the first connection
+  WINDOW_UPDATE and h2's WINDOW_UPDATE threshold are unchanged: only when
+  later credit goes out moves, and only while the budget presses.
+  Hysteria2's QUIC windows are not counted; each connection keeps the
+  windows it announced.
+- Vendored quinn-proto: growing a connection's receive window pays the
+  credit an earlier shrink left with the peer before it grants more, so a
+  shrink and a growth never leave the peer more credit than the window.
+  Nothing in xray-rust shrinks that window today (XHTTP H3's tuning only
+  grows it), so no behaviour changes.
 
 ## 0.10.0 - 2026-11-13
 
