@@ -13,8 +13,8 @@
 //! the pages a burst leaves stay in the footprint jetsam counts.
 //!
 //! On Android the system allocator is bionic's (Scudo since Android 11),
-//! which keeps a burst's freed pages too until it is asked (no release
-//! interval is set for the process): the relief is `mallopt(M_PURGE_ALL, 0)`
+//! which keeps many of a burst's freed pages too until it is asked: the
+//! relief is `mallopt(M_PURGE_ALL, 0)`
 //! (API 34: Scudo drains its thread caches first), else `mallopt(M_PURGE,
 //! 0)` (API 28). `mallopt` is in libc from API 26 and the app's minSdk is 23,
 //! so it is looked up at run time; before API 28 nothing is purged. Ghostlane
@@ -280,14 +280,14 @@ mod tests {
 
     /// On Android a trim asks Scudo for its free pages back
     /// (`mallopt(M_PURGE_ALL)`, else `M_PURGE`) and reports the fall of
-    /// the anonymous resident bytes. Scudo releases a size class's free
-    /// pages on a free by itself only once its release interval has passed
-    /// since the class's last release, so what a burst frees right after a
-    /// release stays resident until a later free or a purge. Here the same
-    /// 8 MiB of 2 KiB blocks is freed twice: the first time Scudo releases
-    /// it (run 43682904814, a single round: 9.0 MB fell to 0.77 MB at the
-    /// free and the trim had 156 KB left to give), the second time it keeps
-    /// it, for the trim. Run on the emulator by Ghostlane's
+    /// the anonymous resident bytes. What Scudo gives back by itself at a
+    /// free depends on the block size and on when it last released: 8 MiB
+    /// of 16 KiB buffers freed once fell from 9.0 to 0.77 MB at the free
+    /// (run 43682904814), while 8 MiB of 2 KiB blocks stayed resident after
+    /// each of two frees, 9.4 MB, and the trim gave back 8.7 MB (run
+    /// 43684964549). The test frees the same 2 KiB blocks twice, so that its
+    /// second free comes right after any release the first one made, and
+    /// asks the trim for at least 1 MiB. Run on the emulator by Ghostlane's
     /// lab/olc-ffi-android.
     #[cfg(target_os = "android")]
     #[test]
