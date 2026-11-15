@@ -383,7 +383,7 @@ impl ByteBudget {
     /// holds none back. Starts the settler, one task per budget, on the
     /// runtime of the caller; without a runtime the gate's own reader is
     /// left to settle it.
-    pub(crate) fn list_withheld(&'static self, gate: Weak<dyn WithheldCredit>) {
+    pub fn list_withheld(&'static self, gate: Weak<dyn WithheldCredit>) {
         let start = {
             let mut withheld = self.lock_withheld();
             withheld.gates.push(gate);
@@ -523,8 +523,9 @@ impl Waiter {
 /// A receive gate that holds back credit its reader took: settled again from
 /// outside its reader as bytes come back, so the credit goes back once the
 /// gate can hold its queue whether or not the reader reads again
-/// ([`ByteBudget::list_withheld`]).
-pub(crate) trait WithheldCredit: Send + Sync {
+/// ([`ByteBudget::list_withheld`]). Public for xray-transport's HTTP/2
+/// gates (`stream/h2_budget.rs`), which list themselves.
+pub trait WithheldCredit: Send + Sync {
     /// Settles the gate against what its stream holds now, and hands back
     /// the credit that grants.
     fn settle(&self);

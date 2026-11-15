@@ -21,6 +21,7 @@ base64.workspace = true
 blake2.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
+ghostlane-runtime = { path = "../ghostlane-runtime" }
 ghash.workspace = true
 h2.workspace = true
 h3.workspace = true
