@@ -693,7 +693,8 @@ impl TransportDialer {
                     // encryption, and Direct strips only that layer.
                     TlsAlpnPolicy::HttpClient
                     | TlsAlpnPolicy::Http1Upgrade
-                    | TlsAlpnPolicy::Http2 => {
+                    | TlsAlpnPolicy::Http2
+                    | TlsAlpnPolicy::Browser => {
                         self.tls.connect_prepared_stream(stream, prepared).await
                     }
                 }

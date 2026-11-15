@@ -12,6 +12,12 @@
 //! picked. For any list but `http/1.1` alone the shaped hello carries the
 //! profile's own ALPN extension (Chrome's: `h2`, `http/1.1`); the list here
 //! is also what the handshake accepts back.
+//!
+//! The profile's ALPS (application_settings) is offered only for a protocol
+//! of the hello's ALPN list, as Chrome offers it: for `h2` on a `fetch`'s
+//! connection, none on a WebSocket's. A server that accepts it gets the
+//! client's own, empty as Chrome's, before the client's Finished
+//! (`tests/alps_fetch.rs`).
 
 use std::io;
 use std::sync::Arc;
@@ -93,8 +99,8 @@ fn xray_utls_name(fingerprint: &str) -> io::Result<String> {
 mod tests {
     use super::*;
 
-    /// The ALPN extension's protocols in a ClientHello record.
-    fn alpn_of(hello: &[u8]) -> Vec<Vec<u8>> {
+    /// The body of a ClientHello record's extension `kind`.
+    fn extension(hello: &[u8], kind: u16) -> Option<&[u8]> {
         // record (5) + handshake header (4) + version (2) + random (32)
         let mut at = 5 + 4 + 2 + 32;
         at += 1 + usize::from(hello[at]); // session id
@@ -103,41 +109,64 @@ mod tests {
         let end = at + 2 + usize::from(u16::from_be_bytes([hello[at], hello[at + 1]]));
         at += 2;
         while at + 4 <= end {
-            let kind = u16::from_be_bytes([hello[at], hello[at + 1]]);
+            let this = u16::from_be_bytes([hello[at], hello[at + 1]]);
             let len = usize::from(u16::from_be_bytes([hello[at + 2], hello[at + 3]]));
-            let body = &hello[at + 4..at + 4 + len];
-            if kind == 0x0010 {
-                let mut out = Vec::new();
-                let mut i = 2;
-                while i < body.len() {
-                    let n = usize::from(body[i]);
-                    out.push(body[i + 1..i + 1 + n].to_vec());
-                    i += 1 + n;
-                }
-                return out;
+            if this == kind {
+                return Some(&hello[at + 4..at + 4 + len]);
             }
             at += 4 + len;
         }
-        Vec::new()
+        None
     }
 
-    /// Chrome's hellos: a `fetch` offers `h2` then `http/1.1`, a
-    /// WebSocket's own connection `http/1.1` alone.
+    /// The protocols of an ALPN or ALPS extension's body.
+    fn protocols(body: &[u8]) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut i = 2;
+        while i < body.len() {
+            let n = usize::from(body[i]);
+            out.push(body[i + 1..i + 1 + n].to_vec());
+            i += 1 + n;
+        }
+        out
+    }
+
+    const ALPN: u16 = 0x0010;
+    /// application_settings (ALPS) at the codepoint Chrome 157 uses.
+    const ALPS: u16 = 0x44cd;
+    const ALPS_OLD: u16 = 0x4469;
+
+    /// Chrome's hellos (157, ghostlane lab/olc-alps): a `fetch` offers `h2`
+    /// then `http/1.1`, and ALPS for `h2`; a WebSocket's own connection
+    /// offers `http/1.1` alone and no ALPS.
     #[test]
     fn a_fetch_offers_h2_and_a_websocket_does_not() {
         let hello = |offer| {
-            xray_transport::plain_tls_client_hello_bytes(&client_config(
+            xray_transport::browser_tls_client_hello_bytes(&client_config(
                 "bk.salutejazz.ru".to_owned(),
                 offer,
                 FINGERPRINT,
             ))
             .unwrap()
         };
+        let fetch = hello(Offer::Fetch);
         assert_eq!(
-            alpn_of(&hello(Offer::Fetch)),
+            protocols(extension(&fetch, ALPN).unwrap()),
             [b"h2".to_vec(), b"http/1.1".to_vec()]
         );
-        assert_eq!(alpn_of(&hello(Offer::WebSocket)), [b"http/1.1".to_vec()]);
+        assert_eq!(
+            protocols(extension(&fetch, ALPS).expect("a fetch's hello offers ALPS")),
+            [b"h2".to_vec()]
+        );
+        assert_eq!(extension(&fetch, ALPS_OLD), None);
+
+        let websocket = hello(Offer::WebSocket);
+        assert_eq!(
+            protocols(extension(&websocket, ALPN).unwrap()),
+            [b"http/1.1".to_vec()]
+        );
+        assert_eq!(extension(&websocket, ALPS), None, "Chrome's has none");
+        assert_eq!(extension(&websocket, ALPS_OLD), None);
     }
 
     #[test]

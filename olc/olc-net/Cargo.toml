@@ -19,11 +19,25 @@ thiserror.workspace = true
 tokio.workspace = true
 xray-transport = { path = "../../crates/xray-transport", optional = true }
 xray-utls = { path = "../../crates/xray-utls", optional = true }
+# For tests/alps_fetch.rs only (the `alps-test-server` feature): a BoringSSL
+# server that accepts ALPS, as Google's front ends do. The versions are
+# olc-rtc's.
+boring = { version = "=5.5.0", optional = true }
+boring-sys = { version = "=5.5.0", optional = true }
+foreign-types = { version = "0.5", optional = true }
 
 [features]
 # The host TLS the signalling's wss:// and https:// go over: the fork's
 # shaped-rustls with a uTLS ClientHello profile (shaped_tls::install).
 shaped-tls = ["dep:xray-transport", "dep:xray-utls"]
+# tests/alps_fetch.rs: the shaped TLS against a BoringSSL server on loopback
+# that accepts ALPS. Building BoringSSL needs cmake and libclang, which the
+# build box does not have; it runs on a GitHub runner.
+alps-test-server = ["shaped-tls", "dep:boring", "dep:boring-sys", "dep:foreign-types"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "alps_fetch"
+required-features = ["alps-test-server"]

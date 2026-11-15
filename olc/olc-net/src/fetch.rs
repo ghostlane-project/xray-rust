@@ -501,37 +501,4 @@ mod tests {
         })
         .await;
     }
-
-    /// A public HTTP/2 server that speaks ALPS (Google's, BoringSSL),
-    /// through the shaped Chrome hello: the server's ALPN pick reaches
-    /// [`fetch`], and it answers Chrome's preface. Needs the network, so it
-    /// runs by hand: `cargo test -p olc-net --features shaped-tls --
-    /// --ignored`. It fails today: Chrome's hello offers ALPS for `h2`, the
-    /// server accepts it, and shaped-rustls never sends the client's ALPS
-    /// (rustls has no ALPS), so the server ends the connection with
-    /// `unexpected_message` after the handshake. nghttp2.org (no ALPS)
-    /// answers the same calls over HTTP/2.
-    #[cfg(feature = "shaped-tls")]
-    #[tokio::test]
-    #[ignore = "network; fails until shaped-rustls sends the client's ALPS (M8)"]
-    async fn a_public_h2_server_answers_a_shaped_fetch() {
-        within(async {
-            crate::shaped_tls::install(crate::shaped_tls::FINGERPRINT).unwrap();
-            let t = crate::stream::parse_url("https://www.google.com/generate_204").unwrap();
-            let req = HttpRequest {
-                method: "GET",
-                host: &t.authority,
-                path: &t.path,
-                headers: &[],
-                body: b"",
-                max_body: 1024,
-                timeout: Duration::from_secs(10),
-            };
-            let dialed = crate::stream::dial_for(&t, Offer::Fetch).await.unwrap();
-            assert!(dialed.h2, "the server did not pick h2");
-            assert_eq!(request_h2(dialed.stream, &req).await.unwrap().status, 204);
-            assert_eq!(fetch(&t, &req).await.unwrap().status, 204);
-        })
-        .await;
-    }
 }
