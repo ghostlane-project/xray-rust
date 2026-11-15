@@ -264,6 +264,20 @@ pub const STREAM_WRITE_STALL: Duration = Duration::from_secs(10);
 // its queue, a read, and the client's partial message.
 const _: () = assert!(STREAM_QUEUE * SEND_BUF + STREAM_READ + 65_556 <= 128 * 1024);
 
+/// libwebrtc's pause between its gathering phases (Chrome's
+/// `kMinimumStepDelay`): the UDP phase's Binding to each UDP TURN server
+/// first, every Allocate this much later. The lab's capture of Chrome 157
+/// (lab-olc-rtc.yml, turn-capture) shows 53-56 ms.
+pub const ALLOCATE_STEP: Duration = Duration::from_millis(50);
+/// A Binding's first retransmission timeout (libwebrtc's
+/// `STUN_INITIAL_RTO`); each pause doubles, up to [`BINDING_MAX_RTO`].
+pub const BINDING_RTO: Duration = Duration::from_millis(250);
+/// The longest pause between two sends of a Binding (`STUN_MAX_RTO`).
+pub const BINDING_MAX_RTO: Duration = Duration::from_secs(8);
+/// The most times one Binding is sent: the capture's eight, at 0, 258,
+/// 774, 1789, 3805, 7821, 15836 and 23852 ms.
+pub const BINDING_SENDS: u8 = 8;
+
 /// What a TCP connection's task read from its server, for the driver
 /// ([`Relays::recv_stream`]); empty when the connection ended.
 pub(crate) struct StreamChunk {
@@ -311,6 +325,9 @@ pub(crate) struct Relays {
     /// The last datagram to a TURN server the host refused (not for a full
     /// buffer), for the driver's pion line ([`Relays::take_refused`]).
     refused: Option<(SocketAddr, io::Error)>,
+    /// The first poll: the Bindings' clock, and every Allocate one
+    /// [`ALLOCATE_STEP`] after it.
+    started: Option<Instant>,
 }
 
 struct Relay {
@@ -328,6 +345,53 @@ struct Relay {
     bound: Vec<SocketAddr>,
     /// The allocation failed or closed: nothing more goes through it.
     done: bool,
+    /// A UDP server's Binding (Chrome's UDP port's); none over TCP.
+    binding: Option<Binding>,
+}
+
+/// The Binding request Chrome's UDP port sends each UDP TURN server, which
+/// libwebrtc also takes as a STUN server: no attribute, a transaction id
+/// of libwebrtc's base64 alphabet (`rtc::CreateRandomString`), sent again
+/// unanswered at [`BINDING_RTO`]'s pauses, [`BINDING_SENDS`] times at
+/// most, whatever becomes of the allocation (it is another port's). Its
+/// answer (a mapped address) is taken and not used: the client gathers no
+/// server-reflexive candidate.
+struct Binding {
+    msg: [u8; 20],
+    /// Times sent.
+    sends: u8,
+    /// When it goes next, after the relays' first poll.
+    next: Duration,
+    /// The pause after that.
+    rto: Duration,
+    answered: bool,
+}
+
+impl Binding {
+    fn new() -> Binding {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut msg = [0u8; 20];
+        msg[..8].copy_from_slice(&[0x00, 0x01, 0, 0, 0x21, 0x12, 0xa4, 0x42]);
+        for b in &mut msg[8..] {
+            *b = ALPHABET[usize::from(rand::random::<u8>() & 63)];
+        }
+        Binding {
+            msg,
+            sends: 0,
+            next: Duration::ZERO,
+            rto: BINDING_RTO,
+            answered: false,
+        }
+    }
+
+    /// Whether `data` answers it: a Binding success or error response with
+    /// its transaction id.
+    fn answered_by(&self, data: &[u8]) -> bool {
+        data.len() >= 20
+            && matches!(data[..2], [0x01, 0x01] | [0x01, 0x11])
+            && data[4..20] == self.msg[4..20]
+    }
 }
 
 /// How a relay's client reaches its server.
@@ -437,6 +501,7 @@ impl Relays {
                     permitted: Vec::with_capacity(MAX_PEERS),
                     bound: Vec::with_capacity(MAX_PEERS),
                     done: false,
+                    binding: matches!(s.transport, TurnTransport::Udp).then(Binding::new),
                 }
             })
             .collect::<Vec<_>>();
@@ -452,6 +517,7 @@ impl Relays {
             out,
             dropped: 0,
             refused: None,
+            started: None,
         }
     }
 
@@ -482,6 +548,12 @@ impl Relays {
         else {
             return Arrival::Direct;
         };
+        if r.binding.as_ref().is_some_and(|b| b.answered_by(data)) {
+            if let Some(b) = r.binding.as_mut() {
+                b.answered = true;
+            }
+            return Arrival::Handled;
+        }
         r.note_cookie(data);
         match r
             .client
@@ -619,9 +691,29 @@ impl Relays {
     ) -> Option<Instant> {
         let at = self.at(now);
         let base = self.base;
+        let started = *self.started.get_or_insert(now);
+        let since = now.saturating_duration_since(started);
         let mut wake: Option<Instant> = None;
+        let mut soon = |w: Instant| wake = Some(wake.map_or(w, |x: Instant| x.min(w)));
         for r in &mut self.list {
+            if let Some(b) = r.binding.as_mut().filter(|b| !b.answered) {
+                if b.sends < BINDING_SENDS && since >= b.next {
+                    // Unanswered or not sent, it is resent on its schedule,
+                    // as a datagram would be.
+                    let _ = r.path.send(sock, r.server, &b.msg);
+                    b.sends += 1;
+                    b.next += b.rto;
+                    b.rto = (b.rto * 2).min(BINDING_MAX_RTO);
+                }
+                if b.sends < BINDING_SENDS {
+                    soon(started + b.next);
+                }
+            }
             if r.done {
+                continue;
+            }
+            if since < ALLOCATE_STEP {
+                soon(started + ALLOCATE_STEP);
                 continue;
             }
             match r.client.poll(at) {
@@ -630,7 +722,7 @@ impl Relays {
                     // right after its poll would spin the driver.
                     let w = (base + Duration::from_nanos(u64::try_from(w.as_nanos()).unwrap_or(0)))
                         .max(now + MIN_WAKE);
-                    wake = Some(wake.map_or(w, |x| x.min(w)));
+                    soon(w);
                 }
                 TurnPollRet::Closed => r.done = true,
                 TurnPollRet::AllocateTcpSocket { .. } | TurnPollRet::TcpClose { .. } => {}
@@ -691,6 +783,7 @@ impl Relays {
                 let _ = r.path.send(sock, t.to, t.data.as_ref());
             }
             r.done = true;
+            r.binding = None;
         }
         up
     }
@@ -964,9 +1057,17 @@ mod tests {
             let (inbound, _chunks) = mpsc::channel(STREAM_INBOUND);
             let mut relays = Relays::new(&resolved, local, Instant::now(), &inbound);
             let mut buf = [0u8; 1500];
-            let n = next_request(&mut relays, &sock, &server, &mut buf, "Allocate").await;
+            let n = loop {
+                let n = next_request(&mut relays, &sock, &server, &mut buf, "Allocate").await;
+                if buf[..2] != [0x00, 0x01] {
+                    break n;
+                }
+            };
             assert_eq!(&buf[..2], &[0x00, 0x03], "not an Allocate");
             let first = attribute_types(&buf[..n]);
+            // Chrome's first Allocate: REQUESTED-TRANSPORT alone (no
+            // LIFETIME, no DONT-FRAGMENT).
+            assert_eq!(first, [0x0019], "{first:04x?}");
             let mut challenge = vec![0x01, 0x13, 0, 0, 0x21, 0x12, 0xa4, 0x42];
             challenge.extend_from_slice(&buf[8..20]);
             for (t, v) in [
@@ -987,9 +1088,20 @@ mod tests {
                 matches!(handled, Arrival::Handled),
                 "the challenge was not taken"
             );
-            let n = next_request(&mut relays, &sock, &server, &mut buf, "retry").await;
+            let n = loop {
+                let n = next_request(&mut relays, &sock, &server, &mut buf, "retry").await;
+                if buf[..2] != [0x00, 0x01] {
+                    break n;
+                }
+            };
             assert_eq!(&buf[..2], &[0x00, 0x03], "the retry is not an Allocate");
             let retry = attribute_types(&buf[..n]);
+            // Chrome's retry, exactly: no LIFETIME.
+            assert_eq!(
+                retry,
+                [0x0019, 0x0006, 0x0014, 0x0015, 0x0008],
+                "{retry:04x?}"
+            );
             assert!(first.contains(&0x0019), "{first:04x?}");
             // USERNAME, REALM, NONCE, MESSAGE-INTEGRITY, in that order, after
             // REQUESTED-TRANSPORT.
@@ -1005,6 +1117,115 @@ mod tests {
             for t in [0x001c_u16, 0x001d, 0x8002] {
                 assert!(!retry.contains(&t), "{t:#06x} in {retry:04x?}");
             }
+        })
+        .await;
+    }
+
+    /// What `server` has read so far, every datagram.
+    fn drain(server: &UdpSocket) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut buf = [0u8; 1500];
+        while let Ok((n, _)) = server.try_recv_from(&mut buf) {
+            out.push(buf[..n].to_vec());
+        }
+        out
+    }
+
+    /// The Bindings among `got`.
+    fn bindings(got: &[Vec<u8>]) -> Vec<&Vec<u8>> {
+        got.iter().filter(|m| m[..2] == [0x00, 0x01]).collect()
+    }
+
+    /// A UDP TURN server is first sent a Binding, as Chrome's UDP port takes
+    /// it for a STUN server: no attribute, a transaction id of libwebrtc's
+    /// base64 alphabet. Every Allocate goes one [`ALLOCATE_STEP`] later. An
+    /// unanswered Binding is sent again, the same id, at Chrome's pauses
+    /// ([`BINDING_RTO`] doubling to [`BINDING_MAX_RTO`]), [`BINDING_SENDS`]
+    /// times in all, the allocation's own fate aside; an answer is taken
+    /// (never handed to str0m) and ends the resends.
+    #[tokio::test]
+    async fn a_udp_turn_server_is_bound_first_as_chrome_binds_it() {
+        crate::testing::bounded(async {
+            let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let local = sock.local_addr().unwrap();
+            let resolved = [Resolved {
+                addr: server.local_addr().unwrap(),
+                transport: TurnTransport::Udp,
+                username: "u".into(),
+                password: "p".into(),
+            }];
+            let settle = || tokio::time::sleep(Duration::from_millis(20));
+            // As the driver's socket is by the time its relays start (after
+            // the connector's rtc:config): tokio knows it can write.
+            sock.writable().await.unwrap();
+            let (inbound, _chunks) = mpsc::channel(STREAM_INBOUND);
+            let t0 = Instant::now();
+            let mut relays = Relays::new(&resolved, local, t0, &inbound);
+            let mut up = Vec::new();
+            let wake = relays.poll(&sock, "t", t0, &mut up);
+            settle().await;
+            let got = drain(&server);
+            assert_eq!(got.len(), 1, "{got:02x?}");
+            let binding = got[0].clone();
+            assert_eq!(binding.len(), 20, "{binding:02x?}");
+            assert_eq!(&binding[..8], &[0x00, 0x01, 0, 0, 0x21, 0x12, 0xa4, 0x42]);
+            assert!(
+                binding[8..20]
+                    .iter()
+                    .all(|b| b.is_ascii_alphanumeric() || *b == b'+' || *b == b'/'),
+                "{:?}",
+                String::from_utf8_lossy(&binding[8..20])
+            );
+            assert!(wake.is_some_and(|w| w <= t0 + ALLOCATE_STEP), "{wake:?}");
+            relays.poll(
+                &sock,
+                "t",
+                t0 + ALLOCATE_STEP - Duration::from_millis(1),
+                &mut up,
+            );
+            settle().await;
+            assert!(drain(&server).is_empty(), "something before the step");
+            relays.poll(&sock, "t", t0 + ALLOCATE_STEP, &mut up);
+            settle().await;
+            let got = drain(&server);
+            assert!(got.len() == 1 && got[0][..2] == [0x00, 0x03], "{got:02x?}");
+            let (mut at, mut rto, mut sends) = (Duration::ZERO, BINDING_RTO, 1);
+            for _ in 1..BINDING_SENDS {
+                at += rto;
+                rto = (rto * 2).min(BINDING_MAX_RTO);
+                relays.poll(&sock, "t", t0 + at - Duration::from_millis(1), &mut up);
+                settle().await;
+                assert!(bindings(&drain(&server)).is_empty(), "early at {at:?}");
+                relays.poll(&sock, "t", t0 + at, &mut up);
+                settle().await;
+                let got = drain(&server);
+                let b = bindings(&got);
+                assert_eq!(b.len(), 1, "at {at:?}: {got:02x?}");
+                assert_eq!(b[0], &binding, "at {at:?}: another id");
+                sends += 1;
+            }
+            assert_eq!(sends, BINDING_SENDS);
+            assert_eq!(at, Duration::from_millis(23_750));
+            relays.poll(&sock, "t", t0 + Duration::from_secs(60), &mut up);
+            settle().await;
+            assert!(bindings(&drain(&server)).is_empty(), "a ninth Binding");
+
+            // A second relay, answered: the answer is taken and the resends end.
+            let t0 = Instant::now();
+            let mut relays = Relays::new(&resolved, local, t0, &inbound);
+            relays.poll(&sock, "t", t0, &mut up);
+            settle().await;
+            let got = drain(&server);
+            let mut answer = got[0].clone();
+            answer[..2].copy_from_slice(&[0x01, 0x01]);
+            assert!(matches!(
+                relays.recv(resolved[0].addr, &answer, t0),
+                Arrival::Handled
+            ));
+            relays.poll(&sock, "t", t0 + BINDING_RTO, &mut up);
+            settle().await;
+            assert!(bindings(&drain(&server)).is_empty(), "resent once answered");
         })
         .await;
     }
@@ -1070,9 +1291,12 @@ mod tests {
                 password: "p".into(),
             }];
             let (inbound, mut chunks) = mpsc::channel(STREAM_INBOUND);
-            let mut relays = Relays::new(&resolved, local, Instant::now(), &inbound);
+            let t0 = Instant::now();
+            let mut relays = Relays::new(&resolved, local, t0, &inbound);
             let mut up = Vec::new();
-            relays.poll(&sock, "t", Instant::now(), &mut up);
+            relays.poll(&sock, "t", t0, &mut up);
+            // The relay phase: every Allocate one step after the start.
+            relays.poll(&sock, "t", t0 + ALLOCATE_STEP, &mut up);
             let (mut conn, _) = listener.accept().await.unwrap();
             let mut head = [0u8; 20];
             conn.read_exact(&mut head).await.unwrap();
@@ -1082,6 +1306,10 @@ mod tests {
             let len = usize::from(u16::from_be_bytes([head[2], head[3]]));
             let mut body = vec![0u8; len];
             conn.read_exact(&mut body).await.unwrap();
+            let whole = [&head[..], &body[..]].concat();
+            // Chrome's: REQUESTED-TRANSPORT alone, and over TCP no Binding
+            // first (nor on UDP: below).
+            assert_eq!(attribute_types(&whole), [0x0019], "{whole:02x?}");
             // REQUESTED-TRANSPORT (0x0019): UDP (17), the relayed address's.
             assert!(
                 body.windows(5).any(|w| w == [0x00, 0x19, 0x00, 0x04, 17]),

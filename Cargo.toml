@@ -110,6 +110,11 @@ is = { path = "olc/vendor/is-0.12.0" }
 # PASSWORD-ALGORITHMS echoed (olc/vendor/stun-proto-2.0.5/src/auth.rs,
 # `CLIENT_READS_NONCE_SECURITY`): a TURN server sees Chrome's retry (port plan section 8).
 stun-proto = { path = "olc/vendor/stun-proto-2.0.5" }
+# turn-client-proto 0.8.0 from crates.io (checksum 57914c655cc6cc1d6cb6541673b87be69595365a3226b6bfd34dad8af7d779a1;
+# without its tests and benches) with libwebrtc's Allocates (src/protocol.rs, the two marked
+# "xray-rust (olc-rtc)"): REQUESTED-TRANSPORT alone, then with the signature; no LIFETIME, no
+# DONT-FRAGMENT, as Chrome 157 sent them to the lab's capture server.
+turn-client-proto = { path = "olc/vendor/turn-client-proto-0.8.0" }
 quinn = { path = "vendor/quinn" }
 smoltcp = { path = "vendor/smoltcp" }
 blake3 = { path = "vendor/blake3" }

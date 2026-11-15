@@ -3149,8 +3149,6 @@ dependencies = [
 [[package]]
 name = "turn-client-proto"
 version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57914c655cc6cc1d6cb6541673b87be69595365a3226b6bfd34dad8af7d779a1"
 dependencies = [
  "byteorder",
  "smallvec",
