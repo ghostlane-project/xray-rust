@@ -1,5 +1,3 @@
-//go:build olcrtc_interop
-
 // Copyright 2026 the Ghostlane authors. Licensed under the Apache License 2.0.
 
 package zzmem
@@ -20,7 +18,7 @@ Private_Dirty:      7340 kB
 Referenced:        11520 kB
 Anonymous:          7340 kB
 LazyFree:              0 kB
-AnonHugePages:         0 kB
+AnonHugePages:      2048 kB
 Swap:                  0 kB
 `
 
@@ -134,7 +132,7 @@ func TestLine(t *testing.T) {
 		Maps: ParseMaps(smapsFixture),
 	}
 	line := snap.Line("/opt/bin/olc-client", 3)
-	for _, sub := range []string{"RssAnon=7340", "RssFile=4180", "Threads=9", "Private_Dirty=7340", "dirty(anon+file private dirty)=", "[heap]", "exe-text"} {
+	for _, sub := range []string{"RssAnon=7340", "RssFile=4180", "Threads=9", "Private_Dirty=7340", "AnonHugePages=2048", "dirty(anon+file private dirty)=", "[heap]", "exe-text"} {
 		if !strings.Contains(line, sub) {
 			t.Errorf("line lacks %q: %s", sub, line)
 		}

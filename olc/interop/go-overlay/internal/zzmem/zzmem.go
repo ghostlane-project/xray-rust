@@ -1,5 +1,3 @@
-//go:build olcrtc_interop
-
 // Copyright 2026 the Ghostlane authors. Licensed under the Apache License 2.0.
 
 // Package zzmem reads a Linux process's memory the way the Rust client's
@@ -182,8 +180,8 @@ func (s Snapshot) Dirty() int64 { return s.Rollup["Private_Dirty"] + s.Rollup["S
 func (s Snapshot) Line(exe string, top int) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "VmRSS=%d RssAnon=%d RssFile=%d Threads=%d", s.Status["VmRSS"], s.Status["RssAnon"], s.Status["RssFile"], s.Status["Threads"])
-	fmt.Fprintf(&b, " | rollup Rss=%d Anonymous=%d Private_Dirty=%d Shared_Dirty=%d Private_Clean=%d Shared_Clean=%d",
-		s.Rollup["Rss"], s.Rollup["Anonymous"], s.Rollup["Private_Dirty"], s.Rollup["Shared_Dirty"], s.Rollup["Private_Clean"], s.Rollup["Shared_Clean"])
+	fmt.Fprintf(&b, " | rollup Rss=%d Anonymous=%d Private_Dirty=%d Shared_Dirty=%d Private_Clean=%d Shared_Clean=%d AnonHugePages=%d",
+		s.Rollup["Rss"], s.Rollup["Anonymous"], s.Rollup["Private_Dirty"], s.Rollup["Shared_Dirty"], s.Rollup["Private_Clean"], s.Rollup["Shared_Clean"], s.Rollup["AnonHugePages"])
 	fmt.Fprintf(&b, " | dirty(anon+file private dirty)=%d", s.Dirty())
 	cats := Categorize(s.Maps, exe)
 	b.WriteString(" | cats(rss/anon/pdirty):")
