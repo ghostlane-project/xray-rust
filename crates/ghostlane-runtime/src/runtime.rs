@@ -17,7 +17,8 @@ use tokio::runtime::{Builder, Handle, Runtime};
 /// A worker's stack (plan §3.4: futures live on the heap, so 512 KiB is
 /// enough; checked on the device from M9).
 pub const WORKER_STACK: usize = 512 * 1024;
-/// The most blocking threads (`design.md` D11: at most four).
+/// The most blocking threads (`design.md` D11: at most four). xray-ffi's
+/// own iOS plan (`runtime_plan_for`) reads this constant too.
 pub const MAX_BLOCKING: usize = 4;
 /// How long an idle blocking thread lives on the phone: 2 s, not Tokio's
 /// 10 s, so the threads a burst of `getaddrinfo` calls started leave soon
