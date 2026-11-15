@@ -152,14 +152,35 @@ mod tests {
     }
 
     #[test]
-    fn the_footprint_is_read_on_apple_targets_only() {
+    fn the_footprint_is_read_on_apple_and_android_targets_only() {
         let f = footprint();
-        if cfg!(target_vendor = "apple") {
+        if cfg!(any(target_vendor = "apple", target_os = "android")) {
             // A test process holds more than a mebibyte.
             assert!(f.is_some_and(|b| b > MIB), "{f:?}");
         } else {
             assert_eq!(f, None);
         }
+    }
+
+    /// On Android a trim asks Scudo for its free pages back
+    /// (`mallopt(M_PURGE_ALL)`, else `M_PURGE`) and reports the fall of
+    /// the anonymous resident bytes: 8 MiB of 16 KiB buffers freed leave
+    /// whole pages free, which Scudo keeps until it is asked. Run on the
+    /// emulator by Ghostlane's lab/olc-ffi-android.
+    #[cfg(target_os = "android")]
+    #[test]
+    fn on_android_a_trim_gives_back_what_a_burst_left_free() {
+        let bufs: Vec<Vec<u8>> = (0..512u32)
+            .map(|i| vec![u8::try_from(i % 251).unwrap_or(0); 16 << 10])
+            .collect();
+        let held = footprint();
+        drop(bufs);
+        let given = trim(|| 0);
+        eprintln!(
+            "trim after 8 MiB freed: {given} B given back (held {held:?}, now {:?})",
+            footprint()
+        );
+        assert!(given >= 1 << 20, "{given} B");
     }
 
     #[test]
