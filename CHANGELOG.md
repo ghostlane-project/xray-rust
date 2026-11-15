@@ -108,14 +108,15 @@ long-term supported release series.
   with one worker, at most four blocking threads and a 2 s keep-alive for an
   idle one, instead of `available_parallelism()` clamped to 2 to 6 workers
   and tokio's 512 blocking threads. The packet tunnel extension is killed at
-  about 50 MB and each worker costs 32 to 64 KiB of stack, a 128 KiB relay
-  pool spare and 6 KB of runtime state, while in the lab one worker carried
-  Reality and Hysteria2 far above a phone's link. Every other platform keeps
-  its plan. On every platform `XRAY_FFI_WORKER_THREADS` and
-  `XRAY_FFI_MAX_BLOCKING_THREADS` (a number from 1 to 64, anything else is
-  ignored) set the workers and the blocking threads' cap. They are read in
-  the process that calls `xray_core_new`: on iOS the packet tunnel
-  extension, so a host sets them there, not in the containing app.
+  about 50 MB and each worker costs 32 to 64 KiB of stack, a relay pool
+  spare of up to 32 KiB (128 KiB with `bufferSize` >= 128) and 6 KB of
+  runtime state, while in the lab one worker carried Reality and Hysteria2
+  far above a phone's link. Every other platform keeps its plan. On every
+  platform `XRAY_FFI_WORKER_THREADS` and `XRAY_FFI_MAX_BLOCKING_THREADS` (a
+  number from 1 to 64, anything else is ignored) set the workers and the
+  blocking threads' cap. They are read in the process that calls
+  `xray_core_new`: on iOS the packet tunnel extension, so a host sets them
+  there, not in the containing app.
 - The SOCKS inbound's long-lived futures are smaller: a UDP flow's task
   holds 2,288 B instead of 36,192 B and a SOCKS5 connection 5,776 B instead
   of 9,264 B (x86_64, release); a SOCKS4 or HTTP connection now holds about
@@ -123,7 +124,6 @@ long-term supported release series.
   read their datagrams through one 64 KiB scratch buffer per worker thread
   instead of keeping a 64 KiB buffer each; a flow under `finalmask.udp`
   keeps its own.
-
 - One byte budget for the payload a process holds in flight
   (`xray_transport::memory_budget`): `B = rate × RTT`, 3,000,000 bytes on a
   constrained host (200 Mbit/s over 120 ms) and 15,000,000 on a standard

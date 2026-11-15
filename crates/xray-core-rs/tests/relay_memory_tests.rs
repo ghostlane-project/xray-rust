@@ -132,10 +132,12 @@ const TLS_RECEIVE: isize = (MAX_WIRE_SIZE - DEFRAMER_READ) + MAX_WIRE_SIZE;
 /// A constrained host's largest relay read, which T4's core makes (it sets
 /// no `bufferSize`).
 const CONSTRAINED_READ: isize = 32 * KIB as isize;
-/// What the core's two workers may keep once `release_relay_buffers` has
-/// freed the pool's lists: each the buffer it got back last, at most a
-/// `CONSTRAINED_READ`.
-const THREAD_SPARES: isize = 2 * CONSTRAINED_READ;
+/// The worker threads of the core's runtime (`near`).
+const CORE_WORKERS: usize = 2;
+/// What the core's `CORE_WORKERS` workers may keep once
+/// `release_relay_buffers` has freed the pool's lists: each the buffer it
+/// got back last, at most a `CONSTRAINED_READ`.
+const THREAD_SPARES: isize = CORE_WORKERS as isize * CONSTRAINED_READ;
 /// The flows `quiesce` pings, so that each worker relays and its spare from
 /// before the release goes; the rest keep what the run left them.
 const QUIESCE_FLOWS: usize = 8;
@@ -171,7 +173,7 @@ struct Run {
 /// count at neither.
 fn vision_flows(flows: usize) -> Run {
     let far = support::runtime(2, leave_this_thread);
-    let near = support::runtime(2, count_this_thread);
+    let near = support::runtime(CORE_WORKERS, count_this_thread);
     let (server, client_config) = far.block_on(support::start_vision_server(support::Uplink::Slow));
     let mut core =
         near.block_on(async { support::vision_core(server, client_config, support::Uplink::Slow) });
@@ -360,7 +362,7 @@ fn a_thousand_closed_flows_leave_the_core_where_it_was() {
     const AT_ONCE: usize = 50;
     let _turn = take_turn();
     let far = support::runtime(2, leave_this_thread);
-    let near = support::runtime(2, count_this_thread);
+    let near = support::runtime(CORE_WORKERS, count_this_thread);
     let sink = far.block_on(support::start_sink());
     let mut core = near.block_on(async { support::direct_core() });
     near.block_on(core.start()).unwrap();
