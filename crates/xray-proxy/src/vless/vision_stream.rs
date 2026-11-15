@@ -556,6 +556,9 @@ fn is_complete_tls_application_data_records(input: &[u8]) -> bool {
 }
 
 #[cfg(test)]
+mod wire_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::vless::DEFAULT_VISION_SEED as DEFAULT_SEED;

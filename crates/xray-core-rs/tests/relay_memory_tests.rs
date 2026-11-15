@@ -152,9 +152,13 @@ const fn thread_spares(read: isize) -> isize {
 /// before the release goes; the rest keep what the run left them.
 const QUIESCE_FLOWS: usize = 8;
 /// The packets of a flow Vision pads (`VisionStream`'s `packets_to_filter`).
-/// While it pads, it copies each write with its padding, up to 64 KiB and
-/// the padding, and the copy is not the budget's.
 const VISION_PADDED_PACKETS: usize = 8;
+/// What a padded frame hands the carrier beside its payload, at most, none
+/// of it the budget's: its head (a command and two lengths) and the longest
+/// padding Vision's default seed draws, for a payload of none (900 + 499).
+/// The first frame, which also names the user ID behind the request
+/// header, goes before T10 measures.
+const VISION_FRAME_EXTRA: isize = 5 + 1_399;
 /// The free relay buffers a constrained process keeps.
 const CONSTRAINED_POOL_KEEP: isize = 4 * 128 * KIB as isize;
 
@@ -167,6 +171,18 @@ const fn pool_room(kept: isize) -> isize {
     } else {
         0
     }
+}
+
+/// Where a flow's uploads begin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Uploads {
+    /// Once Vision has stopped padding: its `VISION_PADDED_PACKETS` are
+    /// spent before the run measures.
+    PastPadding,
+    /// While Vision still pads: the flows' open, the pings `quiesce` sends
+    /// and the download's request are the only packets before them, so
+    /// their first writes are padded frames.
+    ThroughPadding,
 }
 
 /// What one run of `flows` Vision flows held, in bytes.
@@ -189,14 +205,14 @@ struct Run {
     after: isize,
 }
 
-/// `flows` Vision flows over TLS, past Vision's padding, a MiB down each and
-/// then a MiB up each, all at once, the downloads read and the uploads taken
-/// at a phone's pace, under the byte budget the process has now, their
-/// relays reading up to `buffer_kib` KiB at once or a phone's 32 KiB (with
-/// `buffer_kib`, a first MiB up each before the measured one). Idle and the
-/// end are taken quiesced, so that the buffers kept for later reads count
-/// at neither.
-fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
+/// `flows` Vision flows over TLS, a MiB down each and then a MiB up each,
+/// all at once, the uploads beginning where `uploads` says, the downloads
+/// read and the uploads taken at a phone's pace, under the byte budget the
+/// process has now, their relays reading up to `buffer_kib` KiB at once or
+/// a phone's 32 KiB (with `buffer_kib`, a first MiB up each before the
+/// measured one). Idle and the end are taken quiesced, so that the buffers
+/// kept for later reads count at neither.
+fn vision_flows(flows: usize, buffer_kib: Option<u32>, uploads: Uploads) -> Run {
     let far = support::runtime(2, leave_this_thread);
     let near = support::runtime(CORE_WORKERS, count_this_thread);
     let (server, client_config) = far.block_on(support::start_vision_server(support::Uplink::Slow));
@@ -209,11 +225,13 @@ fn vision_flows(flows: usize, buffer_kib: Option<u32>) -> Run {
     let mut streams = far.block_on(futures_join_all(
         (0..flows).map(|_| support::open_vision_flow(socks, support::Downlink::Slow)),
     ));
-    far.block_on(futures_join_all(
-        streams
-            .iter_mut()
-            .map(|stream| support::ping(stream, VISION_PADDED_PACKETS)),
-    ));
+    if uploads == Uploads::PastPadding {
+        far.block_on(futures_join_all(
+            streams
+                .iter_mut()
+                .map(|stream| support::ping(stream, VISION_PADDED_PACKETS)),
+        ));
+    }
     far.block_on(async { tokio::time::sleep(Duration::from_millis(300)).await });
     quiesce(&far, &near, &mut streams);
     let idle = reset_peak();
@@ -341,29 +359,24 @@ fn quiesce(
 /// phase would show many times over.
 ///
 /// The flows are measured past Vision's padding: pings take each of them
-/// through the packets Vision pads, whose writes it copies outside the
-/// budget.
+/// through the packets Vision pads. T10 measures uploads that begin while
+/// it pads.
 #[test]
 fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
     const FLOWS: usize = 64;
     let _turn = take_turn();
     let flows = FLOWS as isize;
-    let upload_bound = |flows: isize| {
-        let held = T4_BUDGET as isize + flows * FLOOR;
-        held + TLS_RECORD_FRAMING * (held / SMALLEST_RECORD + flows)
-    };
     let download_bound = |flows: isize| T4_BUDGET as isize + flows * FLOOR + flows * TLS_RECEIVE;
-    let budget = |capacity| {
-        xray_transport::set_byte_budget(Some(xray_transport::ByteBudgetSettings {
-            capacity,
-            floor: xray_transport::memory_budget::DEFAULT_FLOW_FLOOR,
-        }));
-    };
+    let budget = set_budget;
     budget(usize::MAX / 2);
-    let unlimited = vision_flows(FLOWS, None);
+    let unlimited = vision_flows(FLOWS, None, Uploads::PastPadding);
     budget(T4_BUDGET);
-    let limited = vision_flows(FLOWS, None);
-    let standard = vision_flows(STANDARD_FLOWS, Some(STANDARD_READ_KIB));
+    let limited = vision_flows(FLOWS, None, Uploads::PastPadding);
+    let standard = vision_flows(
+        STANDARD_FLOWS,
+        Some(STANDARD_READ_KIB),
+        Uploads::PastPadding,
+    );
     xray_transport::set_byte_budget(None);
     let phone_spares = thread_spares(CONSTRAINED_READ);
     let standard_spares = thread_spares(STANDARD_READ_KIB as isize * KIB as isize);
@@ -433,6 +446,81 @@ fn sixty_four_vision_flows_hold_the_budget_and_their_floors() {
             run.after
         );
     }
+}
+
+/// The process's byte budget: `capacity` bytes, each flow's floor beside it.
+fn set_budget(capacity: usize) {
+    xray_transport::set_byte_budget(Some(xray_transport::ByteBudgetSettings {
+        capacity,
+        floor: xray_transport::memory_budget::DEFAULT_FLOW_FLOOR,
+    }));
+}
+
+/// T4's bound on what `flows` flows hold for their uploads, over what they
+/// held before them: the budget, each flow's floor and the framing of the
+/// records those bytes may wait in (T4's docs).
+fn upload_bound(flows: isize) -> isize {
+    let held = T4_BUDGET as isize + flows * FLOOR;
+    held + TLS_RECORD_FRAMING * (held / SMALLEST_RECORD + flows)
+}
+
+/// T10: T4's 64 flows under its budget, their uploads beginning while
+/// Vision still pads, so that each flow's first upload writes are padded
+/// frames. The uploads hold no more than T4's bound, with the pool's room,
+/// and, for each flow, what the one write its TLS session holds to send
+/// carries beside the payload its relay counts: a frame's head and padding,
+/// `VISION_FRAME_EXTRA`, and a record's framing more.
+///
+/// The padded frames here are a flow's first upload writes, a few KiB each
+/// as its relay's reads grow again from the download's one-byte request,
+/// and they fit in the sockets' buffers. The copy a padded write made of
+/// its input and its padding (`VisionStream`'s `pending_write`, outside the
+/// budget) was gone before the next write, and T10 passed with it too
+/// (999,690 B against 1,381,920 B on the build box). xray-proxy's
+/// `vision_write_memory_tests` counts that copy while a carrier waits.
+#[test]
+fn sixty_four_new_vision_flows_pad_their_uploads_within_the_budget() {
+    const FLOWS: usize = 64;
+    let _turn = take_turn();
+    let flows = FLOWS as isize;
+    set_budget(T4_BUDGET);
+    let run = vision_flows(FLOWS, None, Uploads::ThroughPadding);
+    xray_transport::set_byte_budget(None);
+    let bound = upload_bound(flows)
+        + pool_room(run.kept)
+        + flows * (VISION_FRAME_EXTRA + TLS_RECORD_FRAMING);
+    let spares = thread_spares(CONSTRAINED_READ);
+    eprintln!(
+        "T10 {flows} Vision flows padding their uploads, B = 1 MB: idle {} B; download {} B \
+         over idle, {} B of permits at most; upload {} B over the {} B the flows held after \
+         the downloads ({} B of them the pool's), bound {bound} B, {} B of permits at most; \
+         {} B more than idle after, bound {spares} B",
+        run.idle,
+        run.download,
+        run.download_permits,
+        run.upload,
+        run.moving,
+        run.kept,
+        run.upload_permits,
+        run.after
+    );
+    assert!(
+        run.upload_permits <= T4_BUDGET,
+        "the uploads took {} B of permits; the budget is {T4_BUDGET} B",
+        run.upload_permits
+    );
+    assert!(
+        run.upload <= bound,
+        "the padded uploads held {} B over what the flows held before them; the bound is \
+         {bound} B",
+        run.upload
+    );
+    assert!(
+        run.after <= spares,
+        "the flows held {} B more than idle after the uploads; the workers' spares are at \
+         most {spares} B",
+        run.after
+    );
 }
 
 /// T5: 1,000 SOCKS flows, each sending 256 KiB, opened and closed 50 at a

@@ -143,7 +143,48 @@ fn random_padding_len(upper_bound: u32) -> usize {
         return 0;
     }
 
+    #[cfg(test)]
+    if let Some(len) = seeded::draw(upper_bound) {
+        return len;
+    }
+
     rand::thread_rng().gen_range(0..upper_bound) as usize
+}
+
+/// Padding lengths a test can repeat: drawn on its thread from a generator
+/// it seeds, the same draws as from the thread's generator otherwise.
+#[cfg(test)]
+pub(crate) mod seeded {
+    use std::cell::RefCell;
+
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    thread_local! {
+        static RNG: RefCell<Option<StdRng>> = const { RefCell::new(None) };
+    }
+
+    /// While the guard lives, this thread draws padding from `seed`.
+    pub(crate) fn seed(seed: u64) -> Guard {
+        RNG.with(|rng| *rng.borrow_mut() = Some(StdRng::seed_from_u64(seed)));
+        Guard
+    }
+
+    pub(crate) struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            RNG.with(|rng| *rng.borrow_mut() = None);
+        }
+    }
+
+    pub(super) fn draw(upper_bound: u32) -> Option<usize> {
+        RNG.with(|rng| {
+            rng.borrow_mut()
+                .as_mut()
+                .map(|rng| rng.gen_range(0..upper_bound) as usize)
+        })
+    }
 }
 
 pub fn unpad_vision_block(

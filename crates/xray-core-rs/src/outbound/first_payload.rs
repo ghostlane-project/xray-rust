@@ -312,6 +312,7 @@ pub(super) fn flush_header_alone<S>(_: &mut S) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::IoSlice;
     use std::sync::Mutex;
     use tokio::io::AsyncReadExt;
 
@@ -491,6 +492,173 @@ mod tests {
         let padding = u16::from_be_bytes([frame[3], frame[4]]) as usize;
         assert!((900..1400).contains(&padding), "{padding}");
         assert_eq!(writes[0].len(), VISION_PREFIX + padding);
+    }
+
+    /// A carrier that gathers: it records each write it takes as the bytes
+    /// of its slices in order, takes at most `cap` bytes a write, and waits
+    /// while it is closed.
+    #[derive(Default)]
+    struct Gatherer {
+        writes: Writes,
+        state: Arc<Mutex<GatherState>>,
+    }
+
+    #[derive(Default)]
+    struct GatherState {
+        closed: bool,
+        cap: Option<usize>,
+        waiting: Option<std::task::Waker>,
+    }
+
+    impl Gatherer {
+        fn accept(&self, cx: &mut Context<'_>, inputs: &[&[u8]]) -> Poll<io::Result<usize>> {
+            let mut state = self.state.lock().unwrap();
+            if state.closed {
+                state.waiting = Some(cx.waker().clone());
+                return Poll::Pending;
+            }
+            let mut left = state.cap.unwrap_or(usize::MAX);
+            let mut taken = Vec::new();
+            for input in inputs {
+                let len = left.min(input.len());
+                taken.extend_from_slice(&input[..len]);
+                left -= len;
+            }
+            let len = taken.len();
+            self.writes.lock().unwrap().push(taken);
+            Poll::Ready(Ok(len))
+        }
+    }
+
+    impl AsyncRead for Gatherer {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for Gatherer {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            input: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.accept(cx, &[input])
+        }
+        fn poll_write_vectored(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            inputs: &[IoSlice<'_>],
+        ) -> Poll<io::Result<usize>> {
+            let inputs: Vec<&[u8]> = inputs.iter().map(|input| &**input).collect();
+            self.accept(cx, &inputs)
+        }
+        fn is_write_vectored(&self) -> bool {
+            true
+        }
+        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl TransportStream for Gatherer {
+        fn poll_read_direct(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            output: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            self.poll_read(cx, output)
+        }
+        fn poll_write_direct(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            input: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            self.poll_write(cx, input)
+        }
+    }
+
+    /// A first payload written vectored to a carrier that gathers waits
+    /// with the carrier and holds none of its bytes: the header's copy is
+    /// all a held header keeps. Taken a few bytes at a time, the carrier
+    /// gets the header and then the payload, in order, and the writes after
+    /// pass through gathered.
+    #[test]
+    fn a_gathered_first_payload_waits_uncopied_behind_the_header() {
+        let gatherer = Gatherer::default();
+        let writes = gatherer.writes.clone();
+        let state = gatherer.state.clone();
+        state.lock().unwrap().closed = true;
+        let mut held = HeldHeader::new(Box::new(gatherer), HEADER);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let payload: [&[u8]; 2] = [b"first ", b"payload"];
+        let slices = |from: usize| -> Vec<u8> { payload.concat()[from..].to_vec() };
+
+        let write = |held: &mut HeldHeader, cx: &mut Context<'_>, bytes: &[u8]| {
+            let at = bytes.len() / 2;
+            let halves = [IoSlice::new(&bytes[..at]), IoSlice::new(&bytes[at..])];
+            Pin::new(held).poll_write_vectored(cx, &halves)
+        };
+        let first = write(&mut held, &mut cx, &slices(0));
+        assert_eq!(&held.pending[..], HEADER, "the payload is not copied");
+        assert!(first.is_pending(), "the write waits with the carrier");
+        assert!(writes.lock().unwrap().is_empty());
+        assert!(held.is_write_vectored(), "it gathers as its carrier does");
+
+        {
+            let mut state = state.lock().unwrap();
+            state.closed = false;
+            state.cap = Some(5);
+        }
+        let mut sent = 0;
+        while sent < 13 {
+            match write(&mut held, &mut cx, &slices(sent)) {
+                Poll::Ready(Ok(len)) => sent += len,
+                other => panic!("the carrier takes every write: {other:?}"),
+            }
+        }
+        assert!(held.pending.is_empty(), "the header's copy is gone");
+        let writes = writes.lock().unwrap().clone();
+        assert!(writes.iter().all(|write| write.len() <= 5));
+        assert_eq!(writes.concat(), [HEADER, b"first payload"].concat());
+        assert_eq!(writes.len(), (HEADER.len() + 13).div_ceil(5));
+    }
+
+    /// Over a carrier that gathers, Vision's first padded frame leaves
+    /// behind the header in one write, as over one that does not.
+    #[tokio::test(start_paused = true)]
+    async fn vision_header_leaves_with_the_gathered_first_frame() {
+        let gatherer = Gatherer::default();
+        let writes = gatherer.writes.clone();
+        let carrier: BoxedTransportStream = Box::new(HeldHeader::new(Box::new(gatherer), HEADER));
+        let stream = VlessResponseStream::new(VisionTransportStream::new(carrier));
+        let mut stream = FirstPayloadDeadline::new(
+            VisionOutboundStream::new(VisionStream::new(
+                stream,
+                [7; 16],
+                xray_proxy::vless::DEFAULT_VISION_SEED,
+            )),
+            VLESS_FIRST_PAYLOAD_WAIT,
+            |stream| stream.inner.queue_empty_padding_frame(),
+        );
+        stream.write_all(b"client hello").await.unwrap();
+        stream.write_all(b"second").await.unwrap();
+        stream.flush().await.unwrap();
+        let writes = writes.lock().unwrap();
+        assert_eq!(writes.len(), 2, "a frame a write");
+        assert!(writes[0].starts_with(HEADER));
+        assert_eq!(writes[0][HEADER.len()..][..16], [7; 16]);
+        assert_eq!(writes[0][VISION_PREFIX..][..12], *b"client hello");
+        let padding =
+            u16::from_be_bytes([writes[0][VISION_PREFIX - 2], writes[0][VISION_PREFIX - 1]]);
+        assert_eq!(writes[0].len(), VISION_PREFIX + 12 + usize::from(padding));
+        assert_eq!(writes[1][5..][..6], *b"second");
     }
 
     /// A codec over a carrier that holds the header the codec writes first,
