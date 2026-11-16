@@ -15,6 +15,7 @@ mod size_tests;
 #[cfg(target_os = "linux")]
 mod splice;
 mod split_relay;
+pub(crate) use relay_buffer::{RelayBuffer, PROCESS_POOL};
 #[cfg(target_os = "linux")]
 pub(crate) use splice::copy_bidirectional_with_splice;
 pub(crate) use split_relay::copy_split_with_idle_timeout;

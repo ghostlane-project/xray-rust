@@ -10,32 +10,67 @@ pub(super) enum RemoteReadEnd {
 /// small frame per poll even when more frames are ready; handing each frame
 /// to the stack separately adds avoidable task/channel round trips. Preserve
 /// a terminal result following data so the bridge delivers those bytes first.
+///
+/// The bytes go into a buffer the relays' pool lends for this read, which
+/// the process's byte budget pays for beyond the flow's floor
+/// ([`RelayBuffer`]): a read that finds nothing gives it back at once, so a
+/// quiet flow holds none. The read's bytes are `buffer.filled(len)` until
+/// the caller marks them written.
 pub(super) async fn read_remote_batch<R: AsyncRead + Unpin>(
     reader: &mut R,
-    buffer: &mut [u8],
+    buffer: &mut RelayBuffer<'_>,
 ) -> (usize, Option<RemoteReadEnd>) {
-    debug_assert!(!buffer.is_empty());
-    std::future::poll_fn(|cx| {
-        let mut total = 0;
-        loop {
-            let mut read = tokio::io::ReadBuf::new(&mut buffer[total..]);
-            match std::pin::Pin::new(&mut *reader).poll_read(cx, &mut read) {
-                std::task::Poll::Pending if total == 0 => return std::task::Poll::Pending,
-                std::task::Poll::Pending => return std::task::Poll::Ready((total, None)),
-                std::task::Poll::Ready(Err(_)) => {
-                    return std::task::Poll::Ready((total, Some(RemoteReadEnd::Failed)));
+    let mut end = None;
+    let mut source = Coalescing {
+        reader,
+        end: &mut end,
+    };
+    let read =
+        std::future::poll_fn(|cx| buffer.poll_read(cx, std::pin::Pin::new(&mut source))).await;
+    match read {
+        Ok(0) => (0, Some(end.unwrap_or(RemoteReadEnd::Closed))),
+        Ok(read) => (read, end),
+        Err(_) => (0, Some(RemoteReadEnd::Failed)),
+    }
+}
+
+/// A reader that fills what it is given with every read its source has
+/// ready, and keeps an end that came after data for its caller.
+struct Coalescing<'a, R> {
+    reader: &'a mut R,
+    end: &'a mut Option<RemoteReadEnd>,
+}
+
+impl<R: AsyncRead + Unpin> AsyncRead for Coalescing<'_, R> {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+        let this = self.get_mut();
+        let start = buffer.filled().len();
+        while buffer.remaining() > 0 {
+            let before = buffer.filled().len();
+            match std::pin::Pin::new(&mut *this.reader).poll_read(cx, buffer) {
+                Poll::Pending if before == start => return Poll::Pending,
+                Poll::Pending => break,
+                Poll::Ready(Err(error)) if before == start => return Poll::Ready(Err(error)),
+                Poll::Ready(Err(_)) => {
+                    *this.end = Some(RemoteReadEnd::Failed);
+                    break;
                 }
-                std::task::Poll::Ready(Ok(())) if read.filled().is_empty() => {
-                    return std::task::Poll::Ready((total, Some(RemoteReadEnd::Closed)));
+                Poll::Ready(Ok(())) if buffer.filled().len() == before => {
+                    if before != start {
+                        *this.end = Some(RemoteReadEnd::Closed);
+                    }
+                    break;
                 }
-                std::task::Poll::Ready(Ok(())) => total += read.filled().len(),
-            }
-            if total == buffer.len() {
-                return std::task::Poll::Ready((total, None));
+                Poll::Ready(Ok(())) => {}
             }
         }
-    })
-    .await
+        Poll::Ready(Ok(()))
+    }
 }
 
 #[derive(Debug)]

@@ -73,7 +73,7 @@ fn class_len(class: usize) -> usize {
 }
 
 /// The buffers no direction holds right now.
-pub(super) struct Pool {
+pub(crate) struct Pool {
     free: Mutex<[Vec<Box<[u8]>>; CLASSES]>,
     /// Bytes in `free` and in threads' spares.
     kept: AtomicUsize,
@@ -127,7 +127,7 @@ thread_local! {
 }
 
 /// The pool every relay in the process shares.
-pub(super) static PROCESS_POOL: Pool = Pool::with_spares(process_keeps);
+pub(crate) static PROCESS_POOL: Pool = Pool::with_spares(process_keeps);
 
 /// Frees every buffer the process's relays keep for later, and has every
 /// thread free its spare the next time it relays: for a host under memory
@@ -163,6 +163,17 @@ impl Pool {
             thread_spare: false,
             generation: AtomicUsize::new(0),
         }
+    }
+
+    /// A buffer of at least `len` bytes (at most 1 MiB), for a holder that
+    /// gives it back with [`Self::give`] as soon as its bytes are written.
+    pub(crate) fn lend(&'static self, len: usize) -> Box<[u8]> {
+        self.take(class_of(len))
+    }
+
+    /// Takes back a buffer [`Self::lend`] lent.
+    pub(crate) fn give(&'static self, buffer: Box<[u8]>) {
+        self.give_back(buffer);
     }
 
     /// A buffer of `class`: the thread's spare, the one of that class given
@@ -269,7 +280,7 @@ impl Spare {
     }
 }
 
-pub(super) struct RelayBuffer<'p> {
+pub(crate) struct RelayBuffer<'p> {
     pool: &'static Pool,
     permits: BudgetPermits<'p>,
     /// The buffer of the last read, held until its bytes are written.
@@ -283,7 +294,7 @@ pub(super) struct RelayBuffer<'p> {
 }
 
 impl<'p> RelayBuffer<'p> {
-    pub(super) fn new(cap: usize, pool: &'static Pool, budget: &'p ByteBudget) -> Self {
+    pub(crate) fn new(cap: usize, pool: &'static Pool, budget: &'p ByteBudget) -> Self {
         Self {
             pool,
             permits: BudgetPermits::new(budget),
@@ -335,7 +346,7 @@ impl<'p> RelayBuffer<'p> {
     }
 
     /// Reads once. The bytes are [`Self::filled`] until [`Self::written`].
-    pub(super) fn poll_read<R: AsyncRead + ?Sized>(
+    pub(crate) fn poll_read<R: AsyncRead + ?Sized>(
         &mut self,
         cx: &mut Context<'_>,
         reader: Pin<&mut R>,
@@ -394,7 +405,7 @@ impl<'p> RelayBuffer<'p> {
     }
 
     /// The first `len` bytes of the last read.
-    pub(super) fn filled(&self, len: usize) -> &[u8] {
+    pub(crate) fn filled(&self, len: usize) -> &[u8] {
         let buffer = self
             .borrowed
             .as_ref()
@@ -404,14 +415,14 @@ impl<'p> RelayBuffer<'p> {
 
     /// The last read's `len` bytes were written: its buffer goes back, and
     /// the bytes count as unflushed until [`Self::flushed`].
-    pub(super) fn written(&mut self, len: usize) {
+    pub(crate) fn written(&mut self, len: usize) {
         self.give_back();
         self.unflushed += len;
         self.hold_for_unflushed();
     }
 
     /// The writer was flushed: it holds nothing the direction wrote.
-    pub(super) fn flushed(&mut self) {
+    pub(crate) fn flushed(&mut self) {
         self.unflushed = 0;
         self.hold_for_unflushed();
     }

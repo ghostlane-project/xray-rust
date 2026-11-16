@@ -1,6 +1,15 @@
 use super::*;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
+use xray_transport::memory_budget::{ByteBudgetSettings, DEFAULT_FLOW_FLOOR};
+
+/// A budget of its own, with room for every read these tests make.
+fn test_byte_budget() -> ByteBudget {
+    ByteBudget::with_settings(ByteBudgetSettings {
+        capacity: 1 << 20,
+        floor: DEFAULT_FLOW_FLOOR,
+    })
+}
 
 enum ReadStep {
     Data(Bytes),
@@ -47,19 +56,20 @@ async fn ready_frames_are_batched_without_waiting_for_more_data() {
         ReadStep::Data(Bytes::from_static(b"tail")),
         ReadStep::End(RemoteReadEnd::Closed),
     ]));
-    let mut buffer = [0; 32];
+    let budget = test_byte_budget();
+    let mut buffer = RelayBuffer::new(32, &crate::policy::PROCESS_POOL, &budget);
     // The reader deliberately cannot wake this task. Waiting for another
     // frame after Pending would leave this future pending instead of returning.
     let mut batch = Box::pin(read_remote_batch(&mut reader, &mut buffer));
     let mut cx = Context::from_waker(Waker::noop());
     assert_eq!(batch.as_mut().poll(&mut cx), Poll::Ready((11, None)));
     drop(batch);
-    assert_eq!(&buffer[..11], b"firstsecond");
+    assert_eq!(buffer.filled(11), b"firstsecond");
     assert_eq!(
         read_remote_batch(&mut reader, &mut buffer).await,
         (4, Some(RemoteReadEnd::Closed))
     );
-    assert_eq!(&buffer[..4], b"tail");
+    assert_eq!(buffer.filled(4), b"tail");
 }
 
 #[tokio::test]
@@ -70,14 +80,15 @@ async fn batching_keeps_tail_bytes_before_eof_or_error_and_respects_capacity() {
             ReadStep::Data(Bytes::from_static(b"67890")),
             ReadStep::End(end),
         ]));
-        let mut buffer = [0; 8];
+        let budget = test_byte_budget();
+        let mut buffer = RelayBuffer::new(8, &crate::policy::PROCESS_POOL, &budget);
         assert_eq!(read_remote_batch(&mut reader, &mut buffer).await, (8, None));
-        assert_eq!(&buffer, b"12345678");
+        assert_eq!(buffer.filled(8), b"12345678");
         assert_eq!(
             read_remote_batch(&mut reader, &mut buffer).await,
             (2, Some(end))
         );
-        assert_eq!(&buffer[..2], b"90");
+        assert_eq!(buffer.filled(2), b"90");
         assert!(reader.0.is_empty());
     }
 }

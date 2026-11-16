@@ -26,6 +26,7 @@ use tokio::task::{AbortHandle, JoinError, JoinSet};
 use tokio::time::{sleep, Duration, Instant as TokioInstant};
 use xray_config::{CoreConfig, DnsServerConfig, DomainStrategy, InboundSniffingConfig};
 use xray_routing::{Network as RoutingNetwork, Target, TargetAddr as RoutingTargetAddr};
+use xray_transport::memory_budget::ByteBudget;
 use xray_transport::{
     dns_response_matches_query, protect_udp_socket, BoxedTransportStream, DnsLookup,
     DnsQueryStrategy as TransportDnsQueryStrategy, DnsQueryTransport, DnsResolver, TlsConnector,
@@ -48,6 +49,7 @@ use crate::outbound::{
     DomainStrategyResolver, FreedomOutbound, InboundSource, TcpOutbound, TcpSessionOutbound,
     UdpOutbound, UdpSessionOutbound, VlessTcpOutbound, VlessUdpFraming, VlessUdpOpenOptions,
 };
+use crate::policy::RelayBuffer;
 use crate::policy::{effective_policy_for_level, EffectivePolicy};
 use crate::udp_ingress::{sniff_udp_flow, UdpIngress};
 use crate::{
@@ -3927,13 +3929,20 @@ where
     W: AsyncWrite + Unpin,
     T: TcpFirstByteTiming,
 {
-    let mut read_buffer = vec![0; TCP_DOWNLOAD_CHUNK_SIZE];
+    // The download reads into buffers the relays' pool lends for one read
+    // at a time, up to a 64 KiB chunk as the process's byte budget allows:
+    // a quiet flow holds none. A chunk read is copied for the stack and
+    // stays charged to the budget until the stack has taken it.
+    let mut download = RelayBuffer::new(
+        TCP_DOWNLOAD_CHUNK_SIZE,
+        &crate::policy::PROCESS_POOL,
+        ByteBudget::process(),
+    );
     let mut pending_download: Option<PendingDownload<'_>> = None;
     let mut remote_read_end = None;
     let mut upload_open = true;
     let mut active_idle_timeout = idle_timeout;
     let upload_policy = context.runtime_policy.tcp_upload;
-    let mut upload_batch = BytesMut::new();
     let mut upload_reservations = Vec::with_capacity(upload_policy.max_batch_messages.min(64));
     // Keep the current upload batch alive across download/cancellation polls,
     // but return to select after each completed batch. An unbounded upload
@@ -3972,7 +3981,6 @@ where
                     &mut from_stack,
                     context.tun.as_ref(),
                     upload_policy,
-                    &mut upload_batch,
                     &mut upload_reservations,
                     Some(traffic.as_ref()),
                 ),
@@ -4022,12 +4030,14 @@ where
                 }
                 delivered = async { pending_download.as_mut().expect("pending download").await }, if pending_download.is_some() => {
                     pending_download = None;
+                    // The stack has the chunk: the budget has its bytes back.
+                    download.flushed();
                     if !matches!(delivered, Some(Ok(()))) {
                         break 'bridge TcpBridgeTermination::Graceful;
                     }
                     idle_sleep.as_mut().reset(TokioInstant::now() + active_idle_timeout);
                 }
-                (read, end) = read_remote_batch(remote_reader, &mut read_buffer), if pending_download.is_none() => {
+                (read, end) = read_remote_batch(remote_reader, &mut download), if pending_download.is_none() => {
                     remote_read_end = end;
                     if read == 0 {
                         continue;
@@ -4036,12 +4046,16 @@ where
                     context.tun.record_tcp_remote_read(read);
                     traffic.record_downlink(read as u64);
                     timing.record_remote_read(context.tun.as_ref(), target, read);
+                    let chunk = Bytes::copy_from_slice(download.filled(read));
+                    // Its buffer goes back to the pool; its bytes stay charged
+                    // to the budget, as written and not yet flushed.
+                    download.written(read);
                     pending_download = Some(Box::pin(await_with_optional_timeout(
                         operation_timeout,
                         context.send_remote_data(
                             handle,
                             generation,
-                            Bytes::copy_from_slice(&read_buffer[..read]),
+                            chunk,
                         ),
                     )));
                     idle_sleep
@@ -4429,6 +4443,56 @@ impl UdpFirstResponseTiming for UdpFirstResponseTimingEnabled {
     }
 }
 
+/// The bytes of one upload batch that go out in one write: at most
+/// [`TCP_BRIDGE_COALESCE_BYTES`], in a buffer the relays' pool lends for the
+/// batch and takes back when the batch ends, written, failed or cancelled.
+/// A flow between batches holds none. The bytes are already counted as the
+/// flow's upload (its reservations, held until the batch is written).
+#[derive(Default)]
+struct UploadBatch {
+    buffer: Option<Box<[u8]>>,
+    len: usize,
+}
+
+impl UploadBatch {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Appends `data`; the batch holds at most `TCP_BRIDGE_COALESCE_BYTES`.
+    fn push(&mut self, data: &[u8]) {
+        let end = self.len + data.len();
+        debug_assert!(end <= TCP_BRIDGE_COALESCE_BYTES);
+        let buffer = self
+            .buffer
+            .get_or_insert_with(|| crate::policy::PROCESS_POOL.lend(TCP_BRIDGE_COALESCE_BYTES));
+        buffer[self.len..end].copy_from_slice(data);
+        self.len = end;
+    }
+
+    fn bytes(&self) -> &[u8] {
+        self.buffer
+            .as_deref()
+            .map_or(&[][..], |buffer| &buffer[..self.len])
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+}
+
+impl Drop for UploadBatch {
+    fn drop(&mut self) {
+        if let Some(buffer) = self.buffer.take() {
+            crate::policy::PROCESS_POOL.give(buffer);
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "upload batching keeps reusable scratch state and diagnostics explicit"
@@ -4441,14 +4505,13 @@ async fn write_stack_batch_to_remote<W>(
     from_stack: &mut mpsc::Receiver<StackToRemoteData>,
     tun: &TunEndpoint,
     policy: TcpUploadBridgePolicy,
-    batch: &mut BytesMut,
     reservations: &mut Vec<TcpUploadReservation>,
     traffic: Option<&ConnectionTraffic>,
 ) -> std::io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    batch.clear();
+    let mut batch = UploadBatch::default();
     reservations.clear();
 
     let can_batch_more = policy.max_batch_messages > 1 && first.len() < policy.max_batch_bytes;
@@ -4494,10 +4557,10 @@ where
         batch_messages = batch_messages.saturating_add(1);
         batch_bytes = batch_bytes.saturating_add(item.data.len());
         // Coalesce chunks into writes of up to TCP_BRIDGE_COALESCE_BYTES. The
-        // copy buffer never grows past that, so it is reused rather than
-        // reallocated as fresh pages for every batch.
+        // copy buffer is the relays' pool's, lent for this batch: reused
+        // across batches and flows rather than kept by each flow.
         if batch.len() + item.data.len() > TCP_BRIDGE_COALESCE_BYTES && !batch.is_empty() {
-            write_result = remote_writer.write_all(batch).await;
+            write_result = remote_writer.write_all(batch.bytes()).await;
             batch.clear();
             if write_result.is_err() {
                 break;
@@ -4509,7 +4572,7 @@ where
                 break;
             }
         } else {
-            batch.extend_from_slice(&item.data);
+            batch.push(&item.data);
         }
         if batch_messages >= policy.max_batch_messages || batch_bytes >= policy.max_batch_bytes {
             break;
@@ -4517,9 +4580,11 @@ where
         next = queued.take().or_else(|| from_stack.try_recv().ok());
     }
     if write_result.is_ok() && !batch.is_empty() {
-        write_result = remote_writer.write_all(batch).await;
+        write_result = remote_writer.write_all(batch.bytes()).await;
     }
-    batch.clear();
+    // The flow holds no copy buffer while its writer flushes or it waits for
+    // the next batch.
+    drop(batch);
     let write_duration_ms = elapsed_ms_since(&write_start);
     tun.record_tcp_remote_write_wait(write_duration_ms);
     record_tcp_remote_write_slow_event(
@@ -7066,7 +7131,6 @@ mod tests {
             queue_depth: 1,
         });
         let target = test_tcp443_target();
-        let mut batch = BytesMut::new();
         let mut reservations = Vec::new();
 
         write_stack_batch_to_remote(
@@ -7077,7 +7141,6 @@ mod tests {
             &mut rx,
             &tun,
             DEFAULT_TCP_UPLOAD_BRIDGE_POLICY,
-            &mut batch,
             &mut reservations,
             None,
         )
@@ -7109,7 +7172,6 @@ mod tests {
             queue_depth: 1,
         });
         let target = test_tcp443_target();
-        let mut batch = BytesMut::new();
         let mut reservations = Vec::new();
 
         write_stack_batch_to_remote(
@@ -7120,27 +7182,25 @@ mod tests {
             &mut rx,
             &tun,
             DEFAULT_TCP_UPLOAD_BRIDGE_POLICY,
-            &mut batch,
             &mut reservations,
             None,
         )
         .await
         .unwrap();
 
-        assert_eq!(batch.capacity(), 0);
+        assert_eq!(writer.writes, 1);
+        assert_eq!(writer.written, b"one");
     }
 
     #[tokio::test]
-    async fn stack_to_remote_batch_reuses_copy_buffer() {
+    async fn stack_to_remote_batch_coalesces_each_batch_into_one_write() {
         let mut writer = CountingWrite::default();
         let tun = TunEndpoint::new(xray_tun::TunConfig {
             mtu: 1500,
             queue_depth: 1,
         });
         let target = test_tcp443_target();
-        let mut batch = BytesMut::new();
         let mut reservations = Vec::new();
-        let mut allocated_capacity = None;
 
         for _ in 0..2 {
             let (tx, mut rx) = mpsc::channel(1);
@@ -7154,16 +7214,15 @@ mod tests {
                 &mut rx,
                 &tun,
                 DEFAULT_TCP_UPLOAD_BRIDGE_POLICY,
-                &mut batch,
                 &mut reservations,
                 None,
             )
             .await
             .unwrap();
-            allocated_capacity.get_or_insert(batch.capacity());
         }
 
-        assert_eq!(Some(batch.capacity()), allocated_capacity);
+        assert_eq!(writer.written, b"onetwoonetwo");
+        assert_eq!(writer.writes, 2);
     }
 
     #[tokio::test]
@@ -7183,7 +7242,6 @@ mod tests {
             queue_depth: 1,
         });
         let target = test_tcp443_target();
-        let mut batch = BytesMut::new();
         let mut reservations = Vec::new();
 
         write_stack_batch_to_remote(
@@ -7194,7 +7252,6 @@ mod tests {
             &mut rx,
             &tun,
             policy,
-            &mut batch,
             &mut reservations,
             None,
         )
@@ -7221,7 +7278,6 @@ mod tests {
             queue_depth: 1,
         });
         let target = test_tcp443_target();
-        let mut batch = BytesMut::new();
         let mut reservations = Vec::new();
 
         write_stack_batch_to_remote(
@@ -7232,7 +7288,6 @@ mod tests {
             &mut rx,
             &tun,
             DEFAULT_TCP_UPLOAD_BRIDGE_POLICY,
-            &mut batch,
             &mut reservations,
             None,
         )
@@ -7266,7 +7321,6 @@ mod tests {
             queue_depth: 1,
         });
         let target = test_tcp443_target();
-        let mut batch = BytesMut::new();
         let mut reservations = Vec::new();
 
         write_stack_batch_to_remote(
@@ -7277,7 +7331,6 @@ mod tests {
             &mut rx,
             &tun,
             DEFAULT_TCP_UPLOAD_BRIDGE_POLICY,
-            &mut batch,
             &mut reservations,
             None,
         )
@@ -7304,7 +7357,6 @@ mod tests {
             queue_depth: 1,
         });
         let target = test_tcp443_target();
-        let mut batch = BytesMut::new();
         let mut reservations = Vec::new();
 
         write_stack_batch_to_remote(
@@ -7315,7 +7367,6 @@ mod tests {
             &mut rx,
             &tun,
             DEFAULT_TCP_UPLOAD_BRIDGE_POLICY,
-            &mut batch,
             &mut reservations,
             None,
         )
@@ -8042,7 +8093,6 @@ mod tests {
             mtu: 1500,
             queue_depth: 1,
         });
-        let mut batch = BytesMut::new();
         let mut reservations = Vec::new();
 
         write_stack_batch_to_remote(
@@ -8053,7 +8103,6 @@ mod tests {
             &mut rx,
             &tun,
             DEFAULT_TCP_UPLOAD_BRIDGE_POLICY,
-            &mut batch,
             &mut reservations,
             None,
         )
@@ -8065,9 +8114,6 @@ mod tests {
         assert_eq!(pending.load(Ordering::SeqCst), 0);
         assert_eq!(state.pending_bytes(), 0);
         assert!(reservations.is_empty());
-        // Coalesced writes never grow the reused copy buffer past their size.
-        assert!(batch.is_empty());
-        assert!(batch.capacity() <= 2 * TCP_BRIDGE_COALESCE_BYTES);
         assert_eq!(writer.writes, 2);
     }
 
@@ -8084,7 +8130,6 @@ mod tests {
             mtu: 1500,
             queue_depth: 1,
         });
-        let mut batch = BytesMut::new();
         let mut reservations = Vec::new();
         let target = test_tcp443_target();
 
@@ -8098,7 +8143,6 @@ mod tests {
             &mut rx,
             &tun,
             policy,
-            &mut batch,
             &mut reservations,
             None,
         )
@@ -8107,10 +8151,8 @@ mod tests {
         assert_eq!(writer.written.len(), 8 * 32 * 1024);
         assert_eq!(writer.writes, 4);
         assert_eq!(writer.flushes, 1);
-        let capacity = batch.capacity();
-        assert!(capacity <= 2 * TCP_BRIDGE_COALESCE_BYTES);
 
-        // The next batch reuses the same buffer.
+        // The next batch goes on where the channel left off.
         write_stack_batch_to_remote(
             &mut writer,
             &target,
@@ -8119,14 +8161,12 @@ mod tests {
             &mut rx,
             &tun,
             policy,
-            &mut batch,
             &mut reservations,
             None,
         )
         .await
         .unwrap();
         assert!(rx.is_empty());
-        assert_eq!(batch.capacity(), capacity);
         assert_eq!(writer.written.len(), 13 * 32 * 1024);
     }
 
