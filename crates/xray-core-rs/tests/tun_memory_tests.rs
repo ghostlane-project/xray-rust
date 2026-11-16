@@ -391,15 +391,15 @@ impl App {
     }
 }
 
-/// Moves packets both ways until `done`, for at most `wait`.
+/// Moves packets both ways until `done`, for at most `secs` seconds.
 async fn pump(
     app: &mut App,
     core: &Core,
-    wait: Duration,
+    secs: u64,
     what: &str,
     mut done: impl FnMut(&mut App) -> bool,
 ) {
-    let deadline = Instant::now() + wait;
+    let deadline = Instant::now() + Duration::from_secs(secs);
     loop {
         app.poll();
         let mut moved = app.exchange();
@@ -454,18 +454,18 @@ fn run_flows(flows: usize) -> Run {
     let mut app = App::new(flows, 8 * KIB);
     far.block_on(async {
         app.connect_all(server);
-        pump(&mut app, &core, Duration::from_secs(30), "flows open", |app| {
-            app.all_may_send()
-        })
-        .await;
+        pump(&mut app, &core, 30, "flows open", |app| app.all_may_send()).await;
         let wait_accepted = Instant::now() + Duration::from_secs(30);
         while accepted.load(Ordering::SeqCst) < flows {
-            pump(&mut app, &core, Duration::from_secs(1), "settle", |_| true).await;
-            assert!(Instant::now() < wait_accepted, "the far end took every flow");
+            pump(&mut app, &core, 1, "settle", |_| true).await;
+            assert!(
+                Instant::now() < wait_accepted,
+                "the far end took every flow"
+            );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         let quiet_until = Instant::now() + Duration::from_millis(300);
-        pump(&mut app, &core, Duration::from_secs(5), "quiet", |_| {
+        pump(&mut app, &core, 5, "quiet", |_| {
             Instant::now() >= quiet_until
         })
         .await;
@@ -476,20 +476,22 @@ fn run_flows(flows: usize) -> Run {
     xray_transport::reset_byte_budget_peak();
     far.block_on(async {
         app.command_all(b'd', 0);
-        pump(&mut app, &core, Duration::from_secs(120), "downloads", |app| {
+        pump(&mut app, &core, 120, "downloads", |app| {
             app.received.iter().all(|received| *received >= DOWNLOAD)
         })
         .await;
         // The big uploads alone first: the app's packets then reach their
         // flows fast enough to fill the far end's buffers while it waits.
         app.command_each(|index| (index < BIG_FLOWS).then_some((b'U', BIG_UPLOAD)));
-        pump(&mut app, &core, Duration::from_secs(120), "big uploads", |app| {
+        pump(&mut app, &core, 120, "big uploads", |app| {
             app.to_send[..BIG_FLOWS].iter().all(|left| *left == 0)
-                && app.received[..BIG_FLOWS].iter().all(|received| *received >= 1)
+                && app.received[..BIG_FLOWS]
+                    .iter()
+                    .all(|received| *received >= 1)
         })
         .await;
         app.command_all(b'u', UPLOAD);
-        pump(&mut app, &core, Duration::from_secs(120), "uploads", |app| {
+        pump(&mut app, &core, 120, "uploads", |app| {
             app.to_send.iter().all(|left| *left == 0)
                 && app.received.iter().all(|received| *received >= 1)
         })
@@ -502,7 +504,7 @@ fn run_flows(flows: usize) -> Run {
 
     far.block_on(async {
         let quiet_until = Instant::now() + Duration::from_millis(300);
-        pump(&mut app, &core, Duration::from_secs(5), "quiet again", |_| {
+        pump(&mut app, &core, 5, "quiet again", |_| {
             Instant::now() >= quiet_until
         })
         .await;
@@ -619,18 +621,18 @@ fn one_tun_flow_rate_best_of_five() {
     let (mut down, mut up) = (0.0_f64, 0.0_f64);
     far.block_on(async {
         app.connect_all(server);
-        pump(&mut app, &core, Duration::from_secs(10), "open", App::all_may_send).await;
+        pump(&mut app, &core, 10, "open", App::all_may_send).await;
         for round in 0..6 {
             let start = Instant::now();
             app.command_all(b'd', 0);
-            pump(&mut app, &core, Duration::from_secs(120), "download", |app| {
+            pump(&mut app, &core, 120, "download", |app| {
                 app.received[0] >= BYTES
             })
             .await;
             let down_rate = BYTES as f64 / start.elapsed().as_secs_f64() / 1e6;
             let start = Instant::now();
             app.command_all(b'u', BYTES);
-            pump(&mut app, &core, Duration::from_secs(120), "upload", |app| {
+            pump(&mut app, &core, 120, "upload", |app| {
                 app.to_send[0] == 0 && app.received[0] >= 1
             })
             .await;
