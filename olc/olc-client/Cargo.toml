@@ -1,0 +1,56 @@
+[package]
+name = "olc-client"
+description = "The olcRTC client, ported from the Go engine at 2d4266af: the SOCKS5 front, CONNECT, UDP and DNS over the tunnel, the link's bring-up, the hello race, the control loop and reconnect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+ghostlane-runtime = { path = "../../crates/ghostlane-runtime" }
+libc.workspace = true
+olc-mtslink = { path = "../olc-mtslink" }
+olc-muxconn = { path = "../olc-muxconn" }
+olc-net = { path = "../olc-net" }
+olc-rtc = { path = "../olc-rtc" }
+olc-salutejazz = { path = "../olc-salutejazz" }
+olc-smux = { path = "../olc-smux" }
+olc-vkcalls = { path = "../olc-vkcalls" }
+olc-vp8channel = { path = "../olc-vp8channel" }
+olc-wire = { path = "../olc-wire" }
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7.19", default-features = false }
+zeroize.workspace = true
+
+[features]
+# The binary counts its heap (a wrapper over the system allocator) and says
+# "heap now <n> KiB peak <n> KiB" every 10 s and at its end: the plan's
+# section 9 gauges, measured under the gate's load.
+heap-stats = []
+# wss:// and https:// (the SaluteJazz connector and its auth) over the
+# fork's shaped-rustls, Chrome's ClientHello; without it a TLS URL fails.
+shaped-tls = ["olc-net/shaped-tls"]
+# The peer connections' DTLS from BoringSSL, configured as libwebrtc
+# configures it (Chrome's ClientHello and certificate); a build for a
+# censored network needs it. Built on a GitHub runner: it needs cmake and
+# libclang.
+boring = ["olc-salutejazz/boring"]
+# A test build only: TURN over TLS trusts the root OLC_TURNS_TEST_ROOT names
+# (the lab's end-to-end test). The shipped client is built without it.
+turns-test-roots = ["olc-salutejazz/turns-test-roots"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+# An in-process TURN server for the interop-p2p relay test (webrtc-rs, as
+# olc-rtc's relay tests run it; tests only).
+turn = "=0.17.3"
+webrtc-util = { version = "=0.17.3", default-features = false, features = ["conn", "vnet"] }
+
+[[bin]]
+name = "olc-client"
+path = "src/bin/olc-client.rs"

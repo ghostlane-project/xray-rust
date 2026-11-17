@@ -1,0 +1,128 @@
+// Copyright (C) 2020 Matthew Waters <matthew@centricular.com>
+//
+// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
+// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
+// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
+// option. This file may not be copied, modified, or distributed
+// except according to those terms.
+//
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
+#![deny(missing_debug_implementations)]
+#![deny(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![deny(clippy::std_instead_of_core)]
+#![deny(clippy::std_instead_of_alloc)]
+
+//! # stun-proto
+//!
+//! A sans-IO implementation of a STUN agent as specified in [RFC5389] and [RFC8489].
+//!
+//! [RFC8489]: https://tools.ietf.org/html/rfc8489
+//! [RFC5389]: https://tools.ietf.org/html/rfc5389
+//!
+//! ## Example
+//!
+//! ```
+//! # use core::net::SocketAddr;
+//! use sans_io_time::Instant;
+//! use stun_proto::types::TransportType;
+//! use stun_proto::types::attribute::{MessageIntegrity, XorMappedAddress};
+//! use stun_proto::types::message::{
+//!     BINDING, IntegrityAlgorithm, Message, MessageIntegrityCredentials,
+//!     MessageWriteVec, ShortTermCredentials
+//! };
+//! use stun_proto::types::prelude::*;
+//! use stun_proto::agent::StunAgent;
+//! use stun_proto::auth::ShortTermAuth;
+//!
+//! let local_addr = "10.0.0.1:12345".parse().unwrap();
+//! let remote_addr = "10.0.0.2:3478".parse().unwrap();
+//!
+//! let mut auth = ShortTermAuth::new();
+//! let mut agent = StunAgent::builder(TransportType::Udp, local_addr)
+//!     .build();
+//!
+//! // short term or long term credentials may optionally be used.
+//! let credentials = ShortTermCredentials::new(String::from("password"));
+//! auth.set_credentials(credentials.clone(), IntegrityAlgorithm::Sha1);
+//!
+//! // and we can send a Message
+//! let mut msg = Message::builder_request(BINDING, MessageWriteVec::new());
+//! msg.add_message_integrity(&credentials.clone().into(), IntegrityAlgorithm::Sha1).unwrap();
+//! let transmit = agent.send_request(msg.finish(), remote_addr, Instant::ZERO).unwrap();
+//!
+//! // The transmit struct indicates what data and where to send it.
+//! let request = Message::from_bytes(&transmit.data).unwrap();
+//!
+//! let mut response = Message::builder_success(&request, MessageWriteVec::new());
+//! let xor_addr = XorMappedAddress::new(transmit.from, request.transaction_id());
+//! response.add_attribute(&xor_addr).unwrap();
+//! response.add_message_integrity(&credentials.clone().into(), IntegrityAlgorithm::Sha1).unwrap();
+//!
+//! // when receiving data on the associated socket, we should pass it through the Agent so it can
+//! // parse and handle any STUN messages.
+//! let data = response.finish();
+//! let to = transmit.to;
+//! let response = Message::from_bytes(&data).unwrap();
+//!
+//! // If there is any authentication required for use, then that should be executed before passing
+//! // to the agent.
+//! assert!(matches!(auth.validate_incoming_message(&response), Ok(Some(IntegrityAlgorithm::Sha1))));
+//!
+//! // If running over TCP then there may be multiple messages parsed. However UDP will only ever
+//! // have a single message per datagram.
+//! assert!(agent.handle_stun_message(&response, to));
+//!
+//! // Once valid STUN data has been sent and received, then data can be sent and received from the
+//! // peer.
+//! let data = vec![42; 8];
+//! let transmit = agent.send_data(data.as_slice(), remote_addr);
+//! assert_eq!(transmit.data, &data);
+//! assert_eq!(transmit.from, local_addr);
+//! assert_eq!(transmit.to, remote_addr);
+//! ```
+
+#![no_std]
+
+extern crate alloc;
+
+#[cfg(any(feature = "std", test))]
+extern crate std;
+
+pub mod agent;
+pub mod auth;
+pub mod stats;
+
+pub use sans_io_time::Instant;
+pub use stun_types as types;
+
+/// Public prelude.
+pub mod prelude {}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use tracing::subscriber::DefaultGuard;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    pub fn test_init_log() -> DefaultGuard {
+        let level_filter = std::env::var("STUN_LOG")
+            .or(std::env::var("RUST_LOG"))
+            .ok()
+            .and_then(|var| var.parse::<tracing_subscriber::filter::Targets>().ok())
+            .unwrap_or(
+                tracing_subscriber::filter::Targets::new().with_default(tracing::Level::TRACE),
+            );
+        let registry = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .with_file(true)
+                .with_line_number(true)
+                .with_level(true)
+                .with_target(false)
+                .with_test_writer()
+                .with_filter(level_filter),
+        );
+        tracing::subscriber::set_default(registry)
+    }
+}

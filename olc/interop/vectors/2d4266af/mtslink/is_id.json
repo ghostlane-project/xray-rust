@@ -1,0 +1,99 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/auth/mtslink/zz_vectors_test.go",
+ "sources": [
+  "internal/auth/mtslink/api.go:92-103 (isID)"
+ ],
+ "cases": [
+  {
+   "name": "empty",
+   "input_hex": "",
+   "input": "",
+   "ok": false
+  },
+  {
+   "name": "one digit",
+   "input_hex": "30",
+   "input": "0",
+   "ok": true
+  },
+  {
+   "name": "an id",
+   "input_hex": "3230333030343030353030",
+   "input": "20300400500",
+   "ok": true
+  },
+  {
+   "name": "twenty digits",
+   "input_hex": "3939393939393939393939393939393939393939",
+   "input": "99999999999999999999",
+   "ok": true
+  },
+  {
+   "name": "twenty-one digits",
+   "input_hex": "393939393939393939393939393939393939393939",
+   "input": "999999999999999999999",
+   "ok": false
+  },
+  {
+   "name": "a letter",
+   "input_hex": "313261",
+   "input": "12a",
+   "ok": false
+  },
+  {
+   "name": "a sign",
+   "input_hex": "2d31",
+   "input": "-1",
+   "ok": false
+  },
+  {
+   "name": "a plus",
+   "input_hex": "2b31",
+   "input": "+1",
+   "ok": false
+  },
+  {
+   "name": "a space in front",
+   "input_hex": "2031",
+   "input": " 1",
+   "ok": false
+  },
+  {
+   "name": "a space behind",
+   "input_hex": "3120",
+   "input": "1 ",
+   "ok": false
+  },
+  {
+   "name": "a dot",
+   "input_hex": "312e30",
+   "input": "1.0",
+   "ok": false
+  },
+  {
+   "name": "full-width digits",
+   "input_hex": "efbc91efbc92",
+   "input": "１２",
+   "ok": false
+  },
+  {
+   "name": "an Arabic-Indic digit",
+   "input_hex": "d9a3",
+   "input": "٣",
+   "ok": false
+  },
+  {
+   "name": "a byte that is not UTF-8",
+   "input_hex": "31ff",
+   "input": null,
+   "ok": false
+  },
+  {
+   "name": "a line end",
+   "input_hex": "310a",
+   "input": "1\n",
+   "ok": false
+  }
+ ]
+}

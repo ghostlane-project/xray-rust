@@ -1,0 +1,112 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -41,19 +41,6 @@
+ name = "turn_client_proto"
+ path = "src/lib.rs"
+ 
+-[[test]]
+-name = "tcp"
+-path = "tests/tcp.rs"
+-
+-[[test]]
+-name = "udp"
+-path = "tests/udp.rs"
+-
+-[[bench]]
+-name = "sendrecv"
+-path = "benches/sendrecv.rs"
+-harness = false
+-
+ [dependencies.byteorder]
+ version = "1"
+ default-features = false
+@@ -91,27 +78,6 @@
+ version = "0.8.0"
+ default-features = false
+ 
+-[dev-dependencies.criterion]
+-version = "0.7"
+-
+-[dev-dependencies.stun-proto]
+-version = "2.0.1"
+-default-features = false
+-
+-[dev-dependencies.tracing]
+-version = "0.1"
+-features = [
+-    "attributes",
+-    "std",
+-]
+-default-features = false
+-
+-[dev-dependencies.tracing-subscriber]
+-version = "0.3"
+-
+-[dev-dependencies.turn-server-proto]
+-version = "0.8.0"
+-
+ [lints.rust.unexpected_cfgs]
+ level = "warn"
+ priority = 0
+--- a/src/protocol.rs
++++ b/src/protocol.rs
+@@ -30,7 +30,7 @@
+     AdditionalAddressFamily, ChannelNumber, ConnectionId, Icmp, Lifetime, RequestedAddressFamily,
+     XorPeerAddress, XorRelayedAddress,
+ };
+-use turn_types::attribute::{Data as AData, DontFragment, RequestedTransport};
++use turn_types::attribute::{Data as AData, RequestedTransport};
+ use turn_types::channel::ChannelData;
+ use turn_types::message::*;
+ use turn_types::stun::message::{MessageHeader, MessageType, MessageWriteVec};
+@@ -133,25 +133,19 @@
+ 
+     fn send_initial_request(&mut self, now: Instant) -> (Transmit<Data<'static>>, TransactionId) {
+         info!("sending initial ALLOCATE");
+-        let lifetime = Lifetime::new(1800);
++        // xray-rust (olc-rtc): libwebrtc's first Allocate, REQUESTED-TRANSPORT
++        // alone; no LIFETIME (the server's default) and no DONT-FRAGMENT.
+         let requested = match self.allocation_transport {
+             TransportType::Udp => RequestedTransport::new(RequestedTransport::UDP),
+             TransportType::Tcp => RequestedTransport::new(RequestedTransport::TCP),
+         };
+-        let dont_fragment = DontFragment::new();
+         let mut msg = Message::builder_request(
+             ALLOCATE,
+             MessageWriteVec::with_capacity(
+-                MessageHeader::LENGTH
+-                    + lifetime.padded_len()
+-                    + requested.padded_len()
+-                    + dont_fragment.padded_len()
+-                    + 8 * self.families.len(),
++                MessageHeader::LENGTH + requested.padded_len() + 8 * self.families.len(),
+             ),
+         );
+-        msg.add_attribute(&lifetime).unwrap();
+         msg.add_attribute(&requested).unwrap();
+-        msg.add_attribute(&dont_fragment).unwrap();
+         if self.families.len() > 1 {
+             // This is the RFC 8656 path where a single client transport produces multiple
+             // allocations on the server
+@@ -193,19 +187,18 @@
+             TransportType::Udp => RequestedTransport::new(RequestedTransport::UDP),
+             TransportType::Tcp => RequestedTransport::new(RequestedTransport::TCP),
+         };
+-        let lifetime = Lifetime::new(1800);
++        // xray-rust (olc-rtc): libwebrtc's authenticated Allocate,
++        // REQUESTED-TRANSPORT then the signature; no LIFETIME.
+         let mut builder = Message::builder_request(
+             ALLOCATE,
+             MessageWriteVec::with_capacity(
+                 MessageHeader::LENGTH
+-                    + lifetime.padded_len()
+                     + requested_transport.padded_len()
+                     + 8 * address_families.len()
+                     + stun_auth.message_signature_bytes(),
+             ),
+         );
+         builder.add_attribute(&requested_transport).unwrap();
+-        builder.add_attribute(&lifetime).unwrap();
+         if address_families.len() > 1 {
+             // This is the RFC 8656 path where a single client transport produces multiple
+             // allocations on the server

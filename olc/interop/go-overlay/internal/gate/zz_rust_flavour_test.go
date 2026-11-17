@@ -1,0 +1,632 @@
+// Copyright 2026 the Ghostlane authors. Licensed under the Apache License 2.0.
+//
+// An overlay file (olc/interop in the xray-rust fork): the gate's interop
+// target and its rust flavour. The target runs this module's server (built
+// with the olcrtc_interop tag, which links the interop-pipe engine) in a room
+// of an in-process hub (internal/engine/interoppipe) instead of a meeting
+// service; the rust flavour runs the Rust client (olc-client) as a child
+// process against it. TestGateRust runs S0-S5 on that pair:
+//
+//	go test -tags olcrtc_interop ./internal/gate -run '^TestGateRust$' \
+//	    -olcrtc.gate-target=interop -olcrtc.gate-rust-bin=<olc-client> \
+//	    [-olcrtc.gate-chaos=chaos] [-olcrtc.gate-flavours=rust,cli]
+//
+// The cli flavour here is the Go public client over the same hub, the
+// baseline the rust one is compared with.
+
+package gate
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/openlibrecommunity/olcrtc/internal/engine/interoppipe"
+	"github.com/openlibrecommunity/olcrtc/internal/zzmem"
+	"github.com/openlibrecommunity/olcrtc/pkg/olcrtc/client"
+)
+
+const (
+	targetInterop    = "interop"
+	platformInterop  = "interop-linux"
+	providerInterop  = "interop"
+	rustFlavour      = "rust"
+	rustListenMarker = "SOCKS5 server listening on "
+)
+
+var (
+	gateRustBin = flag.String("olcrtc.gate-rust-bin", os.Getenv("OLCRTC_GATE_RUST_BIN"),
+		"the Rust client binary (olc-client) for the interop target")
+	gateChaos    = flag.String("olcrtc.gate-chaos", "clean", "the interop hub's faults: clean or chaos")
+	gateFlavours = flag.String("olcrtc.gate-flavours", rustFlavour,
+		"the interop target's clients: rust, cli (the Go baseline) or both")
+)
+
+// InteropTarget is the server in a room of the hub.
+type InteropTarget struct {
+	root, work string
+	hub        *interoppipe.Hub
+	origin     *Origin
+
+	buildMu sync.Mutex
+	binary  string
+}
+
+// Name implements Target.
+func (t *InteropTarget) Name() string { return targetInterop }
+
+// Platform implements Target.
+func (t *InteropTarget) Platform() string { return platformInterop }
+
+// Pairs implements Target: the one pair, datachannel over the hub.
+func (t *InteropTarget) Pairs() []Pair { return []Pair{{providerInterop, transportData}} }
+
+// Load implements Target.
+func (t *InteropTarget) Load() LoadURLs { return t.origin.URLs }
+
+func (t *InteropTarget) build(ctx context.Context) (string, error) {
+	t.buildMu.Lock()
+	defer t.buildMu.Unlock()
+	if t.binary != "" {
+		return t.binary, nil
+	}
+	out := filepath.Join(t.work, "olcrtc")
+	cmd := exec.CommandContext(ctx, "go", "build", "-tags", "olcrtc_testhooks,olcrtc_interop", "-o", out, "./cmd/olcrtc")
+	cmd.Dir = t.root
+	if b, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("build server: %w\n%s", err, b)
+	}
+	t.binary = out
+	return out, nil
+}
+
+// Open implements Target: a fresh room and key, the server joined to it.
+func (t *InteropTarget) Open(ctx context.Context, p Pair, dir string, opt OpenOptions) (Endpoint, func(), error) {
+	key, err := NewKey()
+	if err != nil {
+		return Endpoint{}, nil, err
+	}
+	room, err := NewChannel()
+	if err != nil {
+		return Endpoint{}, nil, err
+	}
+	ep := Endpoint{Provider: p.Provider, Transport: p.Transport, Room: t.hub.URL("gate-" + room), Key: key, DNS: defaultDNS}
+	stop, err := t.startServer(ctx, ep, []string{key}, dir, opt)
+	if err != nil {
+		return Endpoint{}, nil, err
+	}
+	return ep, stop, nil
+}
+
+// startServer runs a server holding ring in ep's room and waits for its join.
+func (t *InteropTarget) startServer(ctx context.Context, ep Endpoint, ring []string, dir string,
+	opt OpenOptions,
+) (func(), error) {
+	binary, err := t.build(ctx)
+	if err != nil {
+		return nil, err
+	}
+	srv, err := startServer(ctx, binary, t.work, interopServerConfig(ep, ring), opt)
+	if err != nil {
+		return nil, err
+	}
+	secrets := append(ep.Secrets(), ring...)
+	stop := func() { srv.stop(filepath.Join(dir, serverLogName), secrets) }
+	if err := waitForLine(srv.log, linkedLine, linkBudget, srv.exited); err != nil {
+		tail := clip(Scrub(lastLine(srv.log), secrets...))
+		stop()
+		return nil, fmt.Errorf("%w; last server line: %s", err, tail)
+	}
+	return stop, nil
+}
+
+// interopServerConfig is the mode: srv YAML of the interop pair.
+func interopServerConfig(ep Endpoint, ring []string) string {
+	keys := make([]string, 0, len(ring))
+	for _, k := range ring {
+		keys = append(keys, strconv.Quote(k))
+	}
+	crypto := "crypto: { keys: [" + strings.Join(keys, ", ") + "] }"
+	if len(ring) == 1 {
+		crypto = "crypto: { key: " + strconv.Quote(ring[0]) + " }"
+	}
+	return strings.Join([]string{
+		"mode: srv", "auth: { provider: none }",
+		"engine: { name: " + interoppipe.Name + ", url: " + strconv.Quote(ep.Room) + " }",
+		crypto,
+		"net: { transport: " + ep.Transport + ", dns: " + strconv.Quote(ep.DNS) + " }",
+		"udp: { enabled: true }", "debug: true",
+	}, "\n") + "\n"
+}
+
+// rustConfig is what the Rust client reads (olc-client's config.rs).
+type rustConfig struct {
+	// Rooms are the room supervisor's rooms after URL (the supervisor
+	// failover e2e, zz_rust_e2e_test.go); none runs the one room.
+	Rooms []string `json:"rooms,omitempty"`
+
+	URL       string `json:"url"`
+	Key       string `json:"key"`
+	Transport string `json:"transport"`
+	DNS       string `json:"dns"`
+	Socks     string `json:"socks"`
+	DeviceID  string `json:"device_id"`
+	SocksUser string `json:"socks_user,omitempty"`
+	SocksPass string `json:"socks_pass,omitempty"`
+	// Engine, Token and RoomID join a SaluteJazz room (the fakeroom target,
+	// zz_rust_fakeroom_test.go): the engine, the room's password and code.
+	Engine string `json:"engine,omitempty"`
+	Token  string `json:"token,omitempty"`
+	RoomID string `json:"room_id,omitempty"`
+	// Provider is the auth provider: salutejazz reads URL as the room
+	// reference "<code>:<password>" (zz_rust_live_test.go).
+	Provider string `json:"provider,omitempty"`
+	// Channel, VP8FPS and VP8Batch are the p2p target's vp8channel
+	// (zz_rust_p2p_test.go): the binding channel both ends set and the
+	// transport's numbers; the endpoint's, empty on the interop target.
+	Channel  string `json:"channel,omitempty"`
+	VP8FPS   int    `json:"vp8_fps,omitempty"`
+	VP8Batch int    `json:"vp8_batch,omitempty"`
+	// IceLocalIP is the address the client's ICE gathers its host candidate
+	// on (the p2p target: loopback, where the Go side gathers too).
+	IceLocalIP string `json:"ice_local_ip,omitempty"`
+	// Liveness and LivenessFallbackMS shorten the client's liveness for the
+	// e2e scenarios (zz_rust_e2e_test.go).
+	Liveness           *rustLiveness `json:"liveness,omitempty"`
+	LivenessFallbackMS int           `json:"liveness_fallback_ms,omitempty"`
+	// ICETransportPolicy is "relay" for a relay-only run (the fakeroom
+	// target's relay rooms).
+	ICETransportPolicy string `json:"ice_transport_policy,omitempty"`
+	// MaxJoins caps the joins the client starts on the carrier, rejoins
+	// included (the live step's budget); 0 is no cap.
+	MaxJoins int `json:"max_joins,omitempty"`
+	// Debug turns the client's debug lines on (the live step: the ALPN its
+	// dials were answered with and the DTLS it negotiated).
+	Debug bool `json:"debug,omitempty"`
+
+	// The fields below exist for the carriers' fakes only (the mtsfake and
+	// vkfake targets and the TestRust* tests of MTS Link and VK Calls); no
+	// config of a real room sets one. Their names are olc-client's
+	// (config.rs: provider_base, engine_extra), held to it by the fixture
+	// zz_rust_carrier_config.json, which both sides' tests read.
+
+	// ProviderBase is where a carrier's provider finds its service instead
+	// of the production one: for provider mtslink the fake gateway's base
+	// URL (Go: the unexported Provider.gateway of internal/auth/mtslink,
+	// set by its tests alone).
+	ProviderBase string `json:"provider_base,omitempty"`
+	// EngineExtra is what a provider would hand the engine as
+	// Credentials.Extra, for an engine joined on direct credentials (URL
+	// the room join, Token the cookies), under Extra's own names. MTS
+	// Link: "gateway" and "conferenceId" (the conference a failed join
+	// takes back, and where), "ice" (udp, tcp or both; absent leaves the
+	// client its default). VK Calls: "ice_servers", the JSON text itself
+	// as the provider writes it. The Go engine has none of them on direct
+	// credentials: with provider none it is given the URL and the token
+	// alone (internal/engine/builtin/builtin.go:197-203).
+	EngineExtra map[string]string `json:"engine_extra,omitempty"`
+}
+
+// rustClient runs the Rust client as a child process; its stderr is the
+// engine log and goes to the cell's capture line by line.
+type rustClient struct {
+	bin         string
+	start, stop time.Duration
+	extra       func(*rustConfig)
+	logf        func(format string, args ...any)
+}
+
+// Name implements Client.
+func (rustClient) Name() string { return rustFlavour }
+
+// Start implements Client.
+func (c rustClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, error) {
+	child, err := startRust(ctx, c.bin, ep, c.extra)
+	if err != nil {
+		return nil, err
+	}
+	addr, err := child.listening(c.start, c.stop)
+	if err != nil {
+		return nil, err
+	}
+	liveRust.Store(addr, child)
+	return &Tunnel{SocksAddr: addr, Stop: sync.OnceFunc(func() {
+		liveRust.Delete(addr)
+		child.halt(c.stop, c.logf)
+	})}, nil
+}
+
+// listening waits for the child's SOCKS address, at most start; a child that
+// ended or said nothing in time is stopped and is an error.
+func (c *rustChild) listening(start, stop time.Duration) (string, error) {
+	timer := time.NewTimer(start)
+	defer timer.Stop()
+	select {
+	case addr := <-c.ready:
+		return addr, nil
+	case <-c.exited:
+		c.halt(stop, nil)
+		return "", fmt.Errorf("%s: %w: %v", c.who, ErrClientEnded, c.err)
+	case <-timer.C:
+		c.halt(stop, nil)
+		return "", fmt.Errorf("%s: %w within %s", c.who, ErrClientNotReady, start)
+	}
+}
+
+// rustChild is one run of a client as a child process: the Rust client, or
+// the Go one (zz_go_child_test.go).
+type rustChild struct {
+	// who names the client in errors and in the memory lines: "rust client"
+	// or "go client".
+	who    string
+	cmd    *exec.Cmd
+	cancel context.CancelFunc
+	dir    string
+	ready  chan string
+	exited chan struct{}
+	err    error
+	peak   int64  // the highest VmRSS sampled, KiB
+	snap   string // memSnapshot at that sample, when OLCRTC_GATE_MEM_DIR is set
+	peakMu sync.Mutex
+	bin    string
+	// peakMem is the memory snapshot taken at the sample with the highest
+	// VmRSS (under peakMu).
+	peakMem zzmem.Peak
+	// samples is every sample, in time order, for S7 on the rust flavour
+	// (zz_rust_s6s7_test.go): VmRSS, RssAnon as the heap, the threads as
+	// the goroutines; under peakMu.
+	samples []Sample
+	// gcHeapMB is the largest heap a Go child's runtime said it had when a
+	// collection began or ended (its gctrace lines, see goGCLine), in MB; 0
+	// for a child that wrote none. Under peakMu.
+	gcHeapMB int64
+	once     sync.Once
+}
+
+func startRust(ctx context.Context, bin string, ep Endpoint, extra func(*rustConfig)) (*rustChild, error) {
+	if bin == "" {
+		return nil, errors.New("rust client: no binary: pass -olcrtc.gate-rust-bin or OLCRTC_GATE_RUST_BIN")
+	}
+	dir, err := os.MkdirTemp("", "olc-rust-")
+	if err != nil {
+		return nil, fmt.Errorf("rust client: %w", err)
+	}
+	cfg := rustConfig{URL: ep.Room, Key: ep.Key, Transport: ep.Transport, DNS: ep.DNS, Socks: "127.0.0.1:0",
+		DeviceID: "gate-rust", Channel: ep.Channel, VP8FPS: ep.VP8FPS, VP8Batch: ep.VP8Batch}
+	if extra != nil {
+		extra(&cfg)
+	}
+	raw, _ := json.Marshal(cfg)
+	return startChild(ctx, "rust client", bin, dir, "client.json", raw, nil)
+}
+
+// startChild runs the client binary bin on the config cfg, written as name
+// into dir (the child's own directory, removed when it is halted), with env
+// added to this process's. Every line of its stderr goes to the process log,
+// where the cell's capture reads it, but a Go runtime's gctrace lines, which
+// are kept as a number instead.
+func startChild(ctx context.Context, who, bin, dir, name string, cfg []byte, env []string) (*rustChild, error) {
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, cfg, 0o600); err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, fmt.Errorf("%s: %w", who, err)
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	cmd := exec.CommandContext(runCtx, bin, path)
+	if len(env) != 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	// The child dies with the test process (a panic or -timeout runs no
+	// cleanup), not only when halt stops it.
+	cmd.SysProcAttr = childProc(false)
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = stopBudget
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		_ = os.RemoveAll(dir)
+		return nil, fmt.Errorf("%s: %w", who, err)
+	}
+	cmd.Stdout = io.Discard
+	if err := cmd.Start(); err != nil {
+		cancel()
+		_ = os.RemoveAll(dir)
+		return nil, fmt.Errorf("%s: %w", who, err)
+	}
+	c := &rustChild{who: who, bin: bin, cmd: cmd, cancel: cancel, dir: dir, ready: make(chan string, 1), exited: make(chan struct{})}
+	lines := make(chan struct{})
+	go func() {
+		defer close(lines)
+		sc := bufio.NewScanner(stderr)
+		sc.Buffer(make([]byte, 64<<10), 1<<20)
+		said := false
+		for sc.Scan() {
+			line := sc.Text()
+			if mb, ok := goGCLine(line); ok {
+				c.peakMu.Lock()
+				c.gcHeapMB = max(c.gcHeapMB, mb)
+				c.peakMu.Unlock()
+				continue
+			}
+			_, _ = log.Writer().Write([]byte(line + "\n"))
+			if i := strings.Index(line, rustListenMarker); i >= 0 && !said {
+				said = true
+				c.ready <- strings.Fields(line[i+len(rustListenMarker):])[0]
+			}
+		}
+	}()
+	go c.sample()
+	go func() {
+		<-lines
+		c.err = cmd.Wait()
+		close(c.exited)
+	}()
+	return c, nil
+}
+
+// memTopN is how many mappings the peak-memory line names.
+const memTopN = 12
+
+// childSampleEvery is how often the child is sampled: under the runner's
+// second, so what S7 reads at a mark is at most this much after it.
+const childSampleEvery = 250 * time.Millisecond
+
+// sample keeps the child's samples and its peak resident memory.
+func (c *rustChild) sample() {
+	tick := time.NewTicker(childSampleEvery)
+	defer tick.Stop()
+	pid := c.cmd.Process.Pid
+	for {
+		if kb := procStatusKB(pid, "VmRSS:"); kb > 0 {
+			anon := max(procStatusKB(pid, "RssAnon:"), 0)
+			sm := Sample{
+				At:         time.Now(),
+				RSS:        uint64(kb) << 10,   //nolint:gosec // positive: checked above
+				HeapInuse:  uint64(anon) << 10, //nolint:gosec // not negative: max above
+				Goroutines: int(procStatusKB(pid, "Threads:")),
+			}
+			c.peakMu.Lock()
+			if kb > c.peak && os.Getenv(memDirEnv) != "" {
+				c.snap = memSnapshot(c.cmd.Process.Pid)
+			}
+			c.peak = max(c.peak, kb)
+			c.peakMem.Observe(pid, kb)
+			c.samples = append(c.samples, sm)
+			c.peakMu.Unlock()
+		}
+		select {
+		case <-c.exited:
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// series is a copy of the child's samples.
+func (c *rustChild) series() []Sample {
+	c.peakMu.Lock()
+	defer c.peakMu.Unlock()
+	return slices.Clone(c.samples)
+}
+
+// memDirEnv names a directory for the child's memory at its highest sampled
+// VmRSS (memSnapshot), one rust-mem-<pid>.txt per child: a measurement aid.
+const memDirEnv = "OLCRTC_GATE_MEM_DIR"
+
+// memSnapshot is the child's /proc status, smaps_rollup and smaps, and its
+// sockets as ss -m lists them (each with its skmem line).
+func memSnapshot(pid int) string {
+	var b strings.Builder
+	for _, f := range []string{"status", "smaps_rollup", "smaps"} {
+		if raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/%s", pid, f)); err == nil {
+			fmt.Fprintf(&b, "== %s\n%s\n", f, raw)
+		}
+	}
+	out, err := exec.Command("ss", "-tuanpm").Output()
+	if err != nil {
+		return b.String()
+	}
+	b.WriteString("== ss\n")
+	needle, keep := fmt.Sprintf("pid=%d,", pid), false
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.HasPrefix(line, "\t") || strings.HasPrefix(line, " ") {
+			if keep {
+				b.WriteString(line + "\n")
+			}
+			continue
+		}
+		keep = strings.Contains(line, needle)
+		if keep {
+			b.WriteString(line + "\n")
+		}
+	}
+	return b.String()
+}
+
+// procStatusKB reads one kB field of /proc/<pid>/status; 0 when it cannot.
+func procStatusKB(pid int, field string) int64 {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if rest, ok := strings.CutPrefix(line, field); ok {
+			n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimSpace(rest), " kB"), 10, 64)
+			return n
+		}
+	}
+	return 0
+}
+
+// halt stops the child (SIGTERM, then a kill after the budget) and, given a
+// logf, says what its memory came to.
+func (c *rustChild) halt(budget time.Duration, logf func(string, ...any)) {
+	c.once.Do(func() {
+		hwm := procStatusKB(c.cmd.Process.Pid, "VmHWM:")
+		c.cancel()
+		select {
+		case <-c.exited:
+		case <-time.After(budget + time.Second):
+		}
+		_ = os.RemoveAll(c.dir)
+		if logf != nil {
+			c.peakMu.Lock()
+			var anon uint64
+			for _, sm := range c.samples {
+				anon = max(anon, sm.HeapInuse)
+			}
+			logf("%s memory: VmHWM %d KiB, peak sampled VmRSS %d KiB, peak sampled RssAnon %d KiB", c.who, hwm, c.peak,
+				anon>>10)
+			if c.gcHeapMB != 0 {
+				logf("%s memory: the Go heap at its largest, as a collection began or ended: %d MB (gctrace)", c.who, c.gcHeapMB)
+			}
+			if dir := os.Getenv(memDirEnv); dir != "" && c.snap != "" {
+				name := filepath.Join(dir, fmt.Sprintf("rust-mem-%d.txt", c.cmd.Process.Pid))
+				body := fmt.Sprintf("VmHWM %d kB\npeak VmRSS %d kB\n%s", hwm, c.peak, c.snap)
+				if err := os.WriteFile(name, []byte(body), 0o600); err != nil {
+					logf("%s memory: %v", c.who, err)
+				}
+			}
+			logf("%s memory at peak RSS: %s", c.who, c.peakMem.Snap.Line(c.bin, memTopN))
+			c.peakMu.Unlock()
+		}
+	})
+}
+
+// goInteropClient is the Go public client over the hub: the baseline.
+type goInteropClient struct{ cli cliClient }
+
+// Name implements Client.
+func (goInteropClient) Name() string { return cliFlavour }
+
+// Start implements Client.
+func (g goInteropClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, error) {
+	cfg := client.Config{
+		Transport: ep.Transport, Provider: "none", Engine: interoppipe.Name, URL: ep.Room,
+		KeyHex: ep.Key, LocalAddr: "127.0.0.1:0", DNSServer: ep.DNS, DeviceID: "gate-cli",
+	}
+	c := g.cli
+	c.run = func(ctx context.Context, _ client.Config, onReady func(addr string)) error {
+		return runPublicClient(ctx, cfg, onReady)
+	}
+	return c.Start(ctx, ep)
+}
+
+// interopScenarios is the registry the interop target runs: S0-S7 for every
+// flavour, S6 on servers whose pipe opens its bridge late and S7 over the
+// rust client's own process (zz_rust_s6s7_test.go); withhold keeps S6's late
+// servers out of the report.
+func interopScenarios(all []Scenario, withhold func(...string)) []Scenario {
+	var out []Scenario
+	for _, s := range all {
+		switch s.ID {
+		case "S0", "S1", "S2", "S3", "S4", "S5":
+		case "S6":
+			s = interopS6(s, withhold)
+		case "S7":
+			s = interopS7(s)
+		default:
+			continue
+		}
+		s.Applies = always
+		out = append(out, s)
+	}
+	return out
+}
+
+// TestGateRust is the gate on the interop target.
+func TestGateRust(t *testing.T) {
+	if *gateTargetName != targetInterop {
+		t.Skip("the interop gate runs with -olcrtc.gate-target=interop")
+	}
+	interoppipe.Register()
+	root := moduleRoot(t)
+	chaos, err := interoppipe.Profile(*gateChaos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := interoppipe.StartHub("127.0.0.1:0", chaos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(hub.Close)
+	target := &InteropTarget{root: root, work: t.TempDir(), hub: hub, origin: startOrigin(t)}
+	rec := NewRecorder(Report{Target: targetInterop, Runner: runnerName()})
+
+	registryMu.Lock()
+	saved := registry
+	registry = interopScenarios(saved, rec.Withhold)
+	registryMu.Unlock()
+	t.Cleanup(func() {
+		registryMu.Lock()
+		registry = saved
+		registryMu.Unlock()
+	})
+
+	var clients []Client
+	for _, name := range splitList(*gateFlavours) {
+		switch name {
+		case rustFlavour:
+			clients = append(clients, rustClient{bin: *gateRustBin, start: startBudget, stop: stopBudget, logf: t.Logf})
+		case cliFlavour:
+			clients = append(clients, goInteropClient{cli: cliClient{start: startBudget, stop: stopBudget}})
+		default:
+			t.Fatalf("unknown flavour %q: rust or cli", name)
+		}
+	}
+	dir, err := resolveDir(root, *gateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir = filepath.Join(dir, "interop-"+cmpOr(*gateChaos, "clean"))
+	if err := os.MkdirAll(dir, artifactsPerm); err != nil {
+		t.Fatal(err)
+	}
+	capture := StartCapture()
+	defer capture.Stop()
+	secrets := []string{}
+	opt := Options{
+		Target: target, Clients: clients, Thresholds: Local, Dir: dir, Recorder: rec, Capture: capture,
+		Secrets: &secrets, Logf: t.Logf, ReportPath: filepath.Join(dir, reportName),
+	}
+	RunPlan(runContext(t), opt, func(name string, cell func() error) {
+		t.Run(name, func(t *testing.T) {
+			if err := cell(); err != nil {
+				t.Error(err)
+			}
+		})
+	})
+	rep := rec.Report()
+	for _, c := range rep.Cells {
+		raw, _ := json.Marshal(c.Metrics)
+		t.Logf("cell %s: %s %s %q", c.ID, c.Status, raw, c.Failures)
+	}
+	for _, id := range unreported(rep) {
+		t.Errorf("%s: %s", id, reasonDidNotRun)
+	}
+	if why := gateFailure(rep); why != "" {
+		t.Errorf("gate: %s; the report goes to %s", why, opt.ReportPath)
+	}
+}
+
+func cmpOr(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}

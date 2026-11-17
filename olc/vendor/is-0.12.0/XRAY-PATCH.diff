@@ -1,0 +1,271 @@
+--- a/src/candidate.rs
++++ b/src/candidate.rs
+@@ -96,6 +96,10 @@
+     /// that are the same type.
+     local_preference: Option<u32>,
+ 
++    // olcRTC fork: how a relayed candidate's allocation reaches its TURN server
++    // (`Candidate::relayed_via`), which its type preference follows, as libwebrtc's does.
++    relay_proto: Option<Protocol>,
++
+     /// If we discarded this candidate (for example due to being redundant
+     /// against another candidate).
+     discarded: bool,
+@@ -189,6 +193,7 @@
+             ufrag,
+             local,
+             local_preference: None,
++            relay_proto: None,
+             discarded: false,
+         }
+     }
+@@ -317,6 +322,22 @@
+         ))
+     }
+ 
++    /// olcRTC fork: [`Candidate::relayed`] for an allocation made over `via`, the client's
++    /// transport to the TURN server. Its type preference is libwebrtc's for that relay
++    /// protocol (p2p/base/port.h: `ICE_TYPE_PREFERENCE_RELAY_UDP` 2, `_TCP` 1, `_TLS` 0), not
++    /// the relayed address's protocol, which is UDP whatever the path to the server; upstream
++    /// keys it on the latter, so a relay over TCP would rank with one over UDP.
++    pub fn relayed_via(
++        addr: SocketAddr,
++        local: SocketAddr,
++        proto: impl TryInto<Protocol>,
++        via: impl TryInto<Protocol>,
++    ) -> Result<Self, IceError> {
++        let mut c = Self::relayed(addr, local, proto)?;
++        c.relay_proto = Some(parse_proto(via)?);
++        Ok(c)
++    }
++
+     /// Creates a new ICE candidate from a candidate attribute string.
+     ///
+     /// Expects the format from RFC 5245 section 15.1, e.g.
+@@ -456,7 +477,12 @@
+         // server-reflexive candidates, and 0 for relayed candidates. The variations
+         // for non-UDP protocols are taken from libwebrtc:
+         // <https://webrtc.googlesource.com/src/+/refs/heads/main/p2p/base/port.h#68>
+-        let type_preference = match (kind, self.proto) {
++        // olcRTC fork: a relayed candidate ranks by its relay protocol when it has one.
++        let proto = match kind {
++            CandidateKind::Relayed => self.relay_proto.unwrap_or(self.proto),
++            _ => self.proto,
++        };
++        let type_preference = match (kind, proto) {
+             (CandidateKind::Host, Protocol::Udp) => 126,
+             (CandidateKind::PeerReflexive, Protocol::Udp) => 110,
+             (CandidateKind::ServerReflexive, _) => 100,
+--- a/src/stun.rs
++++ b/src/stun.rs
+@@ -9,6 +9,51 @@
+ use serde::{Deserialize, Serialize};
+ use subtle::ConstantTimeEq;
+ 
++// olcRTC fork (Ghostlane M2 spike): the shape our binding requests are written in. Upstream
++// writes USERNAME, ICE-CONTROLLED/-CONTROLLING, PRIORITY, USE-CANDIDATE and never writes
++// GOOG-NETWORK-INFO; libwebrtc writes USERNAME, GOOG-NETWORK-INFO, ICE-CONTROLLING,
++// USE-CANDIDATE (or ICE-CONTROLLED), PRIORITY. The Chrome profile writes the latter.
++use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
++
++/// The attribute set and order binding requests are written in.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum StunProfile {
++    /// str0m's own: USERNAME, ICE-CONTROLLED/ICE-CONTROLLING, PRIORITY, USE-CANDIDATE.
++    Str0m,
++    /// libwebrtc's (Chrome, `Connection::...Prepare`): USERNAME, GOOG-NETWORK-INFO,
++    /// ICE-CONTROLLING (+ USE-CANDIDATE) or ICE-CONTROLLED, PRIORITY.
++    Chrome,
++}
++
++static STUN_PROFILE: AtomicU8 = AtomicU8::new(0);
++// Network id 1, cost 10: what a Chrome on one Wi-Fi or Ethernet adapter puts in
++// GOOG-NETWORK-INFO (`network_info = id << 16 | cost`).
++static NETWORK_INFO: AtomicU32 = AtomicU32::new(1 << 16 | 10);
++
++/// Sets the profile for every binding request this process writes from now on.
++pub fn set_stun_profile(profile: StunProfile) {
++    STUN_PROFILE.store(matches!(profile, StunProfile::Chrome) as u8, Ordering::Relaxed);
++}
++
++/// The profile binding requests are written in.
++pub fn stun_profile() -> StunProfile {
++    if STUN_PROFILE.load(Ordering::Relaxed) == 1 {
++        StunProfile::Chrome
++    } else {
++        StunProfile::Str0m
++    }
++}
++
++/// Sets the GOOG-NETWORK-INFO value the Chrome profile writes.
++pub fn set_network_info(network_id: u16, cost: u16) {
++    NETWORK_INFO.store((network_id as u32) << 16 | cost as u32, Ordering::Relaxed);
++}
++
++fn network_info() -> (u16, u16) {
++    let v = NETWORK_INFO.load(Ordering::Relaxed);
++    ((v >> 16) as u16, v as u16)
++}
++
+ pub const DEFAULT_MAX_RETRANSMITS: usize = 9;
+ 
+ #[derive(Debug)] // Purposely not `Clone` / `Copy` to ensure we always use the latest one everywhere.
+@@ -365,6 +410,12 @@
+             builder = builder.ice_controlled(control_tie_breaker);
+         }
+ 
++        // olcRTC fork: Chrome's requests carry GOOG-NETWORK-INFO.
++        if stun_profile() == StunProfile::Chrome {
++            let (id, cost) = network_info();
++            builder = builder.network_cost(id, cost);
++        }
++
+         builder.build(trans_id)
+     }
+ 
+@@ -728,6 +779,11 @@
+         } else {
+             0
+         };
++        // olcRTC fork: GOOG-NETWORK-INFO is written when set.
++        let network_cost = self
++            .network_cost
++            .map(|_| ATTR_TLV_LENGTH + 4)
++            .unwrap_or_default();
+         let xor_peer_address = self
+             .xor_peer_address
+             .map(|a| ATTR_TLV_LENGTH + if a.is_ipv4() { 8 } else { 20 })
+@@ -767,6 +823,7 @@
+             + priority
+             + address
+             + use_candidate
++            + network_cost
+             + xor_peer_address
+             + xor_relayed_address
+             + data
+@@ -778,21 +835,49 @@
+     }
+ 
+     fn to_bytes(self, out: &mut dyn Write, trans_id: &TransId) -> io::Result<()> {
++        // olcRTC fork: a message carrying GOOG-NETWORK-INFO is one the Chrome profile made
++        // (upstream never writes it), and its leading attributes go in libwebrtc's order;
++        // everything after PRIORITY is written as before. Decided by the message, not the
++        // process-wide profile, so serialising never depends on when the profile changed.
++        let chrome = self.network_cost.is_some();
+         if let Some(v) = self.username {
+             out.write_all(&Self::USERNAME.to_be_bytes())?;
+             encode_str(Self::USERNAME, v, out)?;
+             let pad = calculate_pad(v.len());
+             out.write_all(&PAD[0..pad])?;
+         }
+-        if let Some(v) = self.ice_controlled {
+-            out.write_all(&Self::ICE_CONTROLLED.to_be_bytes())?;
+-            out.write_all(&8_u16.to_be_bytes())?;
+-            out.write_all(&v.to_be_bytes())?;
+-        }
+-        if let Some(v) = self.ice_controlling {
+-            out.write_all(&Self::ICE_CONTROLLING.to_be_bytes())?;
+-            out.write_all(&8_u16.to_be_bytes())?;
+-            out.write_all(&v.to_be_bytes())?;
++        if chrome {
++            if let Some((id, cost)) = self.network_cost {
++                out.write_all(&Self::NETWORK_COST.to_be_bytes())?;
++                out.write_all(&4_u16.to_be_bytes())?;
++                out.write_all(&id.to_be_bytes())?;
++                out.write_all(&cost.to_be_bytes())?;
++            }
++            if let Some(v) = self.ice_controlling {
++                out.write_all(&Self::ICE_CONTROLLING.to_be_bytes())?;
++                out.write_all(&8_u16.to_be_bytes())?;
++                out.write_all(&v.to_be_bytes())?;
++                if self.use_candidate {
++                    out.write_all(&Self::USE_CANDIDATE.to_be_bytes())?;
++                    out.write_all(&0_u16.to_be_bytes())?;
++                }
++            }
++            if let Some(v) = self.ice_controlled {
++                out.write_all(&Self::ICE_CONTROLLED.to_be_bytes())?;
++                out.write_all(&8_u16.to_be_bytes())?;
++                out.write_all(&v.to_be_bytes())?;
++            }
++        } else {
++            if let Some(v) = self.ice_controlled {
++                out.write_all(&Self::ICE_CONTROLLED.to_be_bytes())?;
++                out.write_all(&8_u16.to_be_bytes())?;
++                out.write_all(&v.to_be_bytes())?;
++            }
++            if let Some(v) = self.ice_controlling {
++                out.write_all(&Self::ICE_CONTROLLING.to_be_bytes())?;
++                out.write_all(&8_u16.to_be_bytes())?;
++                out.write_all(&v.to_be_bytes())?;
++            }
+         }
+         if let Some(v) = self.priority {
+             out.write_all(&Self::PRIORITY.to_be_bytes())?;
+@@ -806,7 +891,7 @@
+             out.write_all(&((len as u16).to_be_bytes()))?;
+             out.write_all(&buf[0..len])?;
+         }
+-        if self.use_candidate {
++        if self.use_candidate && !(chrome && self.ice_controlling.is_some()) {
+             out.write_all(&Self::USE_CANDIDATE.to_be_bytes())?;
+             out.write_all(&0_u16.to_be_bytes())?;
+         }
+@@ -1493,6 +1578,57 @@
+         assert!(message.verify(b"xJcE9AQAR7kczUDVOXRUCl", sha1_hmac));
+     }
+ 
++    // olcRTC fork: `parse_stun_message`'s PACKET is a binding request Chrome sent (USERNAME,
++    // GOOG-NETWORK-INFO {1, 10}, ICE-CONTROLLING, USE-CANDIDATE, PRIORITY, MESSAGE-INTEGRITY,
++    // FINGERPRINT). With network cost set, the builder writes it again byte for byte.
++    #[test]
++    fn chrome_profile_rebuilds_chromes_binding_request() {
++        const PACKET: &[u8] = &[
++            0x00, 0x01, 0x00, 0x50, 0x21, 0x12, 0xa4, 0x42, 0x6a, 0x75, 0x63, 0x31, 0x35, 0x75,
++            0x78, 0x55, 0x6e, 0x67, 0x47, 0x63, 0x00, 0x06, 0x00, 0x09, 0x70, 0x39, 0x4b, 0x41,
++            0x3a, 0x53, 0x51, 0x41, 0x74, 0x00, 0x00, 0x00, 0xc0, 0x57, 0x00, 0x04, 0x00, 0x01,
++            0x00, 0x0a, 0x80, 0x2a, 0x00, 0x08, 0x6e, 0xee, 0xc6, 0xe9, 0x7d, 0x18, 0x39, 0x5c,
++            0x00, 0x25, 0x00, 0x00, 0x00, 0x24, 0x00, 0x04, 0x6e, 0x7f, 0x1e, 0xff, 0x00, 0x08,
++            0x00, 0x14, 0x5d, 0x04, 0x25, 0xa0, 0x20, 0x7a, 0xb1, 0xe0, 0x54, 0x10, 0x22, 0x99,
++            0xaa, 0xf9, 0x83, 0x9c, 0xa0, 0x76, 0xc6, 0xd5, 0x80, 0x28, 0x00, 0x04, 0x36, 0x0e,
++            0x21, 0x9f,
++        ];
++        let trans_id = TransId::from_slice(&PACKET[8..20]);
++        let msg = StunMessageBuilder::new()
++            .binding()
++            .request()
++            .username("p9KA:SQAt")
++            .prio(0x6e7f1eff)
++            .use_candidate()
++            .ice_controlling(0x6eeec6e97d18395c)
++            .network_cost(1, 10)
++            .build(trans_id);
++        let mut buf = vec![0u8; 256];
++        let n = msg.to_bytes(Some(b"xJcE9AQAR7kczUDVOXRUCl"), &mut buf, sha1_hmac).unwrap();
++        assert_eq!(&buf[..n], PACKET);
++
++        // Without network cost the order is upstream's: ICE-CONTROLLING before PRIORITY,
++        // USE-CANDIDATE after it.
++        let msg = StunMessageBuilder::new()
++            .binding()
++            .request()
++            .username("p9KA:SQAt")
++            .prio(0x6e7f1eff)
++            .use_candidate()
++            .ice_controlling(0x6eeec6e97d18395c)
++            .build(trans_id);
++        let n = msg.to_bytes(Some(b"xJcE9AQAR7kczUDVOXRUCl"), &mut buf, sha1_hmac).unwrap();
++        let order: Vec<u16> = {
++            let (mut i, mut v) = (20, vec![]);
++            while i + 4 <= n {
++                v.push(u16::from_be_bytes([buf[i], buf[i + 1]]));
++                i += 4 + ((u16::from_be_bytes([buf[i + 2], buf[i + 3]]) as usize + 3) & !3);
++            }
++            v
++        };
++        assert_eq!(order, [0x0006, 0x802a, 0x0024, 0x0025, 0x0008, 0x8028]);
++    }
++
+     #[test]
+     fn minimal_debug_print() {
+         let attrs = Attributes {

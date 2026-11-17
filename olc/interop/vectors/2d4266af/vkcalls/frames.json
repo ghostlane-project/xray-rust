@@ -1,0 +1,337 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/vkcalls/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/vkcalls/signaling.go:233-262 (orderedCommandFrame), 197-231 (command), 311-317 (hangup), 46 (the frame bound)",
+  "internal/engine/vkcalls/signaling.go:107-146 (dialSignaling: the handshake's headers), 176-200 (the ping answered)",
+  "internal/engine/vkcalls/vkcalls.go:46-57, 158-187, 404-414 (the payloads: capabilities, modifiers, settings, acceptPayload)",
+  "internal/engine/vkcalls/signaling_test.go:220-289 (TestSignalingLargeCommandIsOneFrame, TestOrderedCommandFrameIsJSON)",
+  "internal/engine/vkcalls/zz_vectors_wire_test.go (this generator's listener)"
+ ],
+ "cases": {
+  "note": "ordered: orderedCommandFrame(command, sequence, payload). A frame is JSON as Go's encoding/json writes it: \u003c, \u003e and \u0026 as \\u003c, \\u003e and \\u0026, U+2028 and U+2029 escaped, a payload's keys in byte order.",
+  "frame_bound": 262144,
+  "ordered": [
+   {
+    "name": "allocate-consumer, the engine's capabilities",
+    "command": "allocate-consumer",
+    "sequence": 1,
+    "payload": {
+     "capabilities": {
+      "animojiBackendRender": true,
+      "animojiDataChannelVersion": 2,
+      "asrDataChannelVersion": 1,
+      "audioMix": true,
+      "audioShare": true,
+      "consumerFastScreenShare": false,
+      "consumerFastScreenShareQualityOnDemand": false,
+      "consumerScreenDataChannelVersion": 1,
+      "consumerUpdate": true,
+      "estimatedPerformanceIndex": 0,
+      "fastScreenShare": true,
+      "onDemandTracks": true,
+      "producerCommandDataChannelVersion": 3,
+      "producerNotificationDataChannelVersion": 8,
+      "producerScreenDataChannelVersion": 1,
+      "red": true,
+      "simulcast": true,
+      "simulcastNativeOrder": true,
+      "singleSession": true,
+      "transparentAudio": false,
+      "unifiedPlan": true,
+      "videoSuspend": false,
+      "videoTracksCount": 36
+     }
+    },
+    "frame": "{\"command\":\"allocate-consumer\",\"sequence\":1,\"capabilities\":{\"animojiBackendRender\":true,\"animojiDataChannelVersion\":2,\"asrDataChannelVersion\":1,\"audioMix\":true,\"audioShare\":true,\"consumerFastScreenShare\":false,\"consumerFastScreenShareQualityOnDemand\":false,\"consumerScreenDataChannelVersion\":1,\"consumerUpdate\":true,\"estimatedPerformanceIndex\":0,\"fastScreenShare\":true,\"onDemandTracks\":true,\"producerCommandDataChannelVersion\":3,\"producerNotificationDataChannelVersion\":8,\"producerScreenDataChannelVersion\":1,\"red\":true,\"simulcast\":true,\"simulcastNativeOrder\":true,\"singleSession\":true,\"transparentAudio\":false,\"unifiedPlan\":true,\"videoSuspend\":false,\"videoTracksCount\":36}}"
+   },
+   {
+    "name": "update-media-modifiers",
+    "command": "update-media-modifiers",
+    "sequence": 2,
+    "payload": {
+     "mediaModifiers": {
+      "denoise": true,
+      "denoiseAnn": true
+     }
+    },
+    "frame": "{\"command\":\"update-media-modifiers\",\"sequence\":2,\"mediaModifiers\":{\"denoise\":true,\"denoiseAnn\":true}}"
+   },
+   {
+    "name": "change-media-settings",
+    "command": "change-media-settings",
+    "sequence": 3,
+    "payload": {
+     "mediaSettings": {
+      "isAnimojiEnabled": true,
+      "isAudioEnabled": false,
+      "isAudioSharingEnabled": false,
+      "isFastScreenSharingEnabled": false,
+      "isScreenSharingEnabled": false,
+      "isVideoEnabled": false
+     }
+    },
+    "frame": "{\"command\":\"change-media-settings\",\"sequence\":3,\"mediaSettings\":{\"isAnimojiEnabled\":true,\"isAudioEnabled\":false,\"isAudioSharingEnabled\":false,\"isFastScreenSharingEnabled\":false,\"isScreenSharingEnabled\":false,\"isVideoEnabled\":false}}"
+   },
+   {
+    "name": "accept-producer, the shaped answer of the answer test",
+    "command": "accept-producer",
+    "sequence": 4,
+    "payload": {
+     "description": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+     "sessionId": "session-1",
+     "ssrcs": [
+      "2463708138",
+      "2463708139"
+     ]
+    },
+    "frame": "{\"command\":\"accept-producer\",\"sequence\":4,\"description\":\"v=0\\r\\no=- 1234567890123456789 2 IN IP4 127.0.0.1\\r\\ns=-\\r\\nt=0 0\\r\\na=group:BUNDLE 0 1 2 3 5\\r\\na=msid-semantic: WMS proofkit\\r\\nm=audio 9 UDP/TLS/RTP/SAVPF 111\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:0\\r\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\r\\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\\r\\na=recvonly\\r\\na=rtcp-mux\\r\\na=rtpmap:111 opus/48000/2\\r\\na=rtcp-fb:111 transport-cc\\r\\na=fmtp:111 useinbandfec=1;minptime=10\\r\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\r\\nc=IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:1\\r\\na=sctp-port:5000\\r\\nm=audio 9 UDP/TLS/RTP/SAVPF 111\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:2\\r\\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\\r\\na=sendonly\\r\\na=msid:proofkit 2-audio\\r\\na=rtcp-mux\\r\\na=rtpmap:111 opus/48000/2\\r\\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\\r\\na=ssrc:1234567890 cname:proofkit\\r\\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:3\\r\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\r\\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\\r\\na=sendonly\\r\\na=msid:proofkit video\\r\\na=rtcp-mux\\r\\na=rtpmap:102 VP9/90000\\r\\na=rtcp-fb:102 transport-cc\\r\\na=rtpmap:103 rtx/90000\\r\\na=fmtp:103 apt=102\\r\\na=rtpmap:100 VP8/90000\\r\\na=rtcp-fb:100 nack\\r\\na=rtcp-fb:100 nack pli\\r\\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\\r\\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\\r\\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\\r\\na=simulcast:send l;m;h\\r\\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:5\\r\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\r\\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\\r\\na=recvonly\\r\\na=rtcp-mux\\r\\na=rtpmap:100 VP8/90000\\r\\na=rtcp-fb:100 nack\",\"sessionId\":\"session-1\",\"ssrcs\":[\"2463708138\",\"2463708139\"]}"
+   },
+   {
+    "name": "accept-producer for an offer that names no SSRC",
+    "command": "accept-producer",
+    "sequence": 5,
+    "payload": {
+     "description": "v=0\r\ns=-",
+     "sessionId": "",
+     "ssrcs": []
+    },
+    "frame": "{\"command\":\"accept-producer\",\"sequence\":5,\"description\":\"v=0\\r\\ns=-\",\"sessionId\":\"\",\"ssrcs\":[]}"
+   },
+   {
+    "name": "a description with CRLF, angle brackets, an ampersand, quotes and a backslash",
+    "command": "accept-producer",
+    "sequence": 6,
+    "payload": {
+     "description": "v=0\r\na=x:\u003ctag\u003e \u0026 \"quoted\" 'single' back\\slash /slash\ttab\r\n",
+     "sessionId": "s\u003c1\u003e\u0026",
+     "ssrcs": [
+      "1",
+      "2"
+     ]
+    },
+    "frame": "{\"command\":\"accept-producer\",\"sequence\":6,\"description\":\"v=0\\r\\na=x:\\u003ctag\\u003e \\u0026 \\\"quoted\\\" 'single' back\\\\slash /slash\\ttab\\r\\n\",\"sessionId\":\"s\\u003c1\\u003e\\u0026\",\"ssrcs\":[\"1\",\"2\"]}"
+   },
+   {
+    "name": "a description of every ASCII byte and some that are not ASCII",
+    "command": "accept-producer",
+    "sequence": 7,
+    "payload": {
+     "description": "\u0000\u0001\u0002\u0003\u0004\u0005\u0006\u0007\b\t\n\u000b\f\r\u000e\u000f\u0010\u0011\u0012\u0013\u0014\u0015\u0016\u0017\u0018\u0019\u001a\u001b\u001c\u001d\u001e\u001f !\"#$%\u0026'()*+,-./0123456789:;\u003c=\u003e?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~é Мария 日本 \u2028\u2029 😀 ﻿"
+    },
+    "frame": "{\"command\":\"accept-producer\",\"sequence\":7,\"description\":\"\\u0000\\u0001\\u0002\\u0003\\u0004\\u0005\\u0006\\u0007\\b\\t\\n\\u000b\\f\\r\\u000e\\u000f\\u0010\\u0011\\u0012\\u0013\\u0014\\u0015\\u0016\\u0017\\u0018\\u0019\\u001a\\u001b\\u001c\\u001d\\u001e\\u001f !\\\"#$%\\u0026'()*+,-./0123456789:;\\u003c=\\u003e?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\\\]^_`abcdefghijklmnopqrstuvwxyz{|}~é Мария 日本 \\u2028\\u2029 😀 ﻿\"}"
+   },
+   {
+    "name": "no payload",
+    "command": "x",
+    "sequence": 2,
+    "payload": null,
+    "frame": "{\"command\":\"x\",\"sequence\":2}"
+   },
+   {
+    "name": "a payload with no field",
+    "command": "x",
+    "sequence": 2,
+    "payload": {},
+    "frame": "{\"command\":\"x\",\"sequence\":2}"
+   },
+   {
+    "name": "a payload with one field",
+    "command": "x",
+    "sequence": 2,
+    "payload": {
+     "a": 1
+    },
+    "frame": "{\"command\":\"x\",\"sequence\":2,\"a\":1}"
+   },
+   {
+    "name": "keys go out in byte order, at every depth",
+    "command": "x",
+    "sequence": 3,
+    "payload": {
+     "": "empty key first",
+     "B": "upper first",
+     "b": {
+      "Z": 2,
+      "a": [
+       {
+        "x": true,
+        "y": null
+       }
+      ],
+      "z": 1
+     },
+     "é": 1.5
+    },
+    "frame": "{\"command\":\"x\",\"sequence\":3,\"\":\"empty key first\",\"B\":\"upper first\",\"b\":{\"Z\":2,\"a\":[{\"x\":true,\"y\":null}],\"z\":1},\"é\":1.5}"
+   },
+   {
+    "name": "a command name that needs escaping",
+    "command": "a\"b\u003cc\u003e\n",
+    "sequence": 4,
+    "payload": null,
+    "frame": "{\"command\":\"a\\\"b\\u003cc\\u003e\\n\",\"sequence\":4}"
+   },
+   {
+    "name": "the largest sequence",
+    "command": "x",
+    "sequence": 9223372036854775807,
+    "payload": null,
+    "frame": "{\"command\":\"x\",\"sequence\":9223372036854775807}"
+   },
+   {
+    "name": "sequence zero and a negative one are written as they are",
+    "command": "x",
+    "sequence": 0,
+    "payload": {
+     "sequence": -1
+    },
+    "frame": "{\"command\":\"x\",\"sequence\":0,\"sequence\":-1}"
+   },
+   {
+    "name": "a payload that is a list",
+    "command": "x",
+    "sequence": 2,
+    "payload": [
+     1
+    ],
+    "frame": "",
+    "error": "vkcalls: signaling command payload: x payload is not an object"
+   },
+   {
+    "name": "a payload that is a string",
+    "command": "x",
+    "sequence": 2,
+    "payload": "text",
+    "frame": "",
+    "error": "vkcalls: signaling command payload: x payload is not an object"
+   },
+   {
+    "name": "a payload that is a number",
+    "command": "x",
+    "sequence": 2,
+    "payload": 7,
+    "frame": "",
+    "error": "vkcalls: signaling command payload: x payload is not an object"
+   }
+  ],
+  "wire_note": "One connection of the engine's signalling client (dialSignaling) to a listener on loopback: the handshake request as written (header lines in wire order), the commands sent in their order, and every client frame as it arrived. A frame of exactly frame_bound bytes goes out as one frame; one byte more is refused before any byte is written and still takes a sequence number. After the commands the listener sends the text ping, then the client closes: hangup carries the next sequence.",
+  "masked": {
+   "\u003ckey\u003e": "the handshake's Sec-WebSocket-Key: sixteen random bytes in base64",
+   "\u003csfu\u003e": "the listener's host:port"
+  },
+  "endpoint": "ws://\u003csfu\u003e/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+  "handshake": {
+   "method": "GET",
+   "target": "/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026conversationId=c\u0026device=browser\u0026entityType=USER\u0026peerId=10020030040\u0026platform=WEB\u0026tgt=join\u0026token=join-token\u0026userId=100200300400\u0026version=5",
+   "proto": "HTTP/1.1",
+   "headers": [
+    "Host: \u003csfu\u003e",
+    "User-Agent: Go-http-client/1.1",
+    "Connection: Upgrade",
+    "Origin: https://vk.com",
+    "Referer: https://vk.com/",
+    "Sec-WebSocket-Key: \u003ckey\u003e",
+    "Sec-WebSocket-Version: 13",
+    "Upgrade: websocket"
+   ]
+  },
+  "commands": [
+   {
+    "command": "allocate-consumer",
+    "sequence": 1,
+    "frame": "{\"command\":\"allocate-consumer\",\"sequence\":1,\"capabilities\":{\"animojiBackendRender\":true,\"animojiDataChannelVersion\":2,\"asrDataChannelVersion\":1,\"audioMix\":true,\"audioShare\":true,\"consumerFastScreenShare\":false,\"consumerFastScreenShareQualityOnDemand\":false,\"consumerScreenDataChannelVersion\":1,\"consumerUpdate\":true,\"estimatedPerformanceIndex\":0,\"fastScreenShare\":true,\"onDemandTracks\":true,\"producerCommandDataChannelVersion\":3,\"producerNotificationDataChannelVersion\":8,\"producerScreenDataChannelVersion\":1,\"red\":true,\"simulcast\":true,\"simulcastNativeOrder\":true,\"singleSession\":true,\"transparentAudio\":false,\"unifiedPlan\":true,\"videoSuspend\":false,\"videoTracksCount\":36}}",
+    "len": 674,
+    "sha256": "01cdf8c92bcb512f9e30ce2fd39a83a047e4e879dc86665c8feef2f9cd68a0b6"
+   },
+   {
+    "command": "update-media-modifiers",
+    "sequence": 2,
+    "frame": "{\"command\":\"update-media-modifiers\",\"sequence\":2,\"mediaModifiers\":{\"denoise\":true,\"denoiseAnn\":true}}",
+    "len": 101,
+    "sha256": "f2847d159727ec7fa4c0b897d3a9d3b491066113d5465248b8562cdac176a768"
+   },
+   {
+    "command": "change-media-settings",
+    "sequence": 3,
+    "frame": "{\"command\":\"change-media-settings\",\"sequence\":3,\"mediaSettings\":{\"isAnimojiEnabled\":true,\"isAudioEnabled\":false,\"isAudioSharingEnabled\":false,\"isFastScreenSharingEnabled\":false,\"isScreenSharingEnabled\":false,\"isVideoEnabled\":false}}",
+    "len": 232,
+    "sha256": "6abdfd26d5cac276d6f7c4178d150038dbd9093ee0a099df0ef97676769c1952"
+   },
+   {
+    "command": "accept-producer",
+    "sequence": 4,
+    "frame": "{\"command\":\"accept-producer\",\"sequence\":4,\"description\":\"v=0\\r\\no=- 1234567890123456789 2 IN IP4 127.0.0.1\\r\\ns=-\\r\\nt=0 0\\r\\na=group:BUNDLE 0 1 2 3 5\\r\\na=msid-semantic: WMS proofkit\\r\\nm=audio 9 UDP/TLS/RTP/SAVPF 111\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:0\\r\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\r\\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\\r\\na=recvonly\\r\\na=rtcp-mux\\r\\na=rtpmap:111 opus/48000/2\\r\\na=rtcp-fb:111 transport-cc\\r\\na=fmtp:111 useinbandfec=1;minptime=10\\r\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\r\\nc=IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:1\\r\\na=sctp-port:5000\\r\\nm=audio 9 UDP/TLS/RTP/SAVPF 111\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:2\\r\\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\\r\\na=sendonly\\r\\na=msid:proofkit 2-audio\\r\\na=rtcp-mux\\r\\na=rtpmap:111 opus/48000/2\\r\\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\\r\\na=ssrc:1234567890 cname:proofkit\\r\\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:3\\r\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\r\\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\\r\\na=sendonly\\r\\na=msid:proofkit video\\r\\na=rtcp-mux\\r\\na=rtpmap:102 VP9/90000\\r\\na=rtcp-fb:102 transport-cc\\r\\na=rtpmap:103 rtx/90000\\r\\na=fmtp:103 apt=102\\r\\na=rtpmap:100 VP8/90000\\r\\na=rtcp-fb:100 nack\\r\\na=rtcp-fb:100 nack pli\\r\\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\\r\\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\\r\\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\\r\\na=simulcast:send l;m;h\\r\\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:5\\r\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\r\\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\\r\\na=recvonly\\r\\na=rtcp-mux\\r\\na=rtpmap:100 VP8/90000\\r\\na=rtcp-fb:100 nack\",\"sessionId\":\"session-1\",\"ssrcs\":[\"2463708138\",\"2463708139\"]}",
+    "len": 3090,
+    "sha256": "0f290c51a2f72c9a7256500c4fc90eff7cfa30c6daa43c19dc7b0578aa9c3efd"
+   },
+   {
+    "command": "accept-producer",
+    "sequence": 5,
+    "description_len": 262050,
+    "len": 262144,
+    "sha256": "513e753078447fd45713050a838ef7d4374a46741d6c265a37f1a97a3d3fc3f0"
+   },
+   {
+    "command": "accept-producer",
+    "sequence": 6,
+    "description_len": 262051,
+    "len": 262145,
+    "sha256": "b526c02f0e3cf9711a8ab8f5cf6d06d6582f4f3dd5619694c07d7fe30fd08ee3",
+    "error": "vkcalls: signaling write accept-producer: vkcalls: signaling command exceeds one frame: 262145 bytes"
+   }
+  ],
+  "frames": [
+   {
+    "fin": true,
+    "opcode": 1,
+    "masked": true,
+    "length": 674,
+    "text": "{\"command\":\"allocate-consumer\",\"sequence\":1,\"capabilities\":{\"animojiBackendRender\":true,\"animojiDataChannelVersion\":2,\"asrDataChannelVersion\":1,\"audioMix\":true,\"audioShare\":true,\"consumerFastScreenShare\":false,\"consumerFastScreenShareQualityOnDemand\":false,\"consumerScreenDataChannelVersion\":1,\"consumerUpdate\":true,\"estimatedPerformanceIndex\":0,\"fastScreenShare\":true,\"onDemandTracks\":true,\"producerCommandDataChannelVersion\":3,\"producerNotificationDataChannelVersion\":8,\"producerScreenDataChannelVersion\":1,\"red\":true,\"simulcast\":true,\"simulcastNativeOrder\":true,\"singleSession\":true,\"transparentAudio\":false,\"unifiedPlan\":true,\"videoSuspend\":false,\"videoTracksCount\":36}}"
+   },
+   {
+    "fin": true,
+    "opcode": 1,
+    "masked": true,
+    "length": 101,
+    "text": "{\"command\":\"update-media-modifiers\",\"sequence\":2,\"mediaModifiers\":{\"denoise\":true,\"denoiseAnn\":true}}"
+   },
+   {
+    "fin": true,
+    "opcode": 1,
+    "masked": true,
+    "length": 232,
+    "text": "{\"command\":\"change-media-settings\",\"sequence\":3,\"mediaSettings\":{\"isAnimojiEnabled\":true,\"isAudioEnabled\":false,\"isAudioSharingEnabled\":false,\"isFastScreenSharingEnabled\":false,\"isScreenSharingEnabled\":false,\"isVideoEnabled\":false}}"
+   },
+   {
+    "fin": true,
+    "opcode": 1,
+    "masked": true,
+    "length": 3090,
+    "text": "{\"command\":\"accept-producer\",\"sequence\":4,\"description\":\"v=0\\r\\no=- 1234567890123456789 2 IN IP4 127.0.0.1\\r\\ns=-\\r\\nt=0 0\\r\\na=group:BUNDLE 0 1 2 3 5\\r\\na=msid-semantic: WMS proofkit\\r\\nm=audio 9 UDP/TLS/RTP/SAVPF 111\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:0\\r\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\r\\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\\r\\na=recvonly\\r\\na=rtcp-mux\\r\\na=rtpmap:111 opus/48000/2\\r\\na=rtcp-fb:111 transport-cc\\r\\na=fmtp:111 useinbandfec=1;minptime=10\\r\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\r\\nc=IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:1\\r\\na=sctp-port:5000\\r\\nm=audio 9 UDP/TLS/RTP/SAVPF 111\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:2\\r\\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\\r\\na=sendonly\\r\\na=msid:proofkit 2-audio\\r\\na=rtcp-mux\\r\\na=rtpmap:111 opus/48000/2\\r\\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\\r\\na=ssrc:1234567890 cname:proofkit\\r\\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:3\\r\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\r\\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\\r\\na=sendonly\\r\\na=msid:proofkit video\\r\\na=rtcp-mux\\r\\na=rtpmap:102 VP9/90000\\r\\na=rtcp-fb:102 transport-cc\\r\\na=rtpmap:103 rtx/90000\\r\\na=fmtp:103 apt=102\\r\\na=rtpmap:100 VP8/90000\\r\\na=rtcp-fb:100 nack\\r\\na=rtcp-fb:100 nack pli\\r\\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\\r\\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\\r\\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\\r\\na=simulcast:send l;m;h\\r\\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\\r\\nc=IN IP4 0.0.0.0\\r\\na=rtcp:9 IN IP4 0.0.0.0\\r\\na=ice-ufrag:KdfaZFqRLOnUhmUW\\r\\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\\r\\na=ice-options:trickle\\r\\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\\r\\na=setup:active\\r\\na=mid:5\\r\\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\\r\\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\\r\\na=recvonly\\r\\na=rtcp-mux\\r\\na=rtpmap:100 VP8/90000\\r\\na=rtcp-fb:100 nack\",\"sessionId\":\"session-1\",\"ssrcs\":[\"2463708138\",\"2463708139\"]}"
+   },
+   {
+    "fin": true,
+    "opcode": 1,
+    "masked": true,
+    "length": 262144,
+    "sha256": "513e753078447fd45713050a838ef7d4374a46741d6c265a37f1a97a3d3fc3f0"
+   },
+   {
+    "fin": true,
+    "opcode": 1,
+    "masked": true,
+    "length": 4,
+    "text": "pong"
+   },
+   {
+    "fin": true,
+    "opcode": 1,
+    "masked": true,
+    "length": 51,
+    "text": "{\"command\":\"hangup\",\"reason\":\"HUNGUP\",\"sequence\":7}"
+   }
+  ],
+  "hangup": "{\"command\":\"hangup\",\"reason\":\"HUNGUP\",\"sequence\":7}"
+ }
+}

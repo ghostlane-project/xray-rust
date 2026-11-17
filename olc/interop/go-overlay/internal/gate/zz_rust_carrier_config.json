@@ -1,0 +1,17 @@
+{
+  "url": "http://127.0.0.1:3/rtc/room/1",
+  "key": "k",
+  "transport": "vp8channel",
+  "dns": "127.0.0.1:53",
+  "socks": "127.0.0.1:0",
+  "device_id": "d",
+  "engine": "mtslink",
+  "token": "c=1",
+  "provider_base": "http://127.0.0.1:1",
+  "engine_extra": {
+    "gateway": "http://127.0.0.1:2",
+    "conferenceId": "20300400600",
+    "ice": "both",
+    "ice_servers": "[{\"urls\":[\"stun:127.0.0.1:3478\"]},{\"credential\":\"p\",\"urls\":[\"turn:127.0.0.1:3478\"],\"username\":\"u\"}]"
+  }
+}

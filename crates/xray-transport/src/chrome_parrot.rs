@@ -18,18 +18,18 @@ use std::time::Duration;
 use rand::{rngs::OsRng, RngCore};
 use rustls::client::{
     ClientHelloAdvertisedSupportedGroups, ClientHelloAdvertisedSupportedVersions,
-    ClientHelloCertificateCompressionAlgorithms, ClientHelloCipherSuites, ClientHelloContext,
-    ClientHelloCustomizer, ClientHelloExactExtension, ClientHelloExactExtensions,
-    ClientHelloExtensionOrder, ClientHelloExtensionPlan, ClientHelloKeySharePlan, ClientHelloPlan,
-    ClientHelloRawExtensions, ClientHelloSupportedGroups, ClientHelloSupportedVersions,
+    ClientHelloApplicationProtocol, ClientHelloCertificateCompressionAlgorithms,
+    ClientHelloCipherSuites, ClientHelloContext, ClientHelloCustomizer, ClientHelloExactExtension,
+    ClientHelloExactExtensions, ClientHelloExtensionOrder, ClientHelloExtensionPlan,
+    ClientHelloKeySharePlan, ClientHelloPlan, ClientHelloSupportedGroups,
+    ClientHelloSupportedVersions,
 };
 use rustls::{CertificateCompressionAlgorithm, CipherSuite, Error as RustlsError, NamedGroup};
 
 use crate::sudoku::gorand::{crypto_rand_int63, GoRand};
 use crate::utls_profiles::ECH_GREASE_BORING;
 use crate::utls_shaping::{
-    application_settings_payload, encrypted_client_hello_payload, push_exact_or_raw_extension,
-    signature_algorithms_payload,
+    application_settings_for, encrypted_client_hello_payload, signature_algorithms_payload,
 };
 
 /// quic-go's `chromeMaxIdleTimeout`
@@ -192,7 +192,7 @@ impl ClientHelloCustomizer for ChromeQuicHello {
             NamedGroup::secp256r1,
             NamedGroup::secp384r1,
         ];
-        let mut exact = vec![
+        let exact = vec![
             ClientHelloExactExtension::new(
                 EXT_SIGNATURE_ALGORITHMS,
                 signature_algorithms_payload(&SIGNATURE_ALGORITHMS)?,
@@ -202,15 +202,16 @@ impl ClientHelloCustomizer for ChromeQuicHello {
                 self.encrypted_client_hello()?,
             )?,
         ];
-        let mut raw = Vec::new();
-        push_exact_or_raw_extension(
-            &mut exact,
-            &mut raw,
+        // ALPS for every ALPN protocol, with no settings of the client's:
+        // uTLS's `ApplicationSettingsExtension` as the spec fills it.
+        let application_settings = application_settings_for(
             EXT_APPLICATION_SETTINGS,
-            application_settings_payload(&alpn)?,
+            alpn.iter()
+                .map(|protocol| ClientHelloApplicationProtocol::new(protocol.to_vec(), Vec::new()))
+                .collect::<Result<Vec<_>, _>>()?,
         )?;
 
-        let mut plan = ClientHelloPlan::new()
+        let plan = ClientHelloPlan::new()
             .with_cipher_suites(ClientHelloCipherSuites::try_from(vec![
                 CipherSuite::TLS13_AES_128_GCM_SHA256,
                 CipherSuite::TLS13_AES_256_GCM_SHA384,
@@ -241,14 +242,13 @@ impl ClientHelloCustomizer for ChromeQuicHello {
             .with_extension_order(ClientHelloExtensionOrder::try_from(
                 shuffled_extensions(self.shuffle_seed()?).to_vec(),
             )?)
-            .with_exact_extensions(ClientHelloExactExtensions::try_from(exact)?);
-        if !raw.is_empty() {
-            plan = plan.with_raw_extensions(ClientHelloRawExtensions::try_from(raw)?);
-        }
+            .with_exact_extensions(ClientHelloExactExtensions::try_from(exact)?)
+            .with_application_settings(application_settings);
         #[cfg(test)]
-        if let Some(draws) = &self.draws {
-            plan = plan.with_random(draws.random);
-        }
+        let plan = match &self.draws {
+            Some(draws) => plan.with_random(draws.random),
+            None => plan,
+        };
         Ok(Some(plan))
     }
 }

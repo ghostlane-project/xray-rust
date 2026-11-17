@@ -1,0 +1,806 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/udpwire/zz_vectors_test.go TestZZVectors",
+ "sources": [
+  "internal/udpwire/wire.go:14-231"
+ ],
+ "cases": {
+  "constants": {
+   "version": 1,
+   "max_payload_size": 1200,
+   "max_host_len": 255,
+   "header_len": 16,
+   "magic": "OU"
+  },
+  "encode": [
+   {
+    "name": "ipv4",
+    "type": 1,
+    "flow_id": 1,
+    "host": "1.2.3.4",
+    "port": 53,
+    "payload": "646e733f",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000010100350401020304646e733f"
+   },
+   {
+    "name": "ipv4 zeros",
+    "type": 1,
+    "flow_id": 72623859790382856,
+    "host": "0.0.0.0",
+    "port": 1,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010101020304050607080100010400000000"
+   },
+   {
+    "name": "ipv4 broadcast",
+    "type": 1,
+    "flow_id": 18446744073709551615,
+    "host": "255.255.255.255",
+    "port": 65535,
+    "payload": "00",
+    "verdict": "ok",
+    "wire": "4f550101ffffffffffffffff01ffff04ffffffff00"
+   },
+   {
+    "name": "ipv4 with a leading zero is a name",
+    "type": 1,
+    "flow_id": 2,
+    "host": "01.2.3.4",
+    "port": 80,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000020300500830312e322e332e34"
+   },
+   {
+    "name": "ipv4 with five parts is a name",
+    "type": 1,
+    "flow_id": 2,
+    "host": "1.2.3.4.5",
+    "port": 80,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f550101000000000000000203005009312e322e332e342e35"
+   },
+   {
+    "name": "ipv6 loopback",
+    "type": 1,
+    "flow_id": 3,
+    "host": "::1",
+    "port": 443,
+    "payload": "71756963",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000030401bb100000000000000000000000000000000171756963"
+   },
+   {
+    "name": "ipv6",
+    "type": 1,
+    "flow_id": 3,
+    "host": "2001:db8::8a2e:370:7334",
+    "port": 443,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000030401bb1020010db80000000000008a2e03707334"
+   },
+   {
+    "name": "ipv6 upper case",
+    "type": 1,
+    "flow_id": 3,
+    "host": "2001:DB8::1",
+    "port": 443,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000030401bb1020010db8000000000000000000000001"
+   },
+   {
+    "name": "ipv6 all zeros",
+    "type": 1,
+    "flow_id": 3,
+    "host": "::",
+    "port": 9,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000030400091000000000000000000000000000000000"
+   },
+   {
+    "name": "ipv4-mapped ipv6 stays 16 bytes",
+    "type": 1,
+    "flow_id": 4,
+    "host": "::ffff:1.2.3.4",
+    "port": 53,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000040400351000000000000000000000ffff01020304"
+   },
+   {
+    "name": "ipv4-compatible ipv6",
+    "type": 1,
+    "flow_id": 4,
+    "host": "::1.2.3.4",
+    "port": 53,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000040400351000000000000000000000000001020304"
+   },
+   {
+    "name": "ipv6 with a zone drops the zone",
+    "type": 1,
+    "flow_id": 5,
+    "host": "fe80::1%eth0",
+    "port": 5353,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000050414e910fe800000000000000000000000000001"
+   },
+   {
+    "name": "ipv6 with an empty zone is a name",
+    "type": 1,
+    "flow_id": 5,
+    "host": "fe80::1%",
+    "port": 5353,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000050314e908666538303a3a3125"
+   },
+   {
+    "name": "ipv4 with a zone is a name",
+    "type": 1,
+    "flow_id": 5,
+    "host": "1.2.3.4%eth0",
+    "port": 5353,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000050314e90c312e322e332e342565746830"
+   },
+   {
+    "name": "bracketed ipv6 is a name",
+    "type": 1,
+    "flow_id": 5,
+    "host": "[::1]",
+    "port": 53,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f5501010000000000000005030035055b3a3a315d"
+   },
+   {
+    "name": "domain",
+    "type": 1,
+    "flow_id": 6,
+    "host": "example.com",
+    "port": 443,
+    "payload": "68656c6c6f",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000060301bb0b6578616d706c652e636f6d68656c6c6f"
+   },
+   {
+    "name": "domain of the longest length",
+    "type": 1,
+    "flow_id": 6,
+    "host": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "port": 443,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000060301bbff616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161"
+   },
+   {
+    "name": "domain one byte too long",
+    "type": 1,
+    "flow_id": 6,
+    "host": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "port": 443,
+    "payload": "",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "domain with a space",
+    "type": 1,
+    "flow_id": 6,
+    "host": "a b",
+    "port": 443,
+    "payload": "",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "domain with a tilde and a bang",
+    "type": 1,
+    "flow_id": 6,
+    "host": "!~",
+    "port": 443,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f55010100000000000000060301bb02217e"
+   },
+   {
+    "name": "domain with delete",
+    "type": 1,
+    "flow_id": 6,
+    "host": "ab",
+    "port": 443,
+    "payload": "",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "non-ascii domain",
+    "type": 1,
+    "flow_id": 6,
+    "host": "пример.рф",
+    "port": 443,
+    "payload": "",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "blank host",
+    "type": 1,
+    "flow_id": 7,
+    "host": " ",
+    "port": 443,
+    "payload": "",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "no host",
+    "type": 1,
+    "flow_id": 7,
+    "host": "",
+    "port": 443,
+    "payload": "",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "port zero",
+    "type": 1,
+    "flow_id": 7,
+    "host": "1.1.1.1",
+    "port": 0,
+    "payload": "",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "flow zero",
+    "type": 1,
+    "flow_id": 0,
+    "host": "1.1.1.1",
+    "port": 53,
+    "payload": "",
+    "verdict": "invalid_flow_id"
+   },
+   {
+    "name": "largest payload",
+    "type": 1,
+    "flow_id": 8,
+    "host": "9.9.9.9",
+    "port": 53,
+    "payload": "0827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d",
+    "verdict": "ok",
+    "wire": "4f550101000000000000000801003504090909090827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d"
+   },
+   {
+    "name": "payload one byte too large",
+    "type": 1,
+    "flow_id": 8,
+    "host": "9.9.9.9",
+    "port": 53,
+    "payload": "0827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c",
+    "verdict": "payload_too_large"
+   },
+   {
+    "name": "close",
+    "type": 2,
+    "flow_id": 9,
+    "host": "",
+    "port": 0,
+    "payload": "",
+    "verdict": "ok",
+    "wire": "4f550102000000000000000900000000"
+   },
+   {
+    "name": "close with a host",
+    "type": 2,
+    "flow_id": 9,
+    "host": "1.1.1.1",
+    "port": 0,
+    "payload": "",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "close with a port",
+    "type": 2,
+    "flow_id": 9,
+    "host": "",
+    "port": 53,
+    "payload": "",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "close with a payload",
+    "type": 2,
+    "flow_id": 9,
+    "host": "",
+    "port": 0,
+    "payload": "78",
+    "verdict": "invalid_endpoint"
+   },
+   {
+    "name": "type zero",
+    "type": 0,
+    "flow_id": 9,
+    "host": "1.1.1.1",
+    "port": 53,
+    "payload": "",
+    "verdict": "unknown_type"
+   },
+   {
+    "name": "type three",
+    "type": 3,
+    "flow_id": 9,
+    "host": "1.1.1.1",
+    "port": 53,
+    "payload": "",
+    "verdict": "unknown_type"
+   }
+  ],
+  "decode": [
+   {
+    "name": "encoded ipv4",
+    "wire": "4f55010100000000000000010100350401020304646e733f",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 1,
+    "host": "1.2.3.4",
+    "port": 53,
+    "payload": "646e733f"
+   },
+   {
+    "name": "encoded ipv4 zeros",
+    "wire": "4f55010101020304050607080100010400000000",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 72623859790382856,
+    "host": "0.0.0.0",
+    "port": 1,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv4 broadcast",
+    "wire": "4f550101ffffffffffffffff01ffff04ffffffff00",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 18446744073709551615,
+    "host": "255.255.255.255",
+    "port": 65535,
+    "payload": "00"
+   },
+   {
+    "name": "encoded ipv4 with a leading zero is a name",
+    "wire": "4f55010100000000000000020300500830312e322e332e34",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 2,
+    "host": "01.2.3.4",
+    "port": 80,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv4 with five parts is a name",
+    "wire": "4f550101000000000000000203005009312e322e332e342e35",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 2,
+    "host": "1.2.3.4.5",
+    "port": 80,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv6 loopback",
+    "wire": "4f55010100000000000000030401bb100000000000000000000000000000000171756963",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 3,
+    "host": "::1",
+    "port": 443,
+    "payload": "71756963"
+   },
+   {
+    "name": "encoded ipv6",
+    "wire": "4f55010100000000000000030401bb1020010db80000000000008a2e03707334",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 3,
+    "host": "2001:db8::8a2e:370:7334",
+    "port": 443,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv6 upper case",
+    "wire": "4f55010100000000000000030401bb1020010db8000000000000000000000001",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 3,
+    "host": "2001:db8::1",
+    "port": 443,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv6 all zeros",
+    "wire": "4f55010100000000000000030400091000000000000000000000000000000000",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 3,
+    "host": "::",
+    "port": 9,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv4-mapped ipv6 stays 16 bytes",
+    "wire": "4f55010100000000000000040400351000000000000000000000ffff01020304",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 4,
+    "host": "::ffff:1.2.3.4",
+    "port": 53,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv4-compatible ipv6",
+    "wire": "4f55010100000000000000040400351000000000000000000000000001020304",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 4,
+    "host": "::102:304",
+    "port": 53,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv6 with a zone drops the zone",
+    "wire": "4f55010100000000000000050414e910fe800000000000000000000000000001",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 5,
+    "host": "fe80::1",
+    "port": 5353,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv6 with an empty zone is a name",
+    "wire": "4f55010100000000000000050314e908666538303a3a3125",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 5,
+    "host": "fe80::1%",
+    "port": 5353,
+    "payload": ""
+   },
+   {
+    "name": "encoded ipv4 with a zone is a name",
+    "wire": "4f55010100000000000000050314e90c312e322e332e342565746830",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 5,
+    "host": "1.2.3.4%eth0",
+    "port": 5353,
+    "payload": ""
+   },
+   {
+    "name": "encoded bracketed ipv6 is a name",
+    "wire": "4f5501010000000000000005030035055b3a3a315d",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 5,
+    "host": "[::1]",
+    "port": 53,
+    "payload": ""
+   },
+   {
+    "name": "encoded domain",
+    "wire": "4f55010100000000000000060301bb0b6578616d706c652e636f6d68656c6c6f",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 6,
+    "host": "example.com",
+    "port": 443,
+    "payload": "68656c6c6f"
+   },
+   {
+    "name": "encoded domain of the longest length",
+    "wire": "4f55010100000000000000060301bbff616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 6,
+    "host": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "port": 443,
+    "payload": ""
+   },
+   {
+    "name": "encoded domain with a tilde and a bang",
+    "wire": "4f55010100000000000000060301bb02217e",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 6,
+    "host": "!~",
+    "port": 443,
+    "payload": ""
+   },
+   {
+    "name": "encoded largest payload",
+    "wire": "4f550101000000000000000801003504090909090827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 8,
+    "host": "9.9.9.9",
+    "port": 53,
+    "payload": "0827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d"
+   },
+   {
+    "name": "encoded close",
+    "wire": "4f550102000000000000000900000000",
+    "verdict": "ok",
+    "type": 2,
+    "flow_id": 9,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "fifteen bytes",
+    "wire": "4f5501010000000000000001010035",
+    "verdict": "too_short",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "bad magic",
+    "wire": "4f5601010000000000000001010035040a000001",
+    "verdict": "bad_magic",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "version 2",
+    "wire": "4f5502010000000000000001010035040a000001",
+    "verdict": "unsupported_version",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "type zero",
+    "wire": "4f5501000000000000000001010035040a000001",
+    "verdict": "unknown_type",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "type three",
+    "wire": "4f5501030000000000000001010035040a000001",
+    "verdict": "unknown_type",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "flow zero",
+    "wire": "4f5501010000000000000000010035040a000001",
+    "verdict": "invalid_flow_id",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "address longer than the frame",
+    "wire": "4f5501010000000000000001010035040a0000",
+    "verdict": "too_short",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "ipv4 of three bytes",
+    "wire": "4f5501010000000000000001010035030a0000",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "ipv6 of fifteen bytes",
+    "wire": "4f55010100000000000000010400350f20010db80000000000010000000000",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "ipv6 formatting",
+    "wire": "4f55010100000000000000010400351020010db800000000000100000000000170",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 1,
+    "host": "2001:db8::1:0:0:1",
+    "port": 53,
+    "payload": "70"
+   },
+   {
+    "name": "ipv6 with two zero runs",
+    "wire": "4f55010100000000000000010400351000010000000000020000000000000003",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 1,
+    "host": "1:0:0:2::3",
+    "port": 53,
+    "payload": ""
+   },
+   {
+    "name": "ipv6 with one zero group",
+    "wire": "4f55010100000000000000010400351000010002000000030004000500060007",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 1,
+    "host": "1:2:0:3:4:5:6:7",
+    "port": 53,
+    "payload": ""
+   },
+   {
+    "name": "ipv4-mapped bytes",
+    "wire": "4f55010100000000000000010400351000000000000000000000ffff0a000001",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 1,
+    "host": "::ffff:10.0.0.1",
+    "port": 53,
+    "payload": ""
+   },
+   {
+    "name": "ipv4-compatible bytes",
+    "wire": "4f5501010000000000000001040035100000000000000000000000000a000001",
+    "verdict": "ok",
+    "type": 1,
+    "flow_id": 1,
+    "host": "::a00:1",
+    "port": 53,
+    "payload": ""
+   },
+   {
+    "name": "empty domain",
+    "wire": "4f550101000000000000000103003500",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "domain with a space",
+    "wire": "4f550101000000000000000103003503612062",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "domain with a high byte",
+    "wire": "4f55010100000000000000010300350361c3a9",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "address type two",
+    "wire": "4f5501010000000000000001020035040a000001",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "address type none with bytes",
+    "wire": "4f5501010000000000000001000035040a000001",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "packet without an address",
+    "wire": "4f550101000000000000000100003500",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "packet to port zero",
+    "wire": "4f5501010000000000000001010000040a000001",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "payload one byte too large",
+    "wire": "4f5501010000000000000001010035040a00000101203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635",
+    "verdict": "payload_too_large",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "close with an address",
+    "wire": "4f5501020000000000000001010000040a000001",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "close with a port",
+    "wire": "4f550102000000000000000100003500",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "close with a payload",
+    "wire": "4f55010200000000000000010000000078",
+    "verdict": "invalid_endpoint",
+    "type": 0,
+    "flow_id": 0,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   },
+   {
+    "name": "close",
+    "wire": "4f55010200000000feedface00000000",
+    "verdict": "ok",
+    "type": 2,
+    "flow_id": 4277009102,
+    "host": "",
+    "port": 0,
+    "payload": ""
+   }
+  ]
+ }
+}

@@ -21,12 +21,14 @@ use rustls::{
     client::{
         ClientHelloAdvertisedCipherSuites, ClientHelloAdvertisedSupportedGroups,
         ClientHelloAdvertisedSupportedVersions, ClientHelloAlpnProtocols,
-        ClientHelloCertificateCompressionAlgorithms, ClientHelloCipherSuites, ClientHelloContext,
-        ClientHelloExactExtension, ClientHelloExactExtensions, ClientHelloExtensionOrder,
-        ClientHelloExtensionPlan, ClientHelloForcedExtensions, ClientHelloGreaseExtension,
-        ClientHelloGreasePlan, ClientHelloKeySharePlan, ClientHelloPaddingPlan, ClientHelloPlan,
-        ClientHelloRawExtension, ClientHelloRawExtensions, ClientHelloRawKeyShare,
-        ClientHelloRawKeyShares, ClientHelloSupportedGroups, ClientHelloSupportedVersions,
+        ClientHelloApplicationProtocol, ClientHelloApplicationSettings,
+        ClientHelloApplicationSettingsCodepoint, ClientHelloCertificateCompressionAlgorithms,
+        ClientHelloCipherSuites, ClientHelloContext, ClientHelloExactExtension,
+        ClientHelloExactExtensions, ClientHelloExtensionOrder, ClientHelloExtensionPlan,
+        ClientHelloForcedExtensions, ClientHelloGreaseExtension, ClientHelloGreasePlan,
+        ClientHelloKeySharePlan, ClientHelloPaddingPlan, ClientHelloPlan, ClientHelloRawExtension,
+        ClientHelloRawExtensions, ClientHelloRawKeyShare, ClientHelloRawKeyShares,
+        ClientHelloSupportedGroups, ClientHelloSupportedVersions,
     },
     CertificateCompressionAlgorithm, CipherSuite, Error as RustlsError, NamedGroup,
     ProtocolVersion,
@@ -372,12 +374,19 @@ fn fill_random(bytes: &mut [u8], what: &str) -> Result<(), RustlsError> {
 /// The plan for one hello of `profile`, with `draws` as this connection's
 /// draws and `alpn_override`, when given, as the ALPN list Xray's
 /// `WebsocketHandshakeContext` forces on an already shaped hello.
+///
+/// `alps_within_alpn` is a browser's own rule for ALPS (application_settings):
+/// offered only for a protocol the hello's ALPN list names, so a hello whose
+/// ALPN is `http/1.1` alone carries none, as Chrome's WebSocket connection
+/// carries none. uTLS, and so Xray, keeps the profile's ALPS whatever the
+/// ALPN (`false`).
 pub(crate) fn apply_utls_profile(
     mut plan: ClientHelloPlan,
     profile: &'static UtlsClientHelloProfile,
     context: ClientHelloContext<'_>,
     draws: &HelloDraws,
     alpn_override: Option<&[Vec<u8>]>,
+    alps_within_alpn: bool,
 ) -> Result<ClientHelloPlan, RustlsError> {
     let supported_versions = supported_versions(profile)?;
     let padding_offset = boringssl_padding_offset(profile, context, supported_versions.as_slice());
@@ -431,6 +440,15 @@ pub(crate) fn apply_utls_profile(
     }
     if let Some(raw_extensions) = raw_extensions {
         plan = plan.with_raw_extensions(raw_extensions);
+    }
+    let hello_alpn: Vec<&[u8]> = match alpn_override {
+        Some(protocols) => protocols.iter().map(Vec::as_slice).collect(),
+        None => profile.alpn_protocols.to_vec(),
+    };
+    if let Some(application_settings) =
+        application_settings(profile, alps_within_alpn.then_some(hello_alpn.as_slice()))?
+    {
+        plan = plan.with_application_settings(application_settings);
     }
     if let Some(grease) = grease_plan(profile, context, draws, &extensions)? {
         plan = plan.with_grease(grease);
@@ -904,14 +922,6 @@ fn extension_payloads(
             trust_anchors_payload(profile.trust_anchor_ids)?,
         )?;
     }
-    for application_settings in profile.application_settings {
-        push_exact_or_raw_extension(
-            &mut exact_extensions,
-            &mut raw_extensions,
-            application_settings.extension_type,
-            application_settings_payload(application_settings.protocols)?,
-        )?;
-    }
     for extension in profile.extensions {
         if is_grease_value(extension.extension_type)
             || is_structured_extension(profile, extension.extension_type)
@@ -1177,27 +1187,56 @@ fn trust_anchors_payload(ids: &[&[u8]]) -> Result<Vec<u8>, RustlsError> {
     Ok(payload)
 }
 
-pub(crate) fn application_settings_payload(protocols: &[&[u8]]) -> Result<Vec<u8>, RustlsError> {
-    let protocols_len = protocols.iter().try_fold(0usize, |total, protocol| {
-        if protocol.len() > usize::from(u8::MAX) {
+/// The profile's ALPS (application_settings), at its codepoint, for its
+/// protocols in its order: shaped-rustls offers it in the hello and, to a
+/// server that accepts it, sends the client's settings in the client's
+/// EncryptedExtensions. Those settings are empty for every protocol: uTLS
+/// sends `ApplicationSettings[protocol]`, which Xray never sets, and Chrome
+/// 157 sends none either (ghostlane lab/olc-alps, against BoringSSL).
+///
+/// With `within`, the hello's ALPN list, ALPS is offered only for the
+/// protocols it names (see `apply_utls_profile`); none left, none offered.
+/// `None` for a profile without ALPS.
+pub(crate) fn application_settings(
+    profile: &UtlsClientHelloProfile,
+    within: Option<&[&[u8]]>,
+) -> Result<Option<ClientHelloApplicationSettings>, RustlsError> {
+    let settings = match profile.application_settings {
+        [] => return Ok(None),
+        [settings] => settings,
+        _ => {
             return Err(RustlsError::General(
-                "application_settings protocol name cannot exceed 255 bytes".into(),
-            ));
+                "a ClientHello carries one application_settings extension".into(),
+            ))
         }
-        total
-            .checked_add(1 + protocol.len())
-            .ok_or_else(|| RustlsError::General("application_settings payload is too large".into()))
-    })?;
-    let protocols_len = u16::try_from(protocols_len).map_err(|_| {
-        RustlsError::General("application_settings payload cannot exceed 65535 bytes".into())
-    })?;
-    let mut payload = Vec::with_capacity(2 + usize::from(protocols_len));
-    payload.extend_from_slice(&protocols_len.to_be_bytes());
-    for protocol in protocols {
-        payload.push(protocol.len() as u8);
-        payload.extend_from_slice(protocol);
+    };
+    let protocols = settings
+        .protocols
+        .iter()
+        .filter(|protocol| within.is_none_or(|alpn| alpn.contains(protocol)))
+        .map(|protocol| ClientHelloApplicationProtocol::new(protocol.to_vec(), Vec::new()))
+        .collect::<Result<Vec<_>, _>>()?;
+    if protocols.is_empty() {
+        return Ok(None);
     }
-    Ok(payload)
+    application_settings_for(settings.extension_type, protocols).map(Some)
+}
+
+/// ALPS at the codepoint `extension_type` (`0x4469` or `0x44cd`).
+pub(crate) fn application_settings_for(
+    extension_type: u16,
+    protocols: Vec<ClientHelloApplicationProtocol>,
+) -> Result<ClientHelloApplicationSettings, RustlsError> {
+    let codepoint = match extension_type {
+        0x4469 => ClientHelloApplicationSettingsCodepoint::Old,
+        0x44cd => ClientHelloApplicationSettingsCodepoint::New,
+        other => {
+            return Err(RustlsError::General(format!(
+                "{other:#06x} is not an application_settings codepoint"
+            )))
+        }
+    };
+    ClientHelloApplicationSettings::new(codepoint, protocols)
 }
 
 pub(crate) fn push_exact_or_raw_extension(

@@ -37,6 +37,12 @@ pub(crate) enum TlsAlpnPolicy {
     HttpClient,
     Http1Upgrade,
     Http2,
+    /// A browser's own connection, as the olcRTC client's signalling makes
+    /// it (`TlsConnector::connect_stream_with_alpn`): the configured list
+    /// taken as RAW takes it, and ALPS offered only for a protocol of the
+    /// hello's ALPN list, as Chrome offers it (a WebSocket's connection,
+    /// `http/1.1` alone, carries none), where uTLS keeps the profile's.
+    Browser,
 }
 
 /// Resolves a normalized fingerprint to a shaping profile.
@@ -73,6 +79,7 @@ pub(crate) fn shaping_profile(
 pub(crate) struct UtlsClientHelloCustomizer {
     profile: &'static UtlsClientHelloProfile,
     alpn_override: Option<Vec<Vec<u8>>>,
+    alps_within_alpn: bool,
 }
 
 impl UtlsClientHelloCustomizer {
@@ -84,6 +91,7 @@ impl UtlsClientHelloCustomizer {
         Self {
             profile,
             alpn_override: alpn_override_for(alpn, policy),
+            alps_within_alpn: policy == TlsAlpnPolicy::Browser,
         }
     }
 }
@@ -105,7 +113,7 @@ impl UtlsClientHelloCustomizer {
 ///
 fn alpn_override_for(alpn: &[String], policy: TlsAlpnPolicy) -> Option<Vec<Vec<u8>>> {
     match policy {
-        TlsAlpnPolicy::Raw => match alpn {
+        TlsAlpnPolicy::Raw | TlsAlpnPolicy::Browser => match alpn {
             [only] if only == ALPN_HTTP11 => Some(vec![ALPN_HTTP11.as_bytes().to_vec()]),
             _ => None,
         },
@@ -125,7 +133,7 @@ pub(crate) fn unshaped_alpn_protocols(
     policy: TlsAlpnPolicy,
 ) -> Vec<Vec<u8>> {
     match policy {
-        TlsAlpnPolicy::Raw => configured
+        TlsAlpnPolicy::Raw | TlsAlpnPolicy::Browser => configured
             .iter()
             .map(|protocol| protocol.as_bytes().to_vec())
             .collect(),
@@ -159,6 +167,7 @@ impl ClientHelloCustomizer for UtlsClientHelloCustomizer {
             context,
             &draws,
             self.alpn_override.as_deref(),
+            self.alps_within_alpn,
         )?;
 
         if !profile_offers_tls13(self.profile) {

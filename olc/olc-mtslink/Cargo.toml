@@ -1,0 +1,27 @@
+[package]
+name = "olc-mtslink"
+description = "The olcRTC MTS Link carrier, ported from the Go engine at 2d4266af (internal/auth/mtslink, internal/engine/mtslink): the guest's way through the gateway, the SFU's join, pin and take-back, and the session that is the video transport's engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+olc-net = { path = "../olc-net" }
+olc-rtc = { path = "../olc-rtc" }
+olc-vp8channel = { path = "../olc-vp8channel" }
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+# The tests' HTTP/2 server (testing.rs): the fork's h2, as olc-net's.
+bytes.workspace = true
+h2.workspace = true
+http.workspace = true
+olc-interop = { path = "../interop/oracle-client" }
+tokio = { workspace = true, features = ["test-util"] }

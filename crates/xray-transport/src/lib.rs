@@ -28,8 +28,9 @@ pub mod header_custom;
 pub mod hysteria;
 pub mod kcp;
 pub mod masque;
-pub mod memory_budget;
-mod memory_class;
+// The process's byte budget and memory class live in ghostlane-runtime, which
+// the olcRTC client shares with this core; the paths here are as they were.
+pub use ghostlane_runtime::memory_budget;
 mod network_change;
 pub mod realm;
 pub mod sudoku;
@@ -68,12 +69,12 @@ pub use dns::{
     DnsQueryTransport, DnsQueryTransportKind, DnsResolver, NameServer, NameServerPolicy,
     NameServerTransport, SystemDnsResolver, SystemRouteDnsResolver,
 };
+pub use ghostlane_runtime::{memory_class, set_memory_class, MemoryClass};
 pub use happy_eyeballs::{connect_tcp_dual_stack, connect_tcp_happy_eyeballs, HappyEyeballsConfig};
 pub use memory_budget::{
     byte_budget, byte_budget_usage, reset_byte_budget_peak, set_byte_budget, ByteBudgetSettings,
     ByteBudgetUsage,
 };
-pub use memory_class::{memory_class, set_memory_class, MemoryClass};
 pub use network_change::{NetworkChanges, NetworkResets};
 pub(crate) use penetrating_tls::{CapturedStream, Carrier, PenetratingTlsStream, ServerReadLog};
 pub use reality_connector::{RealityTlsSession, RealityTlsSessionProvider};
@@ -90,7 +91,9 @@ pub use socket_options::{
     DEFAULT_TCP_KEEPALIVE_SECS,
 };
 pub use system_records::{is_domain_name, RecordResolver, SrvRecord, SystemRecordResolver};
-pub use tls::{plain_tls_client_hello_bytes, TlsConnector, WarpTls};
+pub use tls::{
+    browser_tls_client_hello_bytes, plain_tls_client_hello_bytes, TlsConnector, WarpTls,
+};
 pub use utls_profiles::draw_modern_fingerprint;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

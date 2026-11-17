@@ -1,0 +1,29 @@
+[package]
+name = "olc-vkcalls"
+description = "The olcRTC VK Calls carrier, ported from the Go engine at 2d4266af (internal/engine/vkcalls, internal/auth/vkcalls): the guest's five anonymous steps to a join, the producer command channel's MessagePack subset, the answer shaped for VK's SFU, the offer as our stack is given it, the signalling WebSocket, the guests that flip a fresh room, one attempt's peer connection and the session that is the video transport's engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+olc-net = { path = "../olc-net" }
+olc-rtc = { path = "../olc-rtc" }
+olc-vp8channel = { path = "../olc-vp8channel" }
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+# The tests' HTTP/2 server (testing.rs): the fork's h2, as olc-net's.
+bytes.workspace = true
+h2.workspace = true
+http.workspace = true
+olc-interop = { path = "../interop/oracle-client" }
+sha1.workspace = true
+tokio = { workspace = true, features = ["test-util"] }

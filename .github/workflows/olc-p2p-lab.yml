@@ -1,0 +1,208 @@
+name: olc-p2p-lab
+
+# M5 R2 (the olcRTC port plan's T2(a)): the Rust side's tests, then the
+# gate's S0-S5 on the interop-p2p pair at 60 fps / batch 64, the Go server
+# relay-only through coturn (UDP, TCP, TLS), the Rust client and the Go cli
+# baseline on host candidates. GitHub-hosted runners: coturn is installed on
+# the runner, never on the owner's build box. A lab for the topic branch
+# and its throwaway gl/olc-p2p-lab-* branches; nothing here runs on main.
+#
+# A gl/olc-p2p-lab-* commit may carry olc/interop/lab.env (NAME=value
+# lines): OLC_LAB_TEST replaces the cargo test arguments and skips clippy,
+# the build and the gate (the RED runs); OLC_LAB_GATE=no skips the gate;
+# OLC_LAB_GO_RUN narrows the engine's Go tests (go test -run);
+# OLC_LAB_STR0M replaces the vendored str0m's cargo test arguments.
+
+on:
+  push:
+    branches: ['gl/olc-p2p', 'gl/olc-p2p-lab-*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: olc-p2p-lab-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+  CRATES: -p olc-rtc -p olc-vp8channel -p olc-kcp -p olc-client -p olc-net
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    outputs:
+      gate: ${{ steps.lab.outputs.gate }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: lab overrides
+        id: lab
+        run: |
+          if [ -f olc/interop/lab.env ]; then cat olc/interop/lab.env >> "$GITHUB_ENV"; fi
+          lint=yes gate=yes
+          if [ -f olc/interop/lab.env ]; then
+            if grep -q '^OLC_LAB_TEST=' olc/interop/lab.env; then lint=no gate=no; fi
+            if grep -q '^OLC_LAB_GATE=no' olc/interop/lab.env; then gate=no; fi
+          fi
+          { echo "lint=$lint"; echo "gate=$gate"; } >> "$GITHUB_OUTPUT"
+      - name: toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: olc-p2p
+      - name: clippy
+        if: steps.lab.outputs.lint == 'yes'
+        run: |
+          # shellcheck disable=SC2086
+          cargo clippy --locked --keep-going $CRATES --tests -- -D warnings
+      - name: tests
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2086
+          cargo test --locked ${OLC_LAB_TEST:-$CRATES} 2>&1 | tee test.log
+      - name: str0m's tests (the vendored, patched crate)
+        if: always()
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2086
+          cargo test --locked --manifest-path olc/vendor/str0m-0.25.0/Cargo.toml --target-dir target/str0m --features _internal_test_exports \
+            ${OLC_LAB_STR0M:---lib --test nack --test rtx-cache-0 --test early-rtx-padding --test sdp-rtx-apt} 2>&1 |
+            tee str0m-test.log
+      - name: fmt
+        if: always() && steps.lab.outputs.lint == 'yes'
+        run: |
+          # shellcheck disable=SC2086
+          if ! cargo fmt $CRATES -- --check >/dev/null; then
+            # shellcheck disable=SC2086
+            cargo fmt $CRATES
+            git diff > fmt.patch
+            git diff --stat
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fmt-patch
+          path: fmt.patch
+          retention-days: 3
+          if-no-files-found: ignore
+      - name: build the client
+        if: steps.lab.outputs.gate == 'yes'
+        run: cargo build --locked --release -p olc-client --features heap-stats
+      - uses: actions/upload-artifact@v4
+        if: steps.lab.outputs.gate == 'yes'
+        with:
+          name: olc-client
+          path: target/release/olc-client
+          retention-days: 3
+
+  go-engine:
+    # The interop-p2p engine's own tests (gofmt, vet, then go test).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: lab overrides
+        run: |
+          if [ -f olc/interop/lab.env ]; then cat olc/interop/lab.env >> "$GITHUB_ENV"; fi
+      - name: p2p.sh --engine
+        run: |
+          # shellcheck disable=SC2086
+          bash olc/interop/p2p.sh --engine ${OLC_LAB_GO_RUN:+-run=$OLC_LAB_GO_RUN}
+
+  t2a:
+    needs: rust
+    if: needs.rust.outputs.gate == 'yes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # none: both ends on host candidates, the baseline the relayed
+        # runs are read against. relay: who is relay-only through coturn,
+        # the server, or both ends (UDP only: the Rust client's TURN
+        # allocates over UDP so far).
+        turn: [none, udp, tcp, tls]
+        relay: [server]
+        include:
+          - turn: udp
+            relay: both
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - name: coturn
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq coturn >/dev/null
+          # The package's own service would hold 3478; the gate runs its own.
+          sudo systemctl disable --now coturn 2>/dev/null || true
+          turnserver --version 2>/dev/null | head -1 || true
+      - uses: actions/download-artifact@v4
+        with:
+          name: olc-client
+          path: bin
+      - name: gate S0-S5, relayed over ${{ matrix.turn }} (${{ matrix.relay }})
+        run: |
+          chmod +x bin/olc-client
+          # The Rust client's /proc smaps, status and sockets at its RSS peak.
+          export OLCRTC_GATE_MEM_DIR=$PWD/olc/interop/.work/gate-artifacts/mem
+          mkdir -p "$OLCRTC_GATE_MEM_DIR"
+          bash olc/interop/p2p.sh "$PWD/bin/olc-client" \
+            -olcrtc.gate-turn=${{ matrix.turn }} -olcrtc.gate-turnserver=/usr/bin/turnserver \
+            -olcrtc.gate-relay=${{ matrix.relay }} -olcrtc.gate-flavours=rust,cli 2>&1 | tee gate.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: t2a-${{ matrix.turn }}-${{ matrix.relay }}
+          path: |
+            gate.log
+            olc/interop/.work/gate-artifacts
+          retention-days: 7
+          if-no-files-found: warn
+
+  fakeroom:
+    # M4's SaluteJazz path (T2(b): the engine's fake SFU against the Go engine
+    # at the pin), the same binary on the same runner type, for the memory
+    # figures the p2p cells are read against.
+    needs: rust
+    if: needs.rust.outputs.gate == 'yes'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: olc-client
+          path: bin
+      - name: fake-room gate S0-S5 (rust)
+        run: |
+          chmod +x bin/olc-client
+          export OLCRTC_GATE_MEM_DIR=$PWD/olc/interop/.work/gate-artifacts/mem
+          mkdir -p "$OLCRTC_GATE_MEM_DIR"
+          bash olc/interop/fakeroom.sh "$PWD/bin/olc-client" gate -olcrtc.gate-flavours=rust 2>&1 | tee gate.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: t2b-fakeroom
+          path: |
+            gate.log
+            olc/interop/.work/gate-artifacts
+          retention-days: 7
+          if-no-files-found: warn

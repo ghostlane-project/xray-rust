@@ -1,0 +1,780 @@
+--- a/src/change/sdp.rs
++++ b/src/change/sdp.rs
+@@ -1362,8 +1362,10 @@
+             .map(|r| r.ssrc);
+ 
+         // If remote communicated a main a=ssrc, but no RTX, we will not send nacks.
++        // XRAY-PATCH: unless its payloads take NACKs (a=rtcp-fb nack): it then
++        // resends on the main SSRC, as libwebrtc and pion do without RTX.
+         let midrid = MidRid(media.mid(), None);
+-        let suppress_nack = repair_ssrc.is_none();
++        let suppress_nack = repair_ssrc.is_none() && !m.rtp_params().iter().any(|p| p.fb_nack);
+         streams.expect_stream_rx(i.ssrc, repair_ssrc, midrid, suppress_nack);
+     }
+ }
+--- a/src/format/codec_config.rs
++++ b/src/format/codec_config.rs
+@@ -575,7 +575,9 @@
+ 
+         self.params.iter().filter(move |p| {
+             if kind == MediaKind::Video {
+-                p.spec.codec.is_video()
++                // XRAY-PATCH: a `red` payload type with parameters of its own is video's
++                // (`MediaLine::rtp_params`); audio RED never has its own entry.
++                p.spec.codec.is_video() || p.spec.codec == Codec::Red
+             } else {
+                 p.spec.codec.is_audio()
+                     || (p.spec.codec.is_tele()
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2064,7 +2064,13 @@
+ 
+         if self.state != RtcState::Closing {
+             self.session.close_rtp();
+-            self.sctp.close()?;
++            // An association still in its handshake refuses a shutdown
++            // (sctp-proto's ErrShutdownNonEstablished). That refusal must not
++            // cost the far end DTLS's close_notify: without it the peer
++            // waits for its ICE to time out (XRAY-PATCH.md, patch 5).
++            if let Err(e) = self.sctp.close() {
++                debug!("SCTP shutdown refused, closing DTLS all the same: {:?}", e);
++            }
+             self.state = RtcState::Closing;
+         }
+ 
+--- a/src/sdp/data.rs
++++ b/src/sdp/data.rs
+@@ -404,6 +404,11 @@
+                 c.codec.is_audio()
+                     || c.codec.is_video()
+                     || (c.codec.is_tele() && self.pts.contains(pt))
++                    // XRAY-PATCH: `red` on a video line is a payload type of its own,
++                    // with its own RTX (an SFU forwarding a camera wrapped in RED names
++                    // it so, with no fmtp tying it to a codec). Audio RED stays what
++                    // upstream makes it: a property of its primary codec, below.
++                    || (c.codec == Codec::Red && self.typ == MediaType::Video)
+             })
+             .filter_map(|(pt, c)| {
+                 let mut p = PayloadParams::new(*pt, None, (*c).into());
+--- a/src/session.rs
++++ b/src/session.rs
+@@ -650,6 +650,13 @@
+                 return;
+             }
+         };
++        // XRAY-PATCH: video `red` has parameters of its own and is handed up as it came
++        // in RTP mode. Frame mode has no depacketizer for it: dropped there, as it was
++        // when `red` on a video line had no parameters at all.
++        if !self.rtp_mode && params.spec().codec == crate::format::Codec::Red {
++            trace!("Video RED is passed on in RTP mode only: {:?}", header.payload_type);
++            return;
++        }
+         let clock_rate = params.spec().rtp_clock_rate();
+         let pt = params.pt();
+         let is_red = params.red() == Some(header.payload_type);
+@@ -1276,7 +1283,9 @@
+ 
+         let protected = srtp_tx.protect_rtp(buf, &header, *seq_no);
+ 
+-        if twcc_enabled {
++        // XRAY-PATCH: a plain resend goes with the TWCC number it had (streams/send.rs,
++        // ResendPlain), so only a packet that took a new one is registered.
++        if twcc_enabled && self.twcc != twcc_seq {
+             let packet_id = if let Some(cluster) = cluster_id {
+                 TwccPacketId::with_cluster(twcc_seq, cluster)
+             } else {
+--- a/src/streams/mod.rs
++++ b/src/streams/mod.rs
+@@ -293,7 +293,9 @@
+         }
+ 
+         // If we don't have an RTX PT configured, we don't want NACK.
+-        let suppress_nack = payload.resend.is_none();
++        // XRAY-PATCH: unless the PT takes NACKs: the sender then resends on the
++        // main SSRC, as libwebrtc and pion do without RTX.
++        let suppress_nack = payload.resend.is_none() && !payload.fb_nack;
+ 
+         // If stream already exists, this might only "fill in" the RTX.
+         self.expect_stream_rx(ssrc_main, rtx, midrid, suppress_nack);
+--- a/src/streams/send_queue.rs
++++ b/src/streams/send_queue.rs
+@@ -82,6 +82,11 @@
+         self.queue.is_empty()
+     }
+ 
++    /// XRAY-PATCH: the packets written and not yet handed out.
++    pub fn len(&self) -> usize {
++        self.queue.len()
++    }
++
+     pub fn last(&self) -> Option<&RtpPacket> {
+         self.queue.back()
+     }
+--- a/src/streams/send.rs
++++ b/src/streams/send.rs
+@@ -177,6 +177,10 @@
+     // Same as `remote_acked_ssrc`, but for the RTX SSRC
+     remote_acked_rtx_ssrc: bool,
+ 
++    /// XRAY-PATCH: keep the Mid and Rid on every packet, whatever the receiver
++    /// has reported (`set_mid_rid_on_every_packet`).
++    mid_rid_on_every_packet: bool,
++
+     /// MTU warn threshold; used to cap spurious-padding RTX cache lookups.
+     mtu_warn: usize,
+ }
+@@ -389,6 +393,7 @@
+             pt_for_padding: None,
+             remote_acked_ssrc: false,
+             remote_acked_rtx_ssrc: false,
++            mid_rid_on_every_packet: false,
+             mtu_warn,
+         }
+     }
+@@ -487,6 +492,29 @@
+         self.unpaced = Some(unpaced);
+     }
+ 
++    /// XRAY-PATCH: whether every packet of this stream carries its Mid and Rid
++    /// header extensions (and every RTX packet its Mid; the repaired Rid is on
++    /// each of those anyway).
++    ///
++    /// Off, as upstream: both are left out once an RTCP receiver report for the
++    /// SSRC shows that the receiver has bound it. On, for a receiver that binds
++    /// by the Rid alone and is never told the SSRC (an SFU whose answer names no
++    /// `a=ssrc`): pion's stamping interceptor writes both on every packet.
++    pub fn set_mid_rid_on_every_packet(&mut self, enabled: bool) {
++        self.mid_rid_on_every_packet = enabled;
++    }
++
++    /// XRAY-PATCH: how many packets written with [`StreamTx::write_rtp`] this
++    /// stream still holds, not yet handed out by `Rtc::poll_output`.
++    ///
++    /// The queue behind `write_rtp` has no bound of its own: a caller whose
++    /// transport takes packets slower than they are written (a TCP path whose
++    /// socket is full, an owner that polls late) reads this before a write and
++    /// keeps its own. Resends and padding are not in it.
++    pub fn queued_packets(&self) -> usize {
++        self.send_queue.len()
++    }
++
+     /// Write RTP packet to a send stream.
+     ///
+     /// The write command carries the RTP payload and optional RTP metadata.
+@@ -574,15 +602,17 @@
+             return None;
+         }
+         let ssrc_rtx = self.rtx;
+-        let remote_acked_ssrc = self.remote_acked_ssrc;
+-        let remote_acked_rtx_ssrc = self.remote_acked_rtx_ssrc;
++        // XRAY-PATCH: a stream told to keep its Mid and Rid on every packet is treated
++        // as one the receiver has not bound yet, whatever it has reported.
++        let remote_acked_ssrc = self.remote_acked_ssrc && !self.mid_rid_on_every_packet;
++        let remote_acked_rtx_ssrc = self.remote_acked_rtx_ssrc && !self.mid_rid_on_every_packet;
+ 
+-        let (next, is_padding) = if let Some(next) = self.poll_packet_resend(now) {
++        let (next, is_padding) = if let Some(next) = self.poll_packet_resend(now, params) {
+             (next, false)
+         } else if let Some(next) = self.poll_packet_regular(now) {
+             (next, false)
+         } else {
+-            let next = self.poll_packet_padding(now)?;
++            let next = self.poll_packet_padding(now, params)?;
+             (next, true)
+         };
+ 
+@@ -637,6 +667,13 @@
+                 // it does not need RTX anyway. Plain packets on this PT stay nackable.
+                 let is_red_packet = param.red() == Some(pt_main);
+                 let rtx_possible = param.resend().is_some() && !is_red_packet;
++                // XRAY-PATCH: with no RTX PT, or no RTX SSRC, a packet on a PT that
++                // takes NACKs stays nackable: a NACK sends it again as it went, on its
++                // own SSRC (NextPacketKind::ResendPlain), as libwebrtc and pion do
++                // without RTX.
++                let plain_possible = !is_red_packet
++                    && param.fb_nack()
++                    && (param.resend().is_none() || ssrc_rtx.is_none());
+ 
+                 if rtx_possible {
+                     // Remember PT We want to set these directly on `self` here, but can't
+@@ -644,7 +681,7 @@
+                     // since the above loop figuring out param needs to be correct also
+                     // for the NextPacketKind::Blank case.
+                     set_pt_for_padding = Some(pt_main);
+-                } else {
++                } else if !plain_possible {
+                     // If the PT we're sending on doesn't have a corresponding RTX PT,
+                     // the packet is de-facto not nackable.
+                     //
+@@ -675,6 +712,13 @@
+                 header.sequence_number = *next.seq_no as u16;
+                 header
+             }
++            NextPacketKind::ResendPlain => {
++                // XRAY-PATCH: the cached header as the packet went the first time: its
++                // PT, SSRC and sequence number, and (kept below) the extension values
++                // it carried. The same bytes again, as pion's NACK responder resends
++                // them, so the SRTP index is never reused for different bytes.
++                header_ref.clone()
++            }
+             NextPacketKind::Resend(_) | NextPacketKind::Blank(_) => {
+                 // * For the Resend case, we will not have accepted/cached the packet unless
+                 //   we have a RTX PT (see logic setting next.pkt.nackable above).
+@@ -706,17 +750,28 @@
+         // These need to match `Extension::is_supported()` so we are sending what we are
+         // declaring we support.
+ 
++        // XRAY-PATCH: a ResendPlain keeps the values its packet went with, the TWCC
++        // number included: the session registers no new TWCC number for it.
++        let plain = next.kind == NextPacketKind::ResendPlain;
++
+         // Absolute Send Time might not be enabled for this m-line.
+-        if exts.id_of(Extension::AbsoluteSendTime).is_some() {
++        if !plain && exts.id_of(Extension::AbsoluteSendTime).is_some() {
+             header.ext_vals.abs_send_time = Some(now);
+         }
+ 
+         // TWCC might not be enabled for this m-line.
+-        if let Some(twcc) = twcc {
++        if let Some(twcc) = twcc.filter(|_| !plain) {
+             header.ext_vals.transport_cc = Some(*twcc as u16);
+             *twcc += 1;
+         }
+ 
++        // XRAY-PATCH: the cached header of a regular packet keeps the values it went
++        // with, for a ResendPlain to send the same bytes again.
++        if next.kind == NextPacketKind::Regular {
++            next.pkt.header.ext_vals.abs_send_time = header.ext_vals.abs_send_time;
++            next.pkt.header.ext_vals.transport_cc = header.ext_vals.transport_cc;
++        }
++
+         buf.resize(DATAGRAM_MAX_PACKET_SIZE, 0);
+ 
+         let header_len = header.write_to(buf, exts);
+@@ -735,7 +790,7 @@
+         let pkt = &next.pkt;
+ 
+         let body_len = match next.kind {
+-            NextPacketKind::Regular | NextPacketKind::Resend(_) => {
++            NextPacketKind::Regular | NextPacketKind::Resend(_) | NextPacketKind::ResendPlain => {
+                 let body_len = pkt.payload.len();
+                 if let Some(patch) = pkt.vp8_patch.as_ref() {
+                     patch.copy_to(pkt.payload.as_ref(), &mut body_out[..body_len]);
+@@ -860,7 +915,11 @@
+         ratio
+     }
+ 
+-    fn poll_packet_resend(&mut self, now: Instant) -> Option<NextPacket<'_>> {
++    fn poll_packet_resend(
++        &mut self,
++        now: Instant,
++        params: &[PayloadParams],
++    ) -> Option<NextPacket<'_>> {
+         if let Some(ratio_cap) = self.rtx_ratio_cap {
+             let ratio = self.rtx_ratio_downsampled(now);
+ 
+@@ -898,6 +957,22 @@
+             h.push(now, len);
+         }
+ 
++        // XRAY-PATCH: with no RTX SSRC, or no RTX PT for the packet's PT, the packet
++        // goes again as it went: its own SSRC and sequence number, no RTX header.
++        let pt = pkt.header.payload_type;
++        let plain = self.rtx.is_none()
++            || params
++                .iter()
++                .find(|p| p.pt() == pt)
++                .is_none_or(|p| p.resend().is_none());
++        if plain {
++            return Some(NextPacket {
++                kind: NextPacketKind::ResendPlain,
++                seq_no,
++                pkt,
++            });
++        }
++
+         let seq_no = self.seq_no_rtx.inc();
+ 
+         let orig_seq_no = pkt.seq_no;
+@@ -930,7 +1005,11 @@
+         })
+     }
+ 
+-    fn poll_packet_padding(&mut self, _now: Instant) -> Option<NextPacket> {
++    fn poll_packet_padding(
++        &mut self,
++        _now: Instant,
++        params: &[PayloadParams],
++    ) -> Option<NextPacket<'_>> {
+         if !self.padding_enabled() {
+             self.padding = 0;
+             return None;
+@@ -952,6 +1031,17 @@
+                     break 'outer;
+                 };
+ 
++                // XRAY-PATCH: a packet cached for a ResendPlain (its PT has no RTX)
++                // cannot go as RTX padding; pad with a blank packet instead.
++                let pt = pkt.header.payload_type;
++                if params
++                    .iter()
++                    .find(|p| p.pt() == pt)
++                    .is_none_or(|p| p.resend().is_none())
++                {
++                    break 'outer;
++                }
++
+                 let orig_seq_no = pkt.seq_no;
+                 let seq_no = self.seq_no_rtx.inc();
+ 
+@@ -1377,6 +1467,9 @@
+ enum NextPacketKind {
+     Regular,
+     Resend(SeqNo),
++    /// XRAY-PATCH: a resend of a packet that has no RTX to go on: the packet
++    /// again as it went (see `poll_packet_resend`).
++    ResendPlain,
+     Blank(u8),
+ }
+ 
+--- a/tests/dtls-close.rs
++++ b/tests/dtls-close.rs
+@@ -184,3 +184,61 @@
+ 
+     Ok(())
+ }
++
++/// A close while SCTP's handshake is still going says DTLS's goodbye all the
++/// same. sctp-proto refuses to shut down an association that is not
++/// established (`ErrShutdownNonEstablished`); upstream's `start_close`
++/// returned that refusal before it queued the close_notify, so the far end
++/// heard nothing and waited for its ICE to time out.
++#[test]
++fn a_close_inside_the_sctp_handshake_still_says_goodbye() -> Result<(), RtcError> {
++    init_log();
++    init_crypto_default();
++
++    let now = Instant::now();
++    let mut l = TestRtc::new_with_rtc(info_span!("L"), Rtc::builder().build(now));
++    let mut r = TestRtc::new_with_rtc(info_span!("R"), Rtc::builder().build(now));
++
++    let host_l = Candidate::host((Ipv4Addr::new(1, 1, 1, 1), 1000).into(), "udp").unwrap();
++    let host_r = Candidate::host((Ipv4Addr::new(2, 2, 2, 2), 2000).into(), "udp").unwrap();
++    l.add_local_candidate(host_l.clone());
++    l.add_remote_candidate(host_r.clone());
++    r.add_local_candidate(host_r);
++    r.add_remote_candidate(host_l);
++
++    let finger_l = l.direct_api().local_dtls_fingerprint().clone();
++    let finger_r = r.direct_api().local_dtls_fingerprint().clone();
++    l.direct_api().set_remote_fingerprint(finger_r);
++    r.direct_api().set_remote_fingerprint(finger_l);
++
++    let creds_l = l.direct_api().local_ice_credentials();
++    let creds_r = r.direct_api().local_ice_credentials();
++    l.direct_api().set_remote_ice_credentials(creds_r);
++    r.direct_api().set_remote_ice_credentials(creds_l);
++
++    l.direct_api().set_ice_controlling(true);
++    r.direct_api().set_ice_controlling(false);
++
++    l.direct_api().start_dtls(true).unwrap();
++    r.direct_api().start_dtls(false).unwrap();
++
++    progress_until(&mut l, &mut r, "DTLS handshake", |l, r| {
++        l.is_connected() && r.is_connected()
++    });
++
++    // The association starts now and nothing of it has gone out: the local
++    // one waits for its INIT to be answered, not established.
++    l.direct_api().start_sctp(true);
++    r.direct_api().start_sctp(false);
++
++    l.rtc.close()?;
++
++    progress_until(&mut l, &mut r, "the goodbye of a close inside SCTP's handshake", |l, r| {
++        !l.rtc.is_alive()
++            && r.events
++                .iter()
++                .any(|(_, event)| matches!(event, Event::Closed))
++    });
++
++    Ok(())
++}
+--- a/tests/nack.rs
++++ b/tests/nack.rs
+@@ -676,3 +676,67 @@
+ 
+     Ok(())
+ }
++
++/// XRAY-PATCH: a stream without RTX answers a NACK as pion and libwebrtc do
++/// without RTX: the lost packet goes again on its own SSRC, with its own
++/// sequence number, byte for byte as it went the first time.
++#[test]
++fn nack_without_rtx_resends_the_packet_on_its_own_ssrc() -> Result<(), RtcError> {
++    init_crypto_default();
++    let (mut l, mut r) = connect_l_r();
++    let mid = "vid".into();
++    let ssrc: Ssrc = 42.into();
++    l.direct_api().declare_media(mid, MediaKind::Video);
++    l.direct_api().declare_stream_tx(ssrc, None, mid, None);
++    r.direct_api().declare_media(mid, MediaKind::Video);
++    r.direct_api().expect_stream_rx(ssrc, None, mid, None);
++    let pt = l.params_vp8().pt();
++    let now = l.last.max(r.last);
++    l.last = now;
++    r.last = now;
++
++    let write = |l: &mut common::TestRtc, seq: u64| {
++        let now = l.last;
++        l.direct_api().stream_tx(&ssrc).unwrap().write_rtp(
++            RtpWrite::new(pt, seq.into(), seq as u32 * 3000, now, [1, 2, 3, 4]).nackable(true),
++        );
++    };
++    for seq in 47_000..47_020 {
++        write(&mut l, seq);
++        progress(&mut l, &mut r)?;
++    }
++    // 47_020 is lost on its way.
++    for seq in 47_020..47_025 {
++        let loss = if seq == 47_020 { 1.0 } else { 0.0 };
++        r.set_netem(NetemConfig::new().loss(RandomLoss::new(Probability::new(loss))));
++        write(&mut l, seq);
++        progress(&mut l, &mut r)?;
++    }
++    r.set_netem(NetemConfig::new());
++
++    let lost = SeqNo::from(47_020_u64);
++    let deadline = l.duration() + Duration::from_secs(3);
++    while !r
++        .events
++        .iter()
++        .any(|(_, e)| matches!(e, Event::RtpPacket(p) if p.header.ssrc == ssrc && p.seq_no == lost))
++    {
++        assert!(l.duration() < deadline, "the lost packet must arrive again");
++        progress(&mut l, &mut r)?;
++    }
++
++    let sent: Vec<&Vec<u8>> = l
++        .events
++        .iter()
++        .filter_map(|(_, e)| match e.as_raw_packet() {
++            Some(RawPacket::RtpTx(h, buf)) => {
++                assert_eq!(h.ssrc, ssrc, "no packet goes out on another SSRC");
++                (h.sequence_number == 47_020).then_some(buf)
++            }
++            _ => None,
++        })
++        .collect();
++    assert_eq!(sent.len(), 2, "sent once, then once on the NACK");
++    assert_eq!(sent[0], sent[1], "the resend is the packet as it went");
++    Ok(())
++}
+--- a/tests/red.rs
++++ b/tests/red.rs
+@@ -827,3 +827,174 @@
+         "RED ingress accounting must include the RED headers and redundant blocks"
+     );
+ }
++
++/// XRAY-PATCH: `red` on a video line is a payload type of its own (see
++/// XRAY-PATCH.md, "Video RED is a payload type of its own").
++mod video {
++    use std::net::Ipv4Addr;
++    use std::time::Duration;
++
++    use netem::{NetemConfig, Probability, RandomLoss};
++    use str0m::format::{Codec, FormatParams};
++    use str0m::media::{Direction, Frequency, MediaKind, Mid};
++    use str0m::rtp::{RtpWrite, SeqNo};
++    use str0m::{Event, RtcError};
++
++    use super::common::{Peer, TestRtc, init_crypto_default, init_log, negotiate, progress};
++
++    /// The payload types the offering end is built with: a camera's video
++    /// forwarded in RED and that stream's RTX. The answering end starts with
++    /// other numbers and must end with these.
++    const RED: u8 = 104;
++    const RED_RTX: u8 = 105;
++
++    fn rtc(peer: Peer, rtp_mode: bool, red: u8, rtx: u8) -> TestRtc {
++        TestRtc::new_with_config(peer, |c| {
++            let mut c = c.set_rtp_mode(rtp_mode);
++            c.codec_config().add_config(
++                red.into(),
++                Some(rtx.into()),
++                Codec::Red,
++                Frequency::NINETY_KHZ,
++                None,
++                FormatParams::default(),
++            );
++            c
++        })
++    }
++
++    /// `l` (RTP mode) offers one video line both ways to `r`; returns both once
++    /// connected, and the line.
++    fn connect(receiver_rtp_mode: bool) -> (TestRtc, TestRtc, Mid) {
++        init_log();
++        init_crypto_default();
++        let mut l = rtc(Peer::Left, true, RED, RED_RTX);
++        let mut r = rtc(Peer::Right, receiver_rtp_mode, 110, 111);
++        l.add_host_candidate((Ipv4Addr::new(1, 1, 1, 1), 1000).into());
++        r.add_host_candidate((Ipv4Addr::new(2, 2, 2, 2), 2000).into());
++        let mid = negotiate(&mut l, &mut r, |change| {
++            change.add_media(MediaKind::Video, Direction::SendRecv, None, None, None)
++        });
++        loop {
++            if l.is_connected() || r.is_connected() {
++                break;
++            }
++            progress(&mut l, &mut r).unwrap();
++        }
++        let now = l.last.max(r.last);
++        l.last = now;
++        r.last = now;
++        (l, r, mid)
++    }
++
++    /// RFC 2198 with the primary block alone: one byte naming the wrapped
++    /// payload type, then that payload.
++    fn red_payload(seq: u64) -> Vec<u8> {
++        vec![96, 0x90, 0x80, seq as u8, 7, 7, 7]
++    }
++
++    fn write(l: &mut TestRtc, mid: Mid, seq: u64) {
++        let now = l.last;
++        l.direct_api()
++            .stream_tx_by_mid(mid, None)
++            .expect("the line's send stream")
++            .write_rtp(
++                RtpWrite::new(RED.into(), seq.into(), seq as u32 * 3000, now, red_payload(seq))
++                    .nackable(true),
++            );
++    }
++
++    fn red_packets(r: &TestRtc) -> Vec<(SeqNo, Vec<u8>)> {
++        r.events
++            .iter()
++            .filter_map(|(_, e)| match e {
++                Event::RtpPacket(p) if *p.header.payload_type == RED => {
++                    Some((p.seq_no, p.payload.to_vec()))
++                }
++                _ => None,
++            })
++            .collect()
++    }
++
++    /// Both ends name `red` in the SDP they write and keep it from the SDP they
++    /// read, with its RTX; packets written at its payload type reach the far
++    /// end's packet event as they were written.
++    #[test]
++    fn video_red_is_negotiated_and_reaches_the_packet_event() -> Result<(), RtcError> {
++        let (mut l, mut r, mid) = connect(true);
++        for rtc in [&l, &r] {
++            let red = rtc
++                .codec_config()
++                .find(|p| p.spec().codec == Codec::Red)
++                .expect("red in the payload table");
++            assert_eq!((*red.pt(), red.resend().map(|pt| *pt)), (RED, Some(RED_RTX)));
++            let line = rtc.media(mid).expect("the video line");
++            assert!(
++                line.remote_pts().contains(&RED.into()),
++                "the line's remote payload types: {:?}",
++                line.remote_pts()
++            );
++        }
++        for seq in 1000..1020 {
++            write(&mut l, mid, seq);
++            progress(&mut l, &mut r)?;
++        }
++        let until = l.duration() + Duration::from_millis(500);
++        while l.duration() < until {
++            progress(&mut l, &mut r)?;
++        }
++        let got = red_packets(&r);
++        let want: Vec<_> = (1000..1020u64)
++            .map(|seq| (SeqNo::from(seq), red_payload(seq)))
++            .collect();
++        assert_eq!(got, want);
++        Ok(())
++    }
++
++    /// A lost RED packet comes again on the RTX stream its payload type names
++    /// and is handed up as the packet it was.
++    #[test]
++    fn a_lost_video_red_packet_is_resent_over_its_rtx() -> Result<(), RtcError> {
++        let (mut l, mut r, mid) = connect(true);
++        for seq in 1000..1030u64 {
++            let loss = if seq == 1010 { 1.0 } else { 0.0 };
++            r.set_netem(NetemConfig::new().loss(RandomLoss::new(Probability::new(loss))));
++            write(&mut l, mid, seq);
++            progress(&mut l, &mut r)?;
++        }
++        r.set_netem(NetemConfig::new());
++        let lost = SeqNo::from(1010u64);
++        let deadline = l.duration() + Duration::from_secs(3);
++        while !red_packets(&r).iter().any(|(seq, _)| *seq == lost) {
++            assert!(l.duration() < deadline, "the lost packet must arrive again");
++            progress(&mut l, &mut r)?;
++        }
++        let got = red_packets(&r);
++        let again = got.iter().find(|(seq, _)| *seq == lost).unwrap();
++        assert_eq!(again.1, red_payload(1010));
++        assert_eq!(got.len(), 30, "each packet once");
++        Ok(())
++    }
++
++    /// A frame-mode receiver has no depacketizer for `red`: the packets are
++    /// dropped, as they were before `red` had parameters, and nothing panics.
++    #[test]
++    fn a_frame_mode_receiver_drops_video_red() -> Result<(), RtcError> {
++        let (mut l, mut r, mid) = connect(false);
++        for seq in 1000..1010 {
++            write(&mut l, mid, seq);
++            progress(&mut l, &mut r)?;
++        }
++        let until = l.duration() + Duration::from_millis(500);
++        while l.duration() < until {
++            progress(&mut l, &mut r)?;
++        }
++        assert!(
++            !r.events
++                .iter()
++                .any(|(_, e)| matches!(e, Event::MediaData(_) | Event::RtpPacket(_))),
++            "a frame-mode receiver handed RED up"
++        );
++        Ok(())
++    }
++}
+--- a/tests/rtp-direct-mid-rid.rs
++++ b/tests/rtp-direct-mid-rid.rs
+@@ -113,3 +113,127 @@
+ 
+     Ok(())
+ }
++
++/// Six seconds of video on a stream named by a mid and a rid, with no RTX;
++/// what the receiver saw of the two on each packet, in order.
++fn mid_and_rid_seen(keep: bool) -> Result<Vec<(bool, bool)>, RtcError> {
++    init_log();
++    init_crypto_default();
++
++    let (mut l, mut r) = connect_l_r();
++
++    let mid = "vid".into();
++    let rid = "l".into();
++    let ssrc_tx: Ssrc = 43.into();
++
++    l.direct_api().declare_media(mid, MediaKind::Video);
++    l.direct_api()
++        .declare_stream_tx(ssrc_tx, None, mid, Some(rid))
++        .set_mid_rid_on_every_packet(keep);
++    r.direct_api()
++        .declare_media(mid, MediaKind::Video)
++        .expect_rid_rx(rid);
++
++    let max = l.last.max(r.last);
++    l.last = max;
++    r.last = max;
++
++    let pt = l.params_vp8().pt();
++    let mut seq = 1000_u64;
++    let mut write_at = l.last;
++    while l.duration() < Duration::from_secs(6) {
++        if l.last >= write_at {
++            write_at = l.last + Duration::from_millis(50);
++            let wallclock = l.last;
++            l.direct_api().stream_tx(&ssrc_tx).unwrap().write_rtp(RtpWrite::new(
++                pt,
++                seq.into(),
++                seq as u32 * 4500,
++                wallclock,
++                [0x90, 0x80, seq as u8, 7],
++            ));
++            seq += 1;
++        }
++        progress(&mut l, &mut r)?;
++    }
++
++    Ok(r.events
++        .iter()
++        .filter_map(|(_, e)| match e {
++            Event::RtpPacket(p) => Some((
++                p.header.ext_vals.mid == Some(mid),
++                p.header.ext_vals.rid == Some(rid),
++            )),
++            _ => None,
++        })
++        .collect())
++}
++
++/// XRAY-PATCH: a stream told to keep them carries its mid and rid on every
++/// packet, receiver reports or not. Left alone it drops both once the
++/// receiver has reported on its SSRC, as upstream does.
++#[test]
++pub fn mid_and_rid_stay_on_every_packet_when_kept() -> Result<(), RtcError> {
++    let upstream = mid_and_rid_seen(false)?;
++    assert!(upstream.len() > 100, "{} packets", upstream.len());
++    assert_eq!(upstream.first(), Some(&(true, true)));
++    assert_eq!(
++        upstream.last(),
++        Some(&(false, false)),
++        "no receiver report bound the SSRC in six seconds: the test proves nothing"
++    );
++
++    let kept = mid_and_rid_seen(true)?;
++    assert!(kept.len() > 100, "{} packets", kept.len());
++    let bare = kept.iter().filter(|seen| **seen != (true, true)).count();
++    assert_eq!(bare, 0, "{bare} of {} packets without their mid or rid", kept.len());
++    Ok(())
++}
++
++/// XRAY-PATCH: a send stream says how many written packets it still holds:
++/// all of them until the session is polled, none once they have gone out.
++#[test]
++pub fn a_stream_counts_the_packets_it_holds() -> Result<(), RtcError> {
++    init_log();
++    init_crypto_default();
++
++    let (mut l, mut r) = connect_l_r();
++
++    let mid = "vid".into();
++    let ssrc_tx: Ssrc = 44.into();
++
++    l.direct_api().declare_media(mid, MediaKind::Video);
++    l.direct_api().declare_stream_tx(ssrc_tx, None, mid, None);
++    r.direct_api().declare_media(mid, MediaKind::Video);
++
++    let max = l.last.max(r.last);
++    l.last = max;
++    r.last = max;
++
++    let pt = l.params_vp8().pt();
++    assert_eq!(l.direct_api().stream_tx(&ssrc_tx).unwrap().queued_packets(), 0);
++    let wallclock = l.last;
++    for seq in 2000_u64..2005 {
++        l.direct_api().stream_tx(&ssrc_tx).unwrap().write_rtp(RtpWrite::new(
++            pt,
++            seq.into(),
++            seq as u32 * 4500,
++            wallclock,
++            [0x90, 0x80, seq as u8, 7],
++        ));
++    }
++    assert_eq!(l.direct_api().stream_tx(&ssrc_tx).unwrap().queued_packets(), 5);
++
++    let until = l.duration() + Duration::from_secs(1);
++    while l.duration() < until {
++        progress(&mut l, &mut r)?;
++    }
++    assert_eq!(l.direct_api().stream_tx(&ssrc_tx).unwrap().queued_packets(), 0);
++    let arrived = r
++        .events
++        .iter()
++        .filter(|(_, e)| matches!(e, Event::RtpPacket(_)))
++        .count();
++    assert_eq!(arrived, 5);
++    Ok(())
++}

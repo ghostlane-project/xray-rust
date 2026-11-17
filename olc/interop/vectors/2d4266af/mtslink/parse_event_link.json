@@ -1,0 +1,300 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/auth/mtslink/zz_vectors_test.go",
+ "sources": [
+  "internal/auth/mtslink/api.go:65-90 (parseEventLink)",
+  "internal/auth/mtslink/mtslink_test.go:153-176"
+ ],
+ "cases": {
+  "error": "mtslink: room must be the event join link (…/j/{ownerId}/{eventId})",
+  "cases": [
+   {
+    "name": "the join link",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "a session behind it",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500/session/20300400600",
+    "ok": true,
+    "event": "20300400500",
+    "session": "20300400600"
+   },
+   {
+    "name": "a stream behind it names no session",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500/stream-new/20300400600",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "spaces and a line end around it",
+    "link": "  https://my.mts-link.ru/j/100200300/20300400500\n",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "an owner that is not a number",
+    "link": "https://my.mts-link.ru/j/abc/20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "no event",
+    "link": "https://my.mts-link.ru/j/100200300",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "not a url",
+    "link": "not a url",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "another page",
+    "link": "https://my.mts-link.ru/events",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "empty",
+    "link": "",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "a trailing slash",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500/",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "a session and a trailing slash",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500/session/20300400600/",
+    "ok": true,
+    "event": "20300400500",
+    "session": "20300400600"
+   },
+   {
+    "name": "a query",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500?utm=1\u0026x=/j/1/2",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "a fragment",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500#/j/1/2",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "the ice hint left on",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500?ice=tcp",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "j deeper in the path",
+    "link": "https://my.mts-link.ru/ru/app/j/100200300/20300400500",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "the first j anchors, a later one is not looked for",
+    "link": "https://my.mts-link.ru/j/x/j/100200300/20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "a twenty-digit event",
+    "link": "https://my.mts-link.ru/j/100200300/77777777777777777777",
+    "ok": true,
+    "event": "77777777777777777777",
+    "session": ""
+   },
+   {
+    "name": "a twenty-one-digit event",
+    "link": "https://my.mts-link.ru/j/100200300/777777777777777777777",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "a twenty-one-digit owner",
+    "link": "https://my.mts-link.ru/j/777777777777777777777/20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "a twenty-one-digit session is no session",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500/session/777777777777777777777",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "a session that is not a number is no session",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500/session/abc",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "session with nothing behind it",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500/session",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "Session in another case",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500/Session/20300400600",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "J in another case",
+    "link": "https://my.mts-link.ru/J/100200300/20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "another host",
+    "link": "https://example.org/j/100200300/20300400500",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "http",
+    "link": "http://my.mts-link.ru/j/100200300/20300400500",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "a port",
+    "link": "https://my.mts-link.ru:8443/j/100200300/20300400500",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "no scheme",
+    "link": "my.mts-link.ru/j/100200300/20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "no host",
+    "link": "https:///j/100200300/20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "a scheme-relative link",
+    "link": "//my.mts-link.ru/j/100200300/20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "two slashes before j",
+    "link": "https://my.mts-link.ru//j/100200300/20300400500",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "two slashes inside",
+    "link": "https://my.mts-link.ru/j//100200300/20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "j written as an escape",
+    "link": "https://my.mts-link.ru/%6A/100200300/20300400500",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "a digit written as an escape",
+    "link": "https://my.mts-link.ru/j/100200300/2030040050%30",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "a slash written as an escape",
+    "link": "https://my.mts-link.ru/j/100200300%2F20300400500",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "a bad escape",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500%zz",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "full-width digits",
+    "link": "https://my.mts-link.ru/j/100200300/１２３",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "a space inside the path",
+    "link": "https://my.mts-link.ru/j/100200300/ 20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "a control byte",
+    "link": "https://my.mts-link.ru/j/100200300/20300400500",
+    "ok": false,
+    "event": "",
+    "session": ""
+   },
+   {
+    "name": "a tab in front",
+    "link": "\thttps://my.mts-link.ru/j/100200300/20300400500",
+    "ok": true,
+    "event": "20300400500",
+    "session": ""
+   },
+   {
+    "name": "zeros",
+    "link": "https://my.mts-link.ru/j/0/0",
+    "ok": true,
+    "event": "0",
+    "session": ""
+   }
+  ]
+ }
+}

@@ -7,7 +7,7 @@ trap 'rm -rf "$temporary"' EXIT
 
 # Include ignored files here: an upstream .gitignore can hide crate files on
 # the developer's filesystem even though a clean checkout will omit them.
-untracked="$(git -C "$ROOT" ls-files --others -- vendor/blake3 vendor/h2 vendor/h3 vendor/h3-quinn vendor/quinn vendor/quinn-proto vendor/gotatun vendor/smoltcp)"
+untracked="$(git -C "$ROOT" ls-files --others -- vendor/blake3 vendor/h2 vendor/h3 vendor/h3-quinn vendor/quinn vendor/quinn-proto vendor/gotatun vendor/smoltcp olc/vendor/str0m-0.25.0 olc/vendor/is-0.12.0 olc/vendor/stun-proto-2.0.5 olc/vendor/turn-client-proto-0.8.0)"
 if [[ -n "$untracked" ]]; then
   echo 'vendored source files are absent from the Git index:' >&2
   printf '%s\n' "$untracked" >&2
@@ -121,6 +121,86 @@ diff -ruN --exclude XRAY-PATCH.diff --exclude XRAY-PATCH.md \
 # The published crate omits the HPACK fixture files its fixture tests read.
 cargo test --locked --manifest-path "$temporary/h2-0.4.20/Cargo.toml" \
   --lib -- --skip hpack::test::fixture
+
+download_and_verify \
+  str0m 0.25.0 \
+  357c7e453c033c8bb59e912312f9f9ff07c2a9ce7268bcb94f0c828a5b47e58f
+patch --batch --fuzz=0 -p1 \
+  -d "$temporary/str0m-0.25.0" \
+  <"$ROOT/olc/vendor/str0m-0.25.0/XRAY-PATCH.diff"
+diff -ruN --exclude XRAY-PATCH.diff --exclude XRAY-PATCH.md \
+  "$temporary/str0m-0.25.0" "$ROOT/olc/vendor/str0m-0.25.0"
+# The library and the integration tests that cover what the patches touch:
+# NACK, RTX and padding; RED (audio's, and video's as a payload type of its
+# own); the Mid and Rid on a stream's packets and the count of the packets a
+# stream still holds (both in rtp-direct-mid-rid), SDP negotiation, and the
+# close inside SCTP's handshake (dtls-close).
+# Upstream's tests reach internals through `_internal_test_exports`, which
+# its workspace turns on with a dev-dependency the published crate drops.
+cargo test --locked --manifest-path "$temporary/str0m-0.25.0/Cargo.toml" \
+  --features _internal_test_exports --lib --test nack --test rtx-cache-0 --test early-rtx-padding --test sdp-rtx-apt \
+  --test red --test rtp-direct-mid-rid --test rtp-direct-mid --test simulcast-rid-mapping --test sdp-negotiation \
+  --test dtls-close
+
+# str0m's ICE crate, the olcRTC engine's STUN crate and its TURN client
+# (olc/vendor): each keeps the published manifest, README and sources and
+# leaves the rest of the archive out, so those three paths are compared.
+download_and_verify \
+  is 0.12.0 \
+  72dd0494853a6c3769c87adc610e8b228fd8c65c41cc4d2717ff6151ee2d6c73
+patch --batch --fuzz=0 -p1 \
+  -d "$temporary/is-0.12.0" \
+  <"$ROOT/olc/vendor/is-0.12.0/XRAY-PATCH.diff"
+for path in Cargo.toml README.md src; do
+  diff -ruN \
+    "$temporary/is-0.12.0/$path" \
+    "$ROOT/olc/vendor/is-0.12.0/$path"
+done
+cargo test --locked --manifest-path "$temporary/is-0.12.0/Cargo.toml" --lib
+
+# The vendored manifests of stun-proto and turn-client-proto drop the
+# example, benches, integration tests and dev-dependencies the vendored
+# copies leave out; the published lockfiles still name those packages. The
+# library tests therefore run on the patched sources under the published
+# manifest, kept aside before the patch and put back after the comparison.
+download_and_verify \
+  stun-proto 2.0.5 \
+  25cbfd0e9a3033f7cb5d9c4eb1155f18b2531f34bd75dae9032f0b77823c4190
+cp "$temporary/stun-proto-2.0.5/Cargo.toml" "$temporary/stun-proto-2.0.5.published.toml"
+patch --batch --fuzz=0 -p1 \
+  -d "$temporary/stun-proto-2.0.5" \
+  <"$ROOT/olc/vendor/stun-proto-2.0.5/XRAY-PATCH.diff"
+for path in Cargo.toml README.md src; do
+  diff -ruN \
+    "$temporary/stun-proto-2.0.5/$path" \
+    "$ROOT/olc/vendor/stun-proto-2.0.5/$path"
+done
+cp "$temporary/stun-proto-2.0.5.published.toml" "$temporary/stun-proto-2.0.5/Cargo.toml"
+# Six of upstream's tests stage what the patch turns off, a client that reads
+# the nonce's security bits (userhash, SHA-256, the bid-down checks of
+# RFC 8489 section 9.2): they fail by design and are the only ones skipped.
+cargo test --locked --manifest-path "$temporary/stun-proto-2.0.5/Cargo.toml" --lib -- \
+  --skip auth::tests::long_term_full_auth_userhash_sha1 \
+  --skip auth::tests::long_term_full_auth_userhash_sha256 \
+  --skip auth::tests::long_term_full_auth_uses_sha256 \
+  --skip auth::tests::long_term_full_auth_flow_server_sha256_mismatch \
+  --skip auth::tests::long_term_full_client_bid_down_attack_remove_password_algorithms_from_server_response \
+  --skip auth::tests::long_term_full_server_bid_down_attack_remove_password_algorithms_value_from_server_response
+
+download_and_verify \
+  turn-client-proto 0.8.0 \
+  57914c655cc6cc1d6cb6541673b87be69595365a3226b6bfd34dad8af7d779a1
+cp "$temporary/turn-client-proto-0.8.0/Cargo.toml" "$temporary/turn-client-proto-0.8.0.published.toml"
+patch --batch --fuzz=0 -p1 \
+  -d "$temporary/turn-client-proto-0.8.0" \
+  <"$ROOT/olc/vendor/turn-client-proto-0.8.0/XRAY-PATCH.diff"
+for path in Cargo.toml README.md src; do
+  diff -ruN \
+    "$temporary/turn-client-proto-0.8.0/$path" \
+    "$ROOT/olc/vendor/turn-client-proto-0.8.0/$path"
+done
+cp "$temporary/turn-client-proto-0.8.0.published.toml" "$temporary/turn-client-proto-0.8.0/Cargo.toml"
+cargo test --locked --manifest-path "$temporary/turn-client-proto-0.8.0/Cargo.toml" --lib
 
 bash "$ROOT/scripts/check-wireguard-adapter-prototype.sh" --verify-vendor-only
 

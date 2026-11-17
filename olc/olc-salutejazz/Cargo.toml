@@ -1,0 +1,28 @@
+[package]
+name = "olc-salutejazz"
+description = "The olcRTC SaluteJazz carrier, ported from the Go engine at 2d4266af (internal/engine/salutejazz, internal/relaywin, internal/auth/salutejazz): the connector's signalling, the two peer connections, LiveKit DataPackets and the relay window"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+olc-net = { path = "../olc-net" }
+olc-rtc = { path = "../olc-rtc" }
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { version = "0.7.19", default-features = false }
+uuid.workspace = true
+
+[features]
+# olc-rtc's DTLS from BoringSSL, shaped as Chrome's.
+boring = ["olc-rtc/boring"]
+# A test build only: see olc-rtc's feature of the name.
+turns-test-roots = ["olc-rtc/turns-test-roots"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

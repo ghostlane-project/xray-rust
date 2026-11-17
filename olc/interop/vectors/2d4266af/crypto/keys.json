@@ -1,0 +1,62 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/crypto/zz_vectors_test.go zzKeysFile",
+ "sources": [
+  "internal/crypto/chacha.go:30-45",
+  "internal/crypto/chacha.go:155-177"
+ ],
+ "cases": {
+  "client_to_server_label": "olcrtc/v2/client-to-server",
+  "server_to_client_label": "olcrtc/v2/server-to-client",
+  "record_magic": "OLC2",
+  "nonce_prefix_size": 16,
+  "record_header_size": 28,
+  "wire_overhead": 44,
+  "replay_window_size": 64,
+  "max_replay_senders": 1024,
+  "keys": [
+   {
+    "psk": "0000000000000000000000000000000000000000000000000000000000000000",
+    "client_to_server": "b54ec2b8fd0217e171cc7666dfa6940d0defdacd2fc55309825be90c923f3343",
+    "server_to_client": "7598276be61482b9794dc651093577d7e8662ba2d84daa314be306282f6a5e49"
+   },
+   {
+    "psk": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "client_to_server": "a2705ef72f68c5c5dbbf89ad02bc66d59422a10e049daef2f080ed8f70eca7bd",
+    "server_to_client": "d4bb969fffafe059699604208d83dcfdd42fcaef499e420de9da7751d121492a"
+   },
+   {
+    "psk": "001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0",
+    "client_to_server": "55a614d8b8c1355af3e2cf9f13b39bf3f1c6f928df558d317317ffadd3a1fd76",
+    "server_to_client": "e8d59c0caa145bf2cf961834c1040b4aa15a99e8a0e89bad2f7c1902cdd66353"
+   },
+   {
+    "psk": "56a18918d8c3dc600cd6ae2d350ac9c63d38acf219e539cac388fcb1ba546734",
+    "client_to_server": "c5c8d9930ccedd9d377aa5bf2f6552984989dd4cd6766c7ee5d04c438c68b28a",
+    "server_to_client": "ea8e2b0f486155f038d45b8dca90ec8a224a358512d3c6aff9d8ea82c8bfc058"
+   }
+  ],
+  "invalid_psk_lengths": [
+   {
+    "len": 0,
+    "verdict": "invalid_key_size"
+   },
+   {
+    "len": 16,
+    "verdict": "invalid_key_size"
+   },
+   {
+    "len": 31,
+    "verdict": "invalid_key_size"
+   },
+   {
+    "len": 33,
+    "verdict": "invalid_key_size"
+   },
+   {
+    "len": 64,
+    "verdict": "invalid_key_size"
+   }
+  ]
+ }
+}

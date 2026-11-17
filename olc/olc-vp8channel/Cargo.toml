@@ -1,0 +1,21 @@
+[package]
+name = "olc-vp8channel"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+description = "The olcRTC vp8channel transport (KCP disguised as VP8 keyframes) as the Go engine at 2d4266af runs it"
+
+[dependencies]
+crc32fast = { workspace = true }
+olc-kcp = { path = "../olc-kcp" }
+rand = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+olc-interop = { path = "../interop/oracle-client" }
+serde_json = { workspace = true }

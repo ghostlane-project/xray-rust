@@ -1,0 +1,16 @@
+# The bindings of OlcrtcRuntime. Library mode reads the library that links
+# olc-ffi (libghostlane_core); this file names the modules.
+
+[bindings.swift]
+module_name = "OlcFfi"
+ffi_module_name = "OlcFfiFFI"
+# gomobile's single-argument calls read as they do today:
+# runtime.setRoom(primary), runtime.stop(5000).
+omit_argument_labels = true
+# The generated description is the case's reflection; the error's text is
+# what the apps show, so swift/OlcrtcError+Localized.swift supplies it.
+omit_localized_error_conformance = true
+
+[bindings.kotlin]
+package_name = "org.ghostlane.olcrtc"
+cdylib_name = "ghostlane_core"

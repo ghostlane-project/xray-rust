@@ -1,0 +1,475 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/zz_reconnect_vectors_test.go",
+ "sources": [
+  "internal/engine/reconnect.go:12-24 (the constants)",
+  "internal/engine/reconnect.go:382-388 (reconnectBackoff)",
+  "internal/engine/reconnect.go:270-280 (nextRequestCount)",
+  "internal/engine/reconnect.go:254-267 (the durations awaitRoute logs)"
+ ],
+ "cases": {
+  "constants": {
+   "window_ms": 300000,
+   "backoff_step_ms": 2000,
+   "backoff_max_ms": 30000,
+   "no_route_probe_initial_ms": 1000,
+   "no_route_probe_max_ms": 8000,
+   "no_route_max_wait_ms": 300000
+  },
+  "backoff": [
+   {
+    "count": 0,
+    "ms": 0
+   },
+   {
+    "count": 1,
+    "ms": 2000
+   },
+   {
+    "count": 2,
+    "ms": 4000
+   },
+   {
+    "count": 3,
+    "ms": 6000
+   },
+   {
+    "count": 4,
+    "ms": 8000
+   },
+   {
+    "count": 5,
+    "ms": 10000
+   },
+   {
+    "count": 6,
+    "ms": 12000
+   },
+   {
+    "count": 7,
+    "ms": 14000
+   },
+   {
+    "count": 8,
+    "ms": 16000
+   },
+   {
+    "count": 9,
+    "ms": 18000
+   },
+   {
+    "count": 10,
+    "ms": 20000
+   },
+   {
+    "count": 11,
+    "ms": 22000
+   },
+   {
+    "count": 12,
+    "ms": 24000
+   },
+   {
+    "count": 13,
+    "ms": 26000
+   },
+   {
+    "count": 14,
+    "ms": 28000
+   },
+   {
+    "count": 15,
+    "ms": 30000
+   },
+   {
+    "count": 16,
+    "ms": 30000
+   },
+   {
+    "count": 17,
+    "ms": 30000
+   },
+   {
+    "count": 18,
+    "ms": 30000
+   },
+   {
+    "count": 19,
+    "ms": 30000
+   },
+   {
+    "count": 20,
+    "ms": 30000
+   },
+   {
+    "count": 21,
+    "ms": 30000
+   },
+   {
+    "count": 22,
+    "ms": 30000
+   },
+   {
+    "count": 23,
+    "ms": 30000
+   },
+   {
+    "count": 24,
+    "ms": 30000
+   },
+   {
+    "count": 25,
+    "ms": 30000
+   },
+   {
+    "count": 26,
+    "ms": 30000
+   },
+   {
+    "count": 27,
+    "ms": 30000
+   },
+   {
+    "count": 28,
+    "ms": 30000
+   },
+   {
+    "count": 29,
+    "ms": 30000
+   },
+   {
+    "count": 30,
+    "ms": 30000
+   },
+   {
+    "count": 31,
+    "ms": 30000
+   },
+   {
+    "count": 32,
+    "ms": 30000
+   },
+   {
+    "count": 33,
+    "ms": 30000
+   },
+   {
+    "count": 34,
+    "ms": 30000
+   },
+   {
+    "count": 35,
+    "ms": 30000
+   },
+   {
+    "count": 36,
+    "ms": 30000
+   },
+   {
+    "count": 37,
+    "ms": 30000
+   },
+   {
+    "count": 38,
+    "ms": 30000
+   },
+   {
+    "count": 39,
+    "ms": 30000
+   },
+   {
+    "count": 40,
+    "ms": 30000
+   }
+  ],
+  "counter": [
+   {
+    "name": "the first request",
+    "gaps_ms": [
+     0
+    ],
+    "counts": [
+     1
+    ]
+   },
+   {
+    "name": "requests one after another",
+    "gaps_ms": [
+     0,
+     0,
+     0,
+     0
+    ],
+    "counts": [
+     1,
+     2,
+     3,
+     4
+    ]
+   },
+   {
+    "name": "requests a second apart",
+    "gaps_ms": [
+     0,
+     1000,
+     1000,
+     1000,
+     1000,
+     1000
+    ],
+    "counts": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ]
+   },
+   {
+    "name": "a gap of exactly the window keeps the count",
+    "gaps_ms": [
+     0,
+     300000,
+     300000
+    ],
+    "counts": [
+     1,
+     2,
+     3
+    ]
+   },
+   {
+    "name": "a gap one millisecond past the window starts again",
+    "gaps_ms": [
+     0,
+     1000,
+     300001,
+     1000
+    ],
+    "counts": [
+     1,
+     2,
+     1,
+     2
+    ]
+   },
+   {
+    "name": "the window runs from the last request, not the first",
+    "gaps_ms": [
+     0,
+     299999,
+     299999,
+     299999,
+     300001
+    ],
+    "counts": [
+     1,
+     2,
+     3,
+     4,
+     1
+    ]
+   },
+   {
+    "name": "a long quiet stretch, twice",
+    "gaps_ms": [
+     0,
+     0,
+     0,
+     600000,
+     0,
+     900000,
+     0
+    ],
+    "counts": [
+     1,
+     2,
+     3,
+     1,
+     2,
+     1,
+     2
+    ]
+   },
+   {
+    "name": "a first request long after the supervisor was made",
+    "gaps_ms": [
+     3000000,
+     0
+    ],
+    "counts": [
+     1,
+     2
+    ]
+   }
+  ],
+  "durations": [
+   {
+    "ms": 0,
+    "plain": "0s",
+    "rounded": "0s"
+   },
+   {
+    "ms": 1,
+    "plain": "1ms",
+    "rounded": "0s"
+   },
+   {
+    "ms": 499,
+    "plain": "499ms",
+    "rounded": "0s"
+   },
+   {
+    "ms": 500,
+    "plain": "500ms",
+    "rounded": "1s"
+   },
+   {
+    "ms": 501,
+    "plain": "501ms",
+    "rounded": "1s"
+   },
+   {
+    "ms": 999,
+    "plain": "999ms",
+    "rounded": "1s"
+   },
+   {
+    "ms": 1000,
+    "plain": "1s",
+    "rounded": "1s"
+   },
+   {
+    "ms": 1499,
+    "plain": "1.499s",
+    "rounded": "1s"
+   },
+   {
+    "ms": 1500,
+    "plain": "1.5s",
+    "rounded": "2s"
+   },
+   {
+    "ms": 2000,
+    "plain": "2s",
+    "rounded": "2s"
+   },
+   {
+    "ms": 3000,
+    "plain": "3s",
+    "rounded": "3s"
+   },
+   {
+    "ms": 4000,
+    "plain": "4s",
+    "rounded": "4s"
+   },
+   {
+    "ms": 7000,
+    "plain": "7s",
+    "rounded": "7s"
+   },
+   {
+    "ms": 8000,
+    "plain": "8s",
+    "rounded": "8s"
+   },
+   {
+    "ms": 15000,
+    "plain": "15s",
+    "rounded": "15s"
+   },
+   {
+    "ms": 23000,
+    "plain": "23s",
+    "rounded": "23s"
+   },
+   {
+    "ms": 59000,
+    "plain": "59s",
+    "rounded": "59s"
+   },
+   {
+    "ms": 59499,
+    "plain": "59.499s",
+    "rounded": "59s"
+   },
+   {
+    "ms": 59500,
+    "plain": "59.5s",
+    "rounded": "1m0s"
+   },
+   {
+    "ms": 60000,
+    "plain": "1m0s",
+    "rounded": "1m0s"
+   },
+   {
+    "ms": 61000,
+    "plain": "1m1s",
+    "rounded": "1m1s"
+   },
+   {
+    "ms": 119500,
+    "plain": "1m59.5s",
+    "rounded": "2m0s"
+   },
+   {
+    "ms": 299000,
+    "plain": "4m59s",
+    "rounded": "4m59s"
+   },
+   {
+    "ms": 300000,
+    "plain": "5m0s",
+    "rounded": "5m0s"
+   },
+   {
+    "ms": 303000,
+    "plain": "5m3s",
+    "rounded": "5m3s"
+   },
+   {
+    "ms": 599000,
+    "plain": "9m59s",
+    "rounded": "9m59s"
+   },
+   {
+    "ms": 600000,
+    "plain": "10m0s",
+    "rounded": "10m0s"
+   },
+   {
+    "ms": 3599000,
+    "plain": "59m59s",
+    "rounded": "59m59s"
+   },
+   {
+    "ms": 3599500,
+    "plain": "59m59.5s",
+    "rounded": "1h0m0s"
+   },
+   {
+    "ms": 3600000,
+    "plain": "1h0m0s",
+    "rounded": "1h0m0s"
+   },
+   {
+    "ms": 3661000,
+    "plain": "1h1m1s",
+    "rounded": "1h1m1s"
+   },
+   {
+    "ms": 36000000,
+    "plain": "10h0m0s",
+    "rounded": "10h0m0s"
+   },
+   {
+    "ms": 90061000,
+    "plain": "25h1m1s",
+    "rounded": "25h1m1s"
+   }
+  ]
+ }
+}

@@ -1,0 +1,143 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/framing/zz_vectors_test.go TestZZVectors",
+ "sources": [
+  "internal/framing/framing.go:17-69"
+ ],
+ "cases": {
+  "header_size": 4,
+  "write": [
+   {
+    "body": "",
+    "max": 0,
+    "verdict": "ok",
+    "frame": "00000000",
+    "writes": 1
+   },
+   {
+    "body": "7b7d",
+    "max": 16,
+    "verdict": "ok",
+    "frame": "000000027b7d",
+    "writes": 1
+   },
+   {
+    "body": "01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e",
+    "max": 0,
+    "verdict": "ok",
+    "frame": "000000ff01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e",
+    "writes": 1
+   },
+   {
+    "body": "0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e",
+    "max": 0,
+    "verdict": "ok",
+    "frame": "000001000221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e",
+    "writes": 1
+   },
+   {
+    "body": "032241607f9ebddc001f3e5d7c9bbad9",
+    "max": 16,
+    "verdict": "ok",
+    "frame": "00000010032241607f9ebddc001f3e5d7c9bbad9",
+    "writes": 1
+   },
+   {
+    "body": "04234261809fbedd01203f5e7d9cbbdaf9",
+    "max": 16,
+    "verdict": "too_large",
+    "writes": 0
+   },
+   {
+    "body": "7b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a317d",
+    "max": 16384,
+    "verdict": "ok",
+    "frame": "0000002b7b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a317d",
+    "writes": 1
+   }
+  ],
+  "read": [
+   {
+    "name": "empty body",
+    "input": "00000000",
+    "max": 0,
+    "verdict": "ok",
+    "consumed": 4
+   },
+   {
+    "name": "one frame",
+    "input": "0000000568656c6c6f",
+    "max": 16,
+    "verdict": "ok",
+    "body": "68656c6c6f",
+    "consumed": 9
+   },
+   {
+    "name": "a frame, then the next one's bytes",
+    "input": "00000003616263646566",
+    "max": 0,
+    "verdict": "ok",
+    "body": "616263",
+    "consumed": 7
+   },
+   {
+    "name": "length equal to max",
+    "input": "00000004deadbeef",
+    "max": 4,
+    "verdict": "ok",
+    "body": "deadbeef",
+    "consumed": 8
+   },
+   {
+    "name": "length above max",
+    "input": "00000005deadbeef00",
+    "max": 4,
+    "verdict": "too_large",
+    "consumed": 4
+   },
+   {
+    "name": "length above max, nothing after it",
+    "input": "00010001",
+    "max": 65536,
+    "verdict": "too_large",
+    "consumed": 4
+   },
+   {
+    "name": "max zero allows anything",
+    "input": "00000005deadbeef00",
+    "max": 0,
+    "verdict": "ok",
+    "body": "deadbeef00",
+    "consumed": 9
+   },
+   {
+    "name": "stream ended before the header",
+    "input": "",
+    "max": 16,
+    "verdict": "eof_header",
+    "consumed": 0
+   },
+   {
+    "name": "stream ended inside the header",
+    "input": "000000",
+    "max": 16,
+    "verdict": "truncated_header",
+    "consumed": 3
+   },
+   {
+    "name": "stream ended before the body",
+    "input": "00000005",
+    "max": 16,
+    "verdict": "eof_body",
+    "consumed": 4
+   },
+   {
+    "name": "stream ended inside the body",
+    "input": "00000005dead",
+    "max": 16,
+    "verdict": "truncated_body",
+    "consumed": 6
+   }
+  ]
+ }
+}

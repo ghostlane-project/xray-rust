@@ -1,0 +1,22 @@
+[package]
+name = "ghostlane-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Ghostlane's one native library: the xray core's C ABI and the olcRTC client's UniFFI API on one Tokio runtime and one counting allocator"
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+ghostlane-runtime = { path = "../ghostlane-runtime" }
+olc-ffi = { path = "../../olc/olc-ffi" }
+xray-ffi = { path = "../xray-ffi", features = ["shared-runtime"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+# Already linked through xray-ffi: the test below holds both cores to one byte budget.
+xray-transport = { path = "../xray-transport" }

@@ -16,7 +16,7 @@ use std::ptr;
 use std::slice;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::Runtime;
 use xray_config::{
     parse_xray_json, parse_xray_json_with_exclusive_geodata_dirs, parse_xray_json_with_geodata_dirs,
 };
@@ -526,7 +526,7 @@ pub struct XrayUdpQuicBlockedEvent {
 
 pub struct XrayCoreHandle {
     core: Option<Core>,
-    runtime: Runtime,
+    runtime: FfiRuntime,
     pending_outbound_packets: Mutex<VecDeque<Bytes>>,
     socket_protector: Option<Arc<dyn SocketProtector>>,
     geodata_search: GeodataSearch,
@@ -538,6 +538,49 @@ pub struct XrayCoreHandle {
     tun_admission: Option<xray_core_rs::TunAdmissionPolicy>,
     config_warnings: String,
     log_callback: Option<Arc<FfiLogCallback>>,
+}
+
+/// The runtime a core runs on: its own, as before, or with the
+/// `shared-runtime` feature the process's one runtime that `ghostlane-core`
+/// shares with the olcRTC client (one set of threads in the iOS extension).
+enum FfiRuntime {
+    #[cfg_attr(feature = "shared-runtime", allow(dead_code))]
+    Own(Runtime),
+    #[cfg(feature = "shared-runtime")]
+    Shared(tokio::runtime::Handle),
+}
+
+impl FfiRuntime {
+    fn new() -> std::io::Result<Self> {
+        #[cfg(feature = "shared-runtime")]
+        {
+            ghostlane_runtime::handle().map(Self::Shared)
+        }
+        #[cfg(not(feature = "shared-runtime"))]
+        {
+            let plan = runtime_plan();
+            let mut builder = tokio::runtime::Builder::new_multi_thread();
+            builder
+                .enable_all()
+                .thread_name("xray-ffi")
+                .worker_threads(plan.workers);
+            if let Some(max) = plan.max_blocking {
+                builder.max_blocking_threads(max);
+            }
+            if let Some(keep_alive) = plan.keep_alive {
+                builder.thread_keep_alive(keep_alive);
+            }
+            builder.build().map(Self::Own)
+        }
+    }
+
+    fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        match self {
+            Self::Own(runtime) => runtime.block_on(future),
+            #[cfg(feature = "shared-runtime")]
+            Self::Shared(handle) => handle.block_on(future),
+        }
+    }
 }
 
 enum GeodataSearch {
@@ -633,19 +676,7 @@ unsafe fn xray_core_new_inner(error: *mut *mut XrayError) -> *mut XrayCoreHandle
         clear_error(error);
     }
 
-    let plan = runtime_plan();
-    let mut builder = Builder::new_multi_thread();
-    builder
-        .enable_all()
-        .thread_name("xray-ffi")
-        .worker_threads(plan.workers);
-    if let Some(max) = plan.max_blocking {
-        builder.max_blocking_threads(max);
-    }
-    if let Some(keep_alive) = plan.keep_alive {
-        builder.thread_keep_alive(keep_alive);
-    }
-    let runtime = match builder.build() {
+    let runtime = match FfiRuntime::new() {
         Ok(runtime) => runtime,
         Err(err) => {
             unsafe {
@@ -4473,6 +4504,7 @@ fn c_string_lossy_without_nuls(message: &str) -> CString {
 
 /// What the tokio runtime of a core is built with.
 #[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "shared-runtime", allow(dead_code))]
 struct RuntimePlan {
     workers: usize,
     /// `None` keeps tokio's own bound (512).
@@ -4486,7 +4518,10 @@ struct RuntimePlan {
 /// they must be `setenv`'d there, not in the containing app. A value that is
 /// not a number from 1 to 64 is ignored. Without them every platform but iOS
 /// keeps its old plan; the overrides themselves apply on every platform.
-/// `cfg!(target_os = "ios")` is also true for Mac Catalyst.
+/// `cfg!(target_os = "ios")` is also true for Mac Catalyst. With the
+/// `shared-runtime` feature the core runs on `ghostlane-runtime`'s runtime
+/// instead, and this plan is not used.
+#[cfg_attr(feature = "shared-runtime", allow(dead_code))]
 fn runtime_plan() -> RuntimePlan {
     let available = std::thread::available_parallelism()
         .map(usize::from)
@@ -4501,6 +4536,7 @@ fn runtime_plan() -> RuntimePlan {
     )
 }
 
+#[cfg_attr(feature = "shared-runtime", allow(dead_code))]
 fn runtime_plan_for(
     ios: bool,
     available: usize,
@@ -4525,12 +4561,15 @@ fn runtime_plan_for(
         // (300 Mbit/s). `XRAY_FFI_WORKER_THREADS` raises it.
         // The blocking pool (getaddrinfo for a domain dialed without the
         // core's DNS) is capped at 4 threads, each with its own touched
-        // stack, and a thread idles 2 s, not tokio's 10 s. A cap queues,
-        // never refuses.
+        // stack, and a thread idles 2 s, not tokio's 10 s: the shared
+        // runtime's phone profile, whose constants (`MAX_BLOCKING`,
+        // `PHONE_KEEP_ALIVE`) both plans read. A cap queues, never refuses.
         RuntimePlan {
             workers: count(workers_override).unwrap_or(1),
-            max_blocking: Some(count(blocking_override).unwrap_or(4)),
-            keep_alive: Some(Duration::from_secs(2)),
+            max_blocking: Some(
+                count(blocking_override).unwrap_or(ghostlane_runtime::runtime::MAX_BLOCKING),
+            ),
+            keep_alive: Some(ghostlane_runtime::runtime::PHONE_KEEP_ALIVE),
         }
     } else {
         // Every other platform keeps what it had: a phone-sized core count,
@@ -4795,6 +4834,43 @@ mod tests {
                 "{available} cores"
             );
         }
+    }
+
+    /// The core's own runtime and the shared one (`ghostlane-runtime`, the
+    /// `shared-runtime` feature) let an idle blocking thread go after the
+    /// same time: 2 s on iOS, from one constant; Tokio's 10 s elsewhere.
+    #[test]
+    fn runtime_plan_keeps_the_shared_runtimes_keep_alive() {
+        use ghostlane_runtime::runtime::{Profile, HOST_KEEP_ALIVE, PHONE_KEEP_ALIVE};
+        assert_eq!(PHONE_KEEP_ALIVE, Duration::from_secs(2));
+        assert_eq!(
+            runtime_plan_for(true, 4, None, None).keep_alive,
+            Some(Profile::phone().keep_alive)
+        );
+        // `None` is Tokio's own keep-alive, which the host profile names.
+        assert_eq!(runtime_plan_for(false, 4, None, None).keep_alive, None);
+        assert_eq!(Profile::host().keep_alive, HOST_KEEP_ALIVE);
+        assert_eq!(HOST_KEEP_ALIVE, Duration::from_secs(10));
+    }
+
+    /// The core's own runtime and the shared one cap the blocking pool at
+    /// the same count on iOS, from one constant (`design.md` D11: at most
+    /// four); a bad override falls back to it too. Off iOS the core keeps
+    /// Tokio's bound (512), the shared runtime's host profile four.
+    #[test]
+    fn runtime_plan_takes_the_shared_runtimes_blocking_cap() {
+        use ghostlane_runtime::runtime::{Profile, MAX_BLOCKING};
+        assert_eq!(Profile::phone().max_blocking, MAX_BLOCKING);
+        assert_eq!(Profile::host().max_blocking, MAX_BLOCKING);
+        for blocking in [None, Some("0"), Some("65"), Some("two")] {
+            assert_eq!(
+                runtime_plan_for(true, 4, None, blocking).max_blocking,
+                Some(MAX_BLOCKING),
+                "{blocking:?}"
+            );
+        }
+        assert_eq!(runtime_plan_for(false, 4, None, None).max_blocking, None);
+        assert_eq!(MAX_BLOCKING, 4);
     }
 
     #[test]

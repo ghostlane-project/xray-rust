@@ -1,0 +1,117 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -42,29 +42,10 @@
+ name = "stun_proto"
+ path = "src/lib.rs"
+ 
+-[[example]]
+-name = "stund"
+-path = "examples/stund.rs"
+-
+-[[bench]]
+-name = "agent_recv"
+-path = "benches/agent_recv.rs"
+-harness = false
+-
+-[[bench]]
+-name = "agent_send"
+-path = "benches/agent_send.rs"
+-harness = false
+-
+-[[bench]]
+-name = "auth_long_term"
+-path = "benches/auth_long_term.rs"
+-harness = false
+-
+-[[bench]]
+-name = "auth_short_term"
+-path = "benches/auth_short_term.rs"
+-harness = false
++
++
++
++
+ 
+ [dependencies.base64]
+ version = "0.22"
+@@ -105,8 +86,6 @@
+ features = ["attributes"]
+ default-features = false
+ 
+-[dev-dependencies.criterion]
+-version = "0.7"
+ 
+ [dev-dependencies.sans-io-time]
+ version = "0.2"
+--- a/src/auth.rs
++++ b/src/auth.rs
+@@ -183,6 +183,15 @@
+     Hash([u8; 32]),
+ }
+ 
++/// olcRTC fork: a client reads a 401 as libwebrtc's TURN client does,
++/// classic whatever its nonce says. RFC 8489's nonce cookie (section 9.2)
++/// and PASSWORD-ALGORITHMS are not looked at: the retried request carries
++/// MESSAGE-INTEGRITY with the MD5 key and echoes neither PASSWORD-ALGORITHMS
++/// nor PASSWORD-ALGORITHM, as Chrome's does (and section 9.2.4 has the
++/// server take such a request as MD5). The server's side is upstream's. A
++/// signed request carries USERNAME, REALM and NONCE in libwebrtc's order.
++const CLIENT_READS_NONCE_SECURITY: bool = false;
++
+ #[derive(Debug)]
+ struct RequestAuth {
+     user: User,
+@@ -395,12 +404,14 @@
+     ) -> Result<W, StunWriteError> {
+         if let Some(auth) = self.auth.auth() {
+             if msg.has_class(MessageClass::Request) {
+-                msg.add_attribute(&Nonce::new(&auth.nonce)?)?;
+-                msg.add_attribute(&Realm::new(&auth.realm)?)?;
++                // olcRTC fork: libwebrtc's order (`AddRequestAuthInfo`):
++                // USERNAME, REALM, NONCE.
+                 match &auth.user {
+                     User::Name(name) => msg.add_attribute(&Username::new(name)?)?,
+                     User::Hash(hash) => msg.add_attribute(&Userhash::new(*hash))?,
+                 }
++                msg.add_attribute(&Realm::new(&auth.realm)?)?;
++                msg.add_attribute(&Nonce::new(&auth.nonce)?)?;
+             }
+             if !auth.password_algos.is_empty() {
+                 msg.add_attribute(&PasswordAlgorithms::new(&auth.password_algos))?;
+@@ -432,14 +443,15 @@
+     pub unsafe fn sign_outgoing_message_unchecked<W: MessageWrite>(&mut self, mut msg: W) -> W {
+         if let Some(auth) = self.auth.auth() {
+             if msg.has_class(MessageClass::Request) {
+-                msg.add_attribute(&Nonce::new(&auth.nonce).unwrap())
+-                    .unwrap();
+-                msg.add_attribute(&Realm::new(&auth.realm).unwrap())
+-                    .unwrap();
++                // olcRTC fork: libwebrtc's order, as above.
+                 match &auth.user {
+                     User::Name(name) => msg.add_attribute(&Username::new(name).unwrap()).unwrap(),
+                     User::Hash(hash) => msg.add_attribute(&Userhash::new(*hash)).unwrap(),
+                 }
++                msg.add_attribute(&Realm::new(&auth.realm).unwrap())
++                    .unwrap();
++                msg.add_attribute(&Nonce::new(&auth.nonce).unwrap())
++                    .unwrap();
+             }
+             if !auth.password_algos.is_empty() {
+                 msg.add_attribute(&PasswordAlgorithms::new(&auth.password_algos))
+@@ -482,7 +494,7 @@
+                         Realm::TYPE => realm = Realm::from_raw(attr).ok(),
+                         Nonce::TYPE => nonce = Nonce::from_raw(attr).ok(),
+                         ErrorCode::TYPE => error_code = ErrorCode::from_raw(attr),
+-                        PasswordAlgorithms::TYPE => {
++                        PasswordAlgorithms::TYPE if CLIENT_READS_NONCE_SECURITY => {
+                             password_algos = PasswordAlgorithms::from_raw(attr).ok()
+                         }
+                         _ => (),
+@@ -508,6 +520,7 @@
+                                 }
+                                 let (algo, anon) = if let Some(security) =
+                                     NonceSecurityBits::from_nonce(nonce.nonce())
++                                        .filter(|_| CLIENT_READS_NONCE_SECURITY)
+                                 {
+                                     let algo = if let Some(password_algos) = password_algos.as_ref()
+                                     {

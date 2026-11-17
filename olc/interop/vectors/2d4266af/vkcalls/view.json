@@ -1,0 +1,1937 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/vkcalls/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/vkcalls/negotiate.go:193-222 (pionView) and the functions below it to :456",
+  "internal/engine/vkcalls/negotiate.go:30-62, 94-176 (offerCodec, registerSectionCodecs, sectionCodecBlocks)",
+  "internal/engine/vkcalls/negotiate.go:510-520 (remoteSSRCs), stamp.go:68-80 (publishMid)",
+  "internal/engine/vkcalls/negotiate_test.go (the offers; TestPionViewLeavesCleanOfferAlone, TestPionViewKeepsEveryMid, TestLiveShapeKeepsReceiveNumbering)"
+ ],
+ "cases": {
+  "note": "views: pionView(offer, publish, nil); a view is joined with CRLF and ends in CRLF. A view left out (empty, with same true) is the offer itself. chains: the steps of a chain share one memo, as one connection's offers do. codec_tables: the codecs registerSectionCodecs hands the WebRTC stack for each audio and video section of the text (of its view when viewed), in its order.",
+  "text": "An offer is: the text of the table named by base, or the text sdp; then with lf every CRLF made a bare LF; then each edit replacing the first old by new; then with tail one more line, a= and tail times the letter x and CRLF.",
+  "bound": 1048576,
+  "offers": {
+   "fixture": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+   "live": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 98 99 102 103 104\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:102 red/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:104 ulpfec/90000\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+   "peer_after": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\n",
+   "peer_ahead": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+   "pion": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n"
+  },
+  "views": [
+   {
+    "name": "fixture, publishing VP8",
+    "offer": {
+     "base": "fixture"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": false
+   },
+   {
+    "name": "fixture, no publish list",
+    "offer": {
+     "base": "fixture"
+    },
+    "publish": null,
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": true
+   },
+   {
+    "name": "pion, publishing VP8",
+    "offer": {
+     "base": "pion"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": false
+   },
+   {
+    "name": "pion, no publish list",
+    "offer": {
+     "base": "pion"
+    },
+    "publish": null,
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": true
+   },
+   {
+    "name": "peer_after, publishing VP8",
+    "offer": {
+     "base": "peer_after"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\n",
+    "same": false
+   },
+   {
+    "name": "peer_after, no publish list",
+    "offer": {
+     "base": "peer_after"
+    },
+    "publish": null,
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\n",
+    "same": false
+   },
+   {
+    "name": "peer_ahead, publishing VP8",
+    "offer": {
+     "base": "peer_ahead"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": false
+   },
+   {
+    "name": "peer_ahead, no publish list",
+    "offer": {
+     "base": "peer_ahead"
+    },
+    "publish": null,
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": false
+   },
+   {
+    "name": "live, publishing VP8",
+    "offer": {
+     "base": "live"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+    "same": false
+   },
+   {
+    "name": "live, no publish list",
+    "offer": {
+     "base": "live"
+    },
+    "publish": null,
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 98 99 103\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+    "same": false
+   },
+   {
+    "name": "a codec name in upper case",
+    "offer": {
+     "base": "live"
+    },
+    "publish": [
+     "VP8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+    "same": false
+   },
+   {
+    "name": "publishing what the slot does not name leaves the slot whole",
+    "offer": {
+     "base": "live"
+    },
+    "publish": [
+     "av1"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 98 99 103\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+    "same": false
+   },
+   {
+    "name": "publishing two codecs",
+    "offer": {
+     "base": "live"
+    },
+    "publish": [
+     "vp8",
+     "h264"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 98 99\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+    "same": false
+   },
+   {
+    "name": "publishing red keeps the repair of red",
+    "offer": {
+     "base": "live"
+    },
+    "publish": [
+     "red"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 red/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+    "same": false
+   },
+   {
+    "name": "an empty publish list is no list",
+    "offer": {
+     "base": "peer_ahead"
+    },
+    "publish": [],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": false
+   },
+   {
+    "name": "bare line feeds",
+    "offer": {
+     "base": "peer_ahead",
+     "lf": true
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": false
+   },
+   {
+    "name": "empty lines are dropped",
+    "offer": {
+     "base": "pion",
+     "edits": [
+      {
+       "old": "a=ice-lite\r\n",
+       "new": "a=ice-lite\r\n\r\n"
+      },
+      {
+       "old": "a=mid:3\r\n",
+       "new": "\r\na=mid:3\r\n\r\n"
+      }
+     ]
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": false
+   },
+   {
+    "name": "no line end behind the last line",
+    "offer": {
+     "base": "pion",
+     "edits": [
+      {
+       "old": "video-pat\r\n",
+       "new": "video-pat"
+      }
+     ]
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": false
+   },
+   {
+    "name": "two receive-only video sections: the first moves, both are trimmed",
+    "offer": {
+     "base": "peer_ahead",
+     "edits": [
+      {
+       "old": "a=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101",
+       "new": "a=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101"
+      }
+     ]
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+    "same": false
+   },
+   {
+    "name": "a payload type that is no byte stays on the m line",
+    "offer": {
+     "base": "live",
+     "edits": [
+      {
+       "old": "SAVPF 100 101 98 99 102 103 104\r\n",
+       "new": "SAVPF 100 101 98 99 102 103 104 300 x\r\n"
+      }
+     ]
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 300 x\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+    "same": false
+   },
+   {
+    "name": "audio: the first section's meaning wins",
+    "offer": {
+     "sdp": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 8\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1\r\na=rtpmap:8 PCMA/8000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 8\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 PCMU/8000\r\na=rtcp-fb:111 nack\r\na=rtpmap:8 pcma/8000\r\n"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 8\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1\r\na=rtpmap:8 PCMA/8000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 8\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:8 pcma/8000\r\n",
+    "same": false
+   },
+   {
+    "name": "audio: a section that would lose every payload type is left whole",
+    "offer": {
+     "sdp": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 PCMU/8000\r\n"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 PCMU/8000\r\n",
+    "same": true
+   },
+   {
+    "name": "a session with no media",
+    "offer": {
+     "sdp": "v=0\r\ns=-\r\nt=0 0\r\n"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "v=0\r\ns=-\r\nt=0 0\r\n",
+    "same": true
+   },
+   {
+    "name": "nothing",
+    "offer": {
+     "sdp": ""
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "\r\n",
+    "same": false
+   },
+   {
+    "name": "edge: bare line feeds and blank lines, no publish list",
+    "offer": {
+     "sdp": "v=0\n\ns=-\nm=audio 9 X 0\n\na=mid:0\n"
+    },
+    "publish": null,
+    "view": "v=0\r\ns=-\r\nm=audio 9 X 0\r\na=mid:0\r\n",
+    "same": false
+   },
+   {
+    "name": "edge: a section that would keep no payload type stays whole",
+    "offer": {
+     "sdp": "m=video 9 UDP/TLS/RTP/SAVPF 102\r\na=mid:0\r\na=recvonly\r\na=rtpmap:102 VP9/90000\r\n"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "m=video 9 UDP/TLS/RTP/SAVPF 102\r\na=mid:0\r\na=recvonly\r\na=rtpmap:102 VP9/90000\r\n",
+    "same": true
+   },
+   {
+    "name": "edge: a payload type with no rtpmap, a field that is no number, feedback for every payload",
+    "offer": {
+     "sdp": "m=video 9 UDP/TLS/RTP/SAVPF 100 x 101 102\r\na=mid:0\r\na=recvonly\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:* nack\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 profile-id=0\r\n"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "m=video 9 UDP/TLS/RTP/SAVPF 100 x 101\r\na=mid:0\r\na=recvonly\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:* nack\r\n",
+    "same": false
+   },
+   {
+    "name": "edge: a codec name is matched whole and in any case",
+    "offer": {
+     "sdp": "m=video 9 UDP/TLS/RTP/SAVPF 100 101\r\na=recvonly\r\na=rtpmap:100 vp8/90000\r\na=rtpmap:101 VP80/90000\r\n"
+    },
+    "publish": [
+     "VP8"
+    ],
+    "view": "m=video 9 UDP/TLS/RTP/SAVPF 100\r\na=recvonly\r\na=rtpmap:100 vp8/90000\r\n",
+    "same": false
+   },
+   {
+    "name": "edge: an rtx is kept by the payload it repairs",
+    "offer": {
+     "sdp": "m=video 9 UDP/TLS/RTP/SAVPF 100 101 102 103\r\na=recvonly\r\na=rtpmap:100 VP8/90000\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 rtx-time=200; apt=100\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\n"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "m=video 9 UDP/TLS/RTP/SAVPF 100 101\r\na=recvonly\r\na=rtpmap:100 VP8/90000\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 rtx-time=200; apt=100\r\n",
+    "same": false
+   },
+   {
+    "name": "edge: audio is never a publish slot",
+    "offer": {
+     "sdp": "m=audio 9 X 111 0\r\na=recvonly\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:0 PCMU/8000\r\n"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "view": "m=audio 9 X 111 0\r\na=recvonly\r\na=rtpmap:111 opus/48000/2\r\na=rtpmap:0 PCMU/8000\r\n",
+    "same": true
+   },
+   {
+    "name": "exactly the bound, its CRLFs counted as one byte",
+    "offer": {
+     "base": "pion",
+     "tail": 1046457
+    },
+    "publish": null,
+    "view": "",
+    "same": true
+   },
+   {
+    "name": "one byte past the bound",
+    "offer": {
+     "base": "pion",
+     "tail": 1046458
+    },
+    "publish": null,
+    "view": "",
+    "same": false,
+    "error": "vkcalls: SDP exceeds size bound"
+   }
+  ],
+  "chains": [
+   {
+    "name": "a participant arrives in a second offer",
+    "steps": [
+     {
+      "offer": {
+       "base": "pion"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       }
+      ]
+     },
+     {
+      "offer": {
+       "base": "peer_after"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 96,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 97,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "a participant leaves, then the live numbering",
+    "steps": [
+     {
+      "offer": {
+       "base": "peer_ahead"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 96,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 97,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       }
+      ]
+     },
+     {
+      "offer": {
+       "base": "pion"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 96,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 97,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       }
+      ]
+     },
+     {
+      "offer": {
+       "base": "live"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 96,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 97,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 98,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 99,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 104,
+        "name": "red/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 105,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 106,
+        "name": "ulpfec/90000"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "the live numbering twice",
+    "steps": [
+     {
+      "offer": {
+       "base": "live"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 98,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 99,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "vp9/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 104,
+        "name": "red/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 105,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 106,
+        "name": "ulpfec/90000"
+       }
+      ]
+     },
+     {
+      "offer": {
+       "base": "live"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 98,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 99,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "vp9/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 104,
+        "name": "red/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 105,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 106,
+        "name": "ulpfec/90000"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "the live numbering, then a participant",
+    "steps": [
+     {
+      "offer": {
+       "base": "live"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 98,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 99,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "vp9/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 104,
+        "name": "red/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 105,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 106,
+        "name": "ulpfec/90000"
+       }
+      ]
+     },
+     {
+      "offer": {
+       "base": "peer_ahead"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 96,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 97,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 98,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 99,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "vp9/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 104,
+        "name": "red/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 105,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 106,
+        "name": "ulpfec/90000"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "no publish list, then one",
+    "steps": [
+     {
+      "offer": {
+       "base": "peer_ahead"
+      },
+      "publish": null,
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 96,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 97,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 104,
+        "name": "h264/90000"
+       }
+      ]
+     },
+     {
+      "offer": {
+       "base": "peer_ahead"
+      },
+      "publish": [
+       "vp8"
+      ],
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 96,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 97,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "h264/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 104,
+        "name": "h264/90000"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "no publish list: a participant arrives in a second offer",
+    "steps": [
+     {
+      "offer": {
+       "base": "pion"
+      },
+      "publish": null,
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "vp9/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 104,
+        "name": "h264/90000"
+       }
+      ]
+     },
+     {
+      "offer": {
+       "base": "peer_after"
+      },
+      "publish": null,
+      "view": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\n",
+      "claims": [
+       {
+        "kind": "audio",
+        "pt": 111,
+        "name": "opus/48000/2"
+       },
+       {
+        "kind": "video",
+        "pt": 96,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 97,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 100,
+        "name": "vp8/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 101,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 102,
+        "name": "vp9/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 103,
+        "name": "rtx/90000"
+       },
+       {
+        "kind": "video",
+        "pt": 104,
+        "name": "h264/90000"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "offer_facts": [
+   {
+    "offer": "fixture",
+    "publish_mid": "3",
+    "remote_ssrcs": [
+     "2463708138",
+     "2463708139"
+    ]
+   },
+   {
+    "offer": "pion",
+    "publish_mid": "3",
+    "remote_ssrcs": [
+     "2463708138",
+     "2463708139"
+    ]
+   },
+   {
+    "offer": "peer_after",
+    "publish_mid": "3",
+    "remote_ssrcs": [
+     "2463708138",
+     "2463708139",
+     "2463708140"
+    ]
+   },
+   {
+    "offer": "peer_ahead",
+    "publish_mid": "3",
+    "remote_ssrcs": [
+     "2463708138",
+     "2463708140",
+     "2463708139"
+    ]
+   },
+   {
+    "offer": "live",
+    "publish_mid": "3",
+    "remote_ssrcs": [
+     "2463708138",
+     "2463708139",
+     "2463708140"
+    ]
+   }
+  ],
+  "publish_mid": [
+   {
+    "name": "the first receive-only video section",
+    "sdp": "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=mid:4\r\na=sendonly\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=mid:7\r\na=recvonly\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=mid:9\r\na=recvonly\r\n",
+    "mid": "7"
+   },
+   {
+    "name": "bare line feeds",
+    "sdp": "v=0\nm=video 9 UDP/TLS/RTP/SAVPF 100\na=mid:7\na=recvonly\n",
+    "mid": "7"
+   },
+   {
+    "name": "a receive-only audio section is not it",
+    "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:2\r\na=recvonly\r\n",
+    "mid": ""
+   },
+   {
+    "name": "no receive-only section",
+    "sdp": "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=mid:4\r\na=sendonly\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=mid:5\r\na=sendrecv\r\n",
+    "mid": ""
+   },
+   {
+    "name": "a receive-only video section with no mid",
+    "sdp": "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=recvonly\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=mid:7\r\na=recvonly\r\n",
+    "mid": ""
+   },
+   {
+    "name": "the direction ahead of the mid",
+    "sdp": "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=recvonly\r\na=mid:video-0\r\n",
+    "mid": "video-0"
+   },
+   {
+    "name": "the first direction line of a section decides",
+    "sdp": "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=mid:1\r\na=sendonly\r\na=recvonly\r\n",
+    "mid": ""
+   },
+   {
+    "name": "nothing",
+    "sdp": "",
+    "mid": ""
+   }
+  ],
+  "remote_ssrcs": [
+   {
+    "name": "each SSRC once, in the order first seen",
+    "sdp": "a=ssrc:2 cname:a\r\na=ssrc:1 cname:b\r\na=ssrc:2 msid:a b\r\n",
+    "ssrcs": [
+     "2",
+     "1"
+    ]
+   },
+   {
+    "name": "a carriage return behind the number counts",
+    "sdp": "a=ssrc:5\r\n",
+    "ssrcs": [
+     "5"
+    ]
+   },
+   {
+    "name": "a line feed behind the number counts",
+    "sdp": "a=ssrc:5\n",
+    "ssrcs": [
+     "5"
+    ]
+   },
+   {
+    "name": "a tab behind the number counts",
+    "sdp": "a=ssrc:5\tcname:a\r\n",
+    "ssrcs": [
+     "5"
+    ]
+   },
+   {
+    "name": "nothing behind the number does not",
+    "sdp": "a=ssrc:5",
+    "ssrcs": []
+   },
+   {
+    "name": "a group line is not an attribution",
+    "sdp": "a=ssrc-group:FID 1 2\r\n",
+    "ssrcs": []
+   },
+   {
+    "name": "a space ahead of the line",
+    "sdp": " a=ssrc:5 cname:a\r\n",
+    "ssrcs": []
+   },
+   {
+    "name": "no number",
+    "sdp": "a=ssrc: cname:a\r\n",
+    "ssrcs": []
+   },
+   {
+    "name": "a number past 32 bits is kept as written",
+    "sdp": "a=ssrc:99999999999 cname:a\r\na=ssrc:007 cname:b\r\na=ssrc:7 cname:b\r\n",
+    "ssrcs": [
+     "99999999999",
+     "007",
+     "7"
+    ]
+   },
+   {
+    "name": "nothing",
+    "sdp": "",
+    "ssrcs": []
+   }
+  ],
+  "codec_tables": [
+   {
+    "name": "the view of the completed offer",
+    "offer": {
+     "base": "pion"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "viewed": true,
+    "sections": [
+     {
+      "mid": "0",
+      "kind": "audio",
+      "codecs": [
+       {
+        "pt": 111,
+        "mime": "audio/opus",
+        "clock_rate": 48000,
+        "channels": 2,
+        "fmtp": "useinbandfec=1;minptime=10",
+        "rtcp_fb": [
+         [
+          "transport-cc",
+          ""
+         ]
+        ]
+       }
+      ]
+     },
+     {
+      "mid": "2",
+      "kind": "audio",
+      "codecs": [
+       {
+        "pt": 111,
+        "mime": "audio/opus",
+        "clock_rate": 48000,
+        "channels": 2,
+        "fmtp": "useinbandfec=1;minptime=10;maxaveragebitrate=64000",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "3",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 100,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ],
+         [
+          "nack",
+          "pli"
+         ]
+        ]
+       },
+       {
+        "pt": 101,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=100",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "5",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 100,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ]
+        ]
+       },
+       {
+        "pt": 101,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=100",
+        "rtcp_fb": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "the view with a participant ahead",
+    "offer": {
+     "base": "peer_ahead"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "viewed": true,
+    "sections": [
+     {
+      "mid": "0",
+      "kind": "audio",
+      "codecs": [
+       {
+        "pt": 111,
+        "mime": "audio/opus",
+        "clock_rate": 48000,
+        "channels": 2,
+        "fmtp": "useinbandfec=1;minptime=10",
+        "rtcp_fb": [
+         [
+          "transport-cc",
+          ""
+         ]
+        ]
+       }
+      ]
+     },
+     {
+      "mid": "2",
+      "kind": "audio",
+      "codecs": [
+       {
+        "pt": 111,
+        "mime": "audio/opus",
+        "clock_rate": 48000,
+        "channels": 2,
+        "fmtp": "useinbandfec=1;minptime=10;maxaveragebitrate=64000",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "3",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 100,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ],
+         [
+          "nack",
+          "pli"
+         ]
+        ]
+       },
+       {
+        "pt": 101,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=100",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "6",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 96,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ]
+        ]
+       },
+       {
+        "pt": 97,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=96",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 102,
+        "mime": "video/H264",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ]
+        ]
+       },
+       {
+        "pt": 103,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=102",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "5",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 100,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ]
+        ]
+       },
+       {
+        "pt": 101,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=100",
+        "rtcp_fb": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "the view of the live numbering",
+    "offer": {
+     "base": "live"
+    },
+    "publish": [
+     "vp8"
+    ],
+    "viewed": true,
+    "sections": [
+     {
+      "mid": "0",
+      "kind": "audio",
+      "codecs": [
+       {
+        "pt": 111,
+        "mime": "audio/opus",
+        "clock_rate": 48000,
+        "channels": 2,
+        "fmtp": "",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "3",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 100,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ],
+         [
+          "nack",
+          "pli"
+         ]
+        ]
+       },
+       {
+        "pt": 101,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=100",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "5",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 102,
+        "mime": "video/VP9",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 103,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=102",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 100,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ],
+         [
+          "nack",
+          "pli"
+         ]
+        ]
+       },
+       {
+        "pt": 101,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=100",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 98,
+        "mime": "video/H264",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 99,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=98",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 104,
+        "mime": "video/red",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 105,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=104",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 106,
+        "mime": "video/ulpfec",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "6",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 102,
+        "mime": "video/VP9",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 103,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=102",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 100,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ],
+         [
+          "nack",
+          "pli"
+         ]
+        ]
+       },
+       {
+        "pt": 101,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=100",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 98,
+        "mime": "video/H264",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 99,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=98",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 104,
+        "mime": "video/red",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 105,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=104",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 106,
+        "mime": "video/ulpfec",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": []
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "the answer test's offer as it is: a payload type with no rtpmap is no codec",
+    "offer": {
+     "base": "fixture"
+    },
+    "publish": null,
+    "viewed": false,
+    "sections": [
+     {
+      "mid": "0",
+      "kind": "audio",
+      "codecs": [
+       {
+        "pt": 111,
+        "mime": "audio/opus",
+        "clock_rate": 48000,
+        "channels": 2,
+        "fmtp": "useinbandfec=1;minptime=10",
+        "rtcp_fb": [
+         [
+          "transport-cc",
+          ""
+         ]
+        ]
+       }
+      ]
+     },
+     {
+      "mid": "2",
+      "kind": "audio",
+      "codecs": [
+       {
+        "pt": 111,
+        "mime": "audio/opus",
+        "clock_rate": 48000,
+        "channels": 2,
+        "fmtp": "useinbandfec=1;minptime=10;maxaveragebitrate=64000",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "3",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 102,
+        "mime": "video/VP9",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "transport-cc",
+          ""
+         ]
+        ]
+       },
+       {
+        "pt": 103,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=102",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 100,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ],
+         [
+          "nack",
+          "pli"
+         ]
+        ]
+       }
+      ]
+     },
+     {
+      "mid": "5",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 100,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ]
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "odd lines",
+    "offer": {
+     "sdp": "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 0 8 9 13\r\na=mid:a\r\na=sendonly\r\na=fmtp:111 dropped=1\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 minptime=10;useinbandfec=1\r\na=fmtp:111 second=1\r\na=rtpmap:0 PCMU/8000\r\na=rtpmap:8 PCMA/8000/1\r\na=rtpmap:9 G722/99999999999\r\na=rtpmap:300 L16/8000\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 98\r\na=mid:v\r\na=sendonly\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtcp-fb:96 nack pli\r\na=rtcp-fb:96 ccm fir extra\r\na=rtcp-fb:96 goog-remb\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:98 VP8/90000 trailing\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:d\r\nm=video 9 UDP/TLS/RTP/SAVPF\r\na=mid:none\r\n"
+    },
+    "publish": null,
+    "viewed": false,
+    "sections": [
+     {
+      "mid": "a",
+      "kind": "audio",
+      "codecs": [
+       {
+        "pt": 111,
+        "mime": "audio/opus",
+        "clock_rate": 48000,
+        "channels": 2,
+        "fmtp": "second=1",
+        "rtcp_fb": [
+         [
+          "transport-cc",
+          ""
+         ]
+        ]
+       },
+       {
+        "pt": 0,
+        "mime": "audio/PCMU",
+        "clock_rate": 8000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 8,
+        "mime": "audio/PCMA",
+        "clock_rate": 8000,
+        "channels": 1,
+        "fmtp": "",
+        "rtcp_fb": []
+       }
+      ]
+     },
+     {
+      "mid": "v",
+      "kind": "video",
+      "codecs": [
+       {
+        "pt": 96,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": [
+         [
+          "nack",
+          ""
+         ],
+         [
+          "nack",
+          "pli"
+         ],
+         [
+          "ccm",
+          "fir"
+         ],
+         [
+          "goog-remb",
+          ""
+         ]
+        ]
+       },
+       {
+        "pt": 97,
+        "mime": "video/rtx",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "apt=96",
+        "rtcp_fb": []
+       },
+       {
+        "pt": 98,
+        "mime": "video/VP8",
+        "clock_rate": 90000,
+        "channels": 0,
+        "fmtp": "",
+        "rtcp_fb": []
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}
