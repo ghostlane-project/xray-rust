@@ -51,7 +51,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -282,7 +281,7 @@ func startCoturn(t *testing.T, mode, logDir string) string {
 		t.Fatalf("-olcrtc.gate-turn=%q: none, udp, tcp or tls", mode)
 	}
 	cmd := exec.Command(*gateTurnServer, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = childProc(false)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		t.Fatal(err)

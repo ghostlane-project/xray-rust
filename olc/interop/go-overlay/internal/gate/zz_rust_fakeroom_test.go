@@ -179,7 +179,7 @@ func startFakeRoomServer(t *testing.T, root, dir string) string {
 	cmd := exec.CommandContext(ctx, bin, "-test.run", "^TestServeFakeRoom$", "-test.v",
 		"-test.timeout", (fakeRoomServeLifetime + time.Minute).String())
 	cmd.Env = append(os.Environ(), "OLC_FAKE_ROOM_SERVE=1")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = childProc(true)
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = stopGrace
 	// The Go servers' log: one file for every room the run opens.

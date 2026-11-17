@@ -395,7 +395,7 @@ func startVKFakeServer(t *testing.T, root, dir string) string {
 	cmd := exec.CommandContext(ctx, bin, "-test.run", "^TestServeFakeVKSFU$", "-test.v",
 		"-test.timeout", (vkFakeServeLifetime + time.Minute).String())
 	cmd.Env = append(os.Environ(), vkFakeServeEnv+"=1")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = childProc(true)
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = stopGrace
 	logFile, err := os.OpenFile(filepath.Join(dir, "vkfake-sfu.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)

@@ -157,7 +157,7 @@ func startRust(t *testing.T, cfg rustConfig) *rustProc {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), rustLifetime)
 	cmd := exec.CommandContext(ctx, bin, cfgPath)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.SysProcAttr = rustChildProc()
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 	cmd.WaitDelay = rustStopGrace
 	cmd.Stdout = io.Discard
