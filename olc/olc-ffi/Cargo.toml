@@ -11,6 +11,8 @@ publish = false
 futures-util.workspace = true
 ghostlane-runtime = { path = "../../crates/ghostlane-runtime" }
 olc-client = { path = "../olc-client" }
+# The signalling's TLS (`shaped_tls::install`), which a start puts in.
+olc-net = { path = "../olc-net", features = ["shaped-tls"] }
 rustls.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

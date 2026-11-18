@@ -2147,6 +2147,7 @@ dependencies = [
  "futures-util",
  "ghostlane-runtime",
  "olc-client",
+ "olc-net",
  "rustls",
  "serde_json",
  "thiserror 2.0.21",

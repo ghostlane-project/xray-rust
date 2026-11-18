@@ -880,3 +880,18 @@ fn a_start_refuses_what_go_refuses() {
     );
     assert_eq!(rt.state(), "idle");
 }
+
+/// The signalling's `wss://` and `https://` need the host's TLS
+/// (`olc_net::stream`): the apps never install one themselves, so a start
+/// must leave one in place (seen on an iPhone, 1.0.473: every carrier ended
+/// with "no TLS connector installed for a TLS URL").
+#[test]
+fn a_start_leaves_the_signalling_tls_installed() {
+    bounded(|| {
+        olc_net::stream::set_tls_connector(None);
+        let rt = configured(blocking_ready());
+        rt.start().unwrap();
+        assert!(olc_net::stream::tls_connector_installed());
+        rt.stop(100).unwrap();
+    });
+}

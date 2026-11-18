@@ -64,6 +64,12 @@ pub fn set_tls_connector(c: Option<TlsConnector>) {
     *TLS.write().unwrap_or_else(PoisonError::into_inner) = c;
 }
 
+/// Whether a TLS connector is installed.
+#[must_use]
+pub fn tls_connector_installed() -> bool {
+    TLS.read().unwrap_or_else(PoisonError::into_inner).is_some()
+}
+
 /// A URL's parts, as the dial needs them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
