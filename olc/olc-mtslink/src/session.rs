@@ -2960,11 +2960,12 @@ mod tests {
             for key in ["joinToken", "publishToken", "did", "pid", "userId"] {
                 assert_eq!(query_of(&joins[0], key), query_of(&joins[1], key), "{key}");
             }
-            // A join from scratch: a new offer, so a new audio player line.
-            assert_ne!(
-                query_of(&joins[0], "originMid"),
-                query_of(&joins[1], "originMid")
-            );
+            // A join from scratch: a new peer connection numbers its lines
+            // from 0 again, as a browser's does, so the audio player is the
+            // third line both times.
+            for join in &joins {
+                assert_eq!(query_of(join, "originMid"), "2");
+            }
             assert_eq!(
                 *gone.lock().unwrap(),
                 [true],

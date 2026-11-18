@@ -1,17 +1,18 @@
-# str0m 0.25.0: five patches for the olcRTC engine
+# str0m 0.25.0: six patches for the olcRTC engine
 
 1. A NACK is answered when no RTX is negotiated.
 2. Video RED is a payload type of its own.
 3. A send stream can keep its Mid and Rid on every packet.
 4. A send stream says how many written packets it still holds.
 5. A close inside SCTP's handshake still says DTLS's goodbye.
+6. An offer numbers its lines as browsers do.
 
 Source: the complete unchanged-version crates.io `str0m` **0.25.0** archive,
 SHA256 `357c7e453c033c8bb59e912312f9f9ff07c2a9ce7268bcb94f0c828a5b47e58f`.
 Upstream licenses and the published lockfile remain intact. `XRAY-PATCH.diff`
 reconstructs the local source from that archive with zero fuzz. Run
 `scripts/check-vendored-sources.sh` to verify the archive, exact reconstruction,
-and the crate's library tests and the integration tests of the five patches
+and the crate's library tests and the integration tests of the six patches
 from an isolated copy. The olcRTC
 engine (`olc/olc-rtc`) uses it through the workspace's `[patch.crates-io]`.
 
@@ -202,3 +203,19 @@ established association. An established association shuts down as before.
 connects DTLS, starts SCTP on both sides and closes before anything of the
 association has gone out; the far end must see `Event::Closed`. Before the
 patch `close()` returned `Sctp(Proto(ErrShutdownNonEstablished))`.
+
+## An offer numbers its lines as browsers do
+
+Upstream gives each line an offer adds a random three-character Mid. Chrome
+and pion number them `0`, `1`, `2`, ... MTS Link's SFU parses every Mid of an
+offer as an integer: given str0m's it answers the join with `400 SDP
+validation error: can't parse mid 7GO reason strconv.Atoi` (Ghostlane 1.0.475
+on an iPhone, 2026-11-18). The Mid also travels in each RTP packet's
+`sdes:mid` extension, so rewriting the posted text would not be enough.
+
+The patch: `SdpApi::new_mid` takes the lowest decimal number that no line of
+the session, nor of the pending changes, has. A line the far end offered
+keeps its own Mid; only the lines this side adds are numbered.
+
+`src/change/sdp.rs` `offered_lines_have_decimal_mids` offers a video line, an
+audio line and a data channel and expects the Mids `0`, `1` and `2`.

@@ -753,7 +753,7 @@ impl Rejoin for Rejoiner {
     }
 
     fn failed(&self, err: &Error) {
-        olc_net::debug!("vkcalls: reconnect failed: {err}");
+        olc_net::info!("vkcalls: reconnect failed: {err}");
     }
 
     fn limit_reached(&self, reason: &str) {
@@ -1546,7 +1546,7 @@ async fn run(
                 if note.session_id.len() > MAX_SESSION_ID {
                     // Not answered and not kept: as an offer that cannot
                     // be answered, the attempt is given up.
-                    olc_net::debug!("{}", session_id_line());
+                    olc_net::info!("{}", session_id_line());
                     session.reconnect_attempt(&gen);
                     continue;
                 }
@@ -1555,7 +1555,7 @@ async fn run(
                     if let Error::Negotiate(refused) = &e {
                         note_refused(refused, &note.description);
                     }
-                    olc_net::debug!("vkcalls: renegotiation: {e}");
+                    olc_net::info!("vkcalls: renegotiation: {e}");
                     session.reconnect_attempt(&gen);
                 }
             }

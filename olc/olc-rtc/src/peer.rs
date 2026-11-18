@@ -1303,7 +1303,7 @@ async fn drive(sh: Arc<Shared>, sock: UdpSocket, tx: mpsc::Sender<PeerEvent>) {
     }
     sh.ended.store(true, Ordering::Release);
     sh.progressed.notify_waiters();
-    olc_net::debug!("webrtc: {} peer connection ended: {reason}", sh.name);
+    olc_net::info!("webrtc: {} peer connection ended: {reason}", sh.name);
     if sh.ice_mode.tcp() {
         olc_net::debug!(
             "webrtc: {} ice over {}: {} UDP datagrams out, {} TCP packets dropped, \

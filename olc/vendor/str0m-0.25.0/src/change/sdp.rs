@@ -47,13 +47,14 @@ impl<'a> SdpApi<'a> {
         }
     }
 
+    /// The lowest decimal number no line of the session or of these
+    /// changes has, as browsers number their lines (`0`, `1`, ...): some
+    /// SFUs read a Mid as an integer and refuse an offer that has another.
     fn new_mid(&self) -> Mid {
-        loop {
-            let mid = self.rtc.new_mid();
-            if !self.changes.has_mid(mid) {
-                break mid;
-            }
-        }
+        (0_u32..)
+            .map(|n| Mid::from(n.to_string().as_str()))
+            .find(|&mid| !self.rtc.session.has_mid(mid) && !self.changes.has_mid(mid))
+            .expect("a free decimal Mid")
     }
 
     /// Accept an [`SdpOffer`] from the remote peer. If this call returns successfully, the
@@ -1953,6 +1954,27 @@ mod test {
         let r = rtc1.sdp_api().accept_answer(pending1, answer2);
 
         assert!(matches!(r, Err(RtcError::ChangesOutOfOrder)));
+    }
+
+    // An offer numbers its lines as browsers do, and a later change takes
+    // the lowest number the session has not used.
+    #[test]
+    fn offered_lines_have_decimal_mids() {
+        crate::init_crypto_default();
+
+        let mut rtc = Rtc::new(Instant::now());
+        let mut api = rtc.sdp_api();
+        let video = api.add_media(MediaKind::Video, Direction::SendRecv, None, None, None);
+        let audio = api.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+        let _ = api.add_channel("ch".into());
+        let (offer, _pending) = api.apply().unwrap();
+        assert_eq!((video.to_string(), audio.to_string()), ("0".into(), "1".into()));
+        let mids: Vec<String> = offer
+            .to_sdp_string()
+            .lines()
+            .filter_map(|l| l.strip_prefix("a=mid:").map(str::to_owned))
+            .collect();
+        assert_eq!(mids, ["0", "1", "2"]);
     }
 
     // The indices assigned to Media objects by as_new_medias() must be contiguous starting

@@ -1557,7 +1557,9 @@ impl Rtc {
         Ok(())
     }
 
-    /// Creates a new Mid that is not in the session already.
+    /// Creates a new Mid that is not in the session already (tests only:
+    /// the offers number their lines, `SdpApi::new_mid`).
+    #[cfg(test)]
     pub(crate) fn new_mid(&self) -> Mid {
         loop {
             let mid = Mid::new();
