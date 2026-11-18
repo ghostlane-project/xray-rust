@@ -134,9 +134,74 @@ pub fn budget_with(bytes: ByteBudgetSettings) -> Vec<Row> {
     });
     rows.extend(mtslink_rows());
     rows.extend(vkcalls_rows());
+    rows.extend(jitsi_rows());
     #[cfg(feature = "boring")]
     rows.extend(turns_rows());
     rows
+}
+
+/// Jitsi's rows (plan section 8): what its session holds. No reader per SSRC
+/// exists in a datachannel run, and no queue of raw stanzas (decision D4).
+fn jitsi_rows() -> [Row; 8] {
+    use olc_jitsi::bridge::{BACKLOG_HIGH_WATER, SEND_QUEUE};
+    use olc_jitsi::frame::MAX_MESSAGE;
+    use olc_jitsi::join::{FETCH_MAX, WS_READ_LIMIT};
+    use olc_jitsi::session::SCTP_BUFFERED;
+    use olc_jitsi::xmpp::conn::{MAX_IQ_WAITERS, MAX_OCCUPANTS};
+    [
+        Row {
+            layer: "Jitsi inbound stanza (one at a time) and the kept session-initiate",
+            cap: 2 * WS_READ_LIMIT,
+            burst: 24 << 10,
+            formula: "WS_READ_LIMIT (1 MiB, Go's read limit) for the stanza being read, parsed in \
+                      place, and the same for the one session-initiate kept parsed (its parts are \
+                      capped, a few KiB in a two-party room); no queue of stanzas",
+        },
+        Row {
+            layer: "Jitsi config.js (only while it is fetched)",
+            cap: FETCH_MAX,
+            burst: olc_jitsi::configjs::MAX_BODY,
+            formula: "the HTTP client's body bound (1 MiB), cut to the library's 64 KiB window",
+        },
+        Row {
+            layer: "Jitsi send queue",
+            cap: SEND_QUEUE * MAX_MESSAGE,
+            burst: SEND_QUEUE * MAX_MESSAGE / 4,
+            formula: "SEND_QUEUE (32) x MAX_MESSAGE (16 KiB); a send waits when it is full",
+        },
+        Row {
+            layer: "Jitsi one outbound message as JSON text",
+            cap: MAX_MESSAGE * 4 / 3 + 128,
+            burst: MAX_MESSAGE * 4 / 3 + 128,
+            formula: "base64 of at most MAX_MESSAGE and the wrapper; transient",
+        },
+        Row {
+            layer: "Jitsi data channel send backlog",
+            cap: SCTP_BUFFERED,
+            burst: BACKLOG_HIGH_WATER / 2,
+            formula: "SCTP_BUFFERED: BACKLOG_HIGH_WATER (256 KiB, the sender waits above it) and \
+                      one message",
+        },
+        Row {
+            layer: "Jitsi inbound bridge messages",
+            cap: olc_rtc::peer::INBOUND_BYTES,
+            burst: 64 << 10,
+            formula: "olc-rtc's INBOUND_BYTES: 256 KiB of data events, back-pressure into SCTP",
+        },
+        Row {
+            layer: "Jitsi occupants and IQ waiters",
+            cap: MAX_OCCUPANTS * 64 + MAX_IQ_WAITERS * 2048,
+            burst: 1 << 10,
+            formula: "MAX_OCCUPANTS (256) nicks of at most 64 bytes, MAX_IQ_WAITERS (16) replies",
+        },
+        Row {
+            layer: "Jitsi permessage-deflate state",
+            cap: 400 << 10,
+            burst: 400 << 10,
+            formula: "derived, not measured: miniz_oxide's compressor (made at the first message \
+                      of 128 bytes or more) and the 32 KiB inflate window",
+        },
+    ]
 }
 
 /// MTS Link's rows: what its session holds per join ([`olc_mtslink::session`]).

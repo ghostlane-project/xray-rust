@@ -38,6 +38,8 @@
 pub mod dtls_boring;
 pub mod ice;
 pub mod icetcp;
+#[cfg(test)]
+mod jitsishape;
 pub mod media;
 pub mod pcstate;
 pub mod peer;

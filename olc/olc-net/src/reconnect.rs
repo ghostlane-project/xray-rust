@@ -23,8 +23,13 @@
 //! 4. when it fails, it waits 2 s times the count (30 s at most) and goes
 //!    back to step 1.
 //!
-//! Not ported: the count-failures mode (Jitsi only; decision D10 of the
-//! M6/M7 plan). Go's reconnect and ended callbacks are the session's own
+//! The count-failures mode (`CountFailures`, Jitsi's) is
+//! [`Reconnector::with_count_failures`]: failures are counted, not requests;
+//! the window runs from the first failure and a success, or an error the
+//! session calls a non-failure ([`Rejoin::is_non_failure`], Go's
+//! `IsNonFailure`: a room with nobody in it), empties the count; the wait
+//! after a failure is taken from the count *before* the attempt, so the
+//! first is 0. Go's reconnect and ended callbacks are the session's own
 //! here ([`crate::link::LinkEvent`]); the supervisor only says when the
 //! limit was reached.
 //!
@@ -94,6 +99,13 @@ pub trait Rejoin: Sync {
 
     /// The attempts ran out: the session has ended, with why (`OnLimit`).
     fn limit_reached(&self, reason: &str);
+
+    /// An error that is not a failure (count-failures mode): the attempt
+    /// ends with no `failed` call and no wait, and the count starts again
+    /// (`IsNonFailure`, Jitsi's "no peer in the room yet").
+    fn is_non_failure(&self, _err: &Self::Error) -> bool {
+        false
+    }
 }
 
 /// The request counter (`count`, `lastRequest`).
@@ -101,6 +113,8 @@ pub trait Rejoin: Sync {
 struct Counter {
     count: u32,
     last: Option<Instant>,
+    /// Count-failures mode: when the first failure of the run came.
+    window_start: Option<Instant>,
 }
 
 /// Serialises and coalesces a session's rejoin requests (`Reconnector`).
@@ -108,6 +122,7 @@ pub struct Reconnector {
     max_attempts: u32,
     limit_reason: String,
     route_probe: Option<RouteProbe>,
+    count_failures: bool,
     /// The queue of one: a request is waiting to be served.
     pending: AtomicBool,
     /// Every request that took the slot, so a success can tell one raised
@@ -144,6 +159,7 @@ impl Reconnector {
             max_attempts,
             limit_reason: limit_reason.into(),
             route_probe: Some(Arc::new(net::probe_route)),
+            count_failures: false,
             pending: AtomicBool::new(false),
             queued: AtomicU64::new(0),
             wake: Notify::new(),
@@ -156,6 +172,13 @@ impl Reconnector {
     #[must_use]
     pub fn with_route_probe(mut self, probe: Option<RouteProbe>) -> Self {
         self.route_probe = probe;
+        self
+    }
+
+    /// Counts failed attempts instead of requests (`CountFailures`).
+    #[must_use]
+    pub fn with_count_failures(mut self, on: bool) -> Self {
+        self.count_failures = on;
         self
     }
 
@@ -236,6 +259,9 @@ impl Reconnector {
         session: &R,
         mut stop: Pin<&mut S>,
     ) -> bool {
+        if self.count_failures {
+            return self.handle_failure_attempts(session, stop).await;
+        }
         // The bound is checked before every attempt, not once: a room that
         // is gone for good must reach the limit, the only way the layer
         // above learns the session is over.
@@ -266,6 +292,74 @@ impl Reconnector {
                 }
             }
         }
+    }
+
+    /// `handleFailureAttempts`.
+    async fn handle_failure_attempts<R: Rejoin, S: Future<Output = ()>>(
+        &self,
+        session: &R,
+        mut stop: Pin<&mut S>,
+    ) -> bool {
+        loop {
+            if self.await_route(stop.as_mut()).await {
+                return true;
+            }
+            let failures = self.failure_count();
+            if failures > self.max_attempts {
+                session.limit_reached(&self.limit_reason);
+                return true;
+            }
+            let wait_after = backoff(failures);
+            let seen = self.queued.load(Ordering::Acquire);
+            match session.rejoin().await {
+                Ok(()) => {
+                    self.reset_failures();
+                    if self.queued.load(Ordering::Acquire) == seen {
+                        self.drain();
+                    }
+                    return false;
+                }
+                Err(e) if session.is_non_failure(&e) => {
+                    self.reset_failures();
+                    if self.queued.load(Ordering::Acquire) == seen {
+                        self.drain();
+                    }
+                    return false;
+                }
+                Err(e) => {
+                    session.failed(&e);
+                    self.record_failure();
+                    if wait(stop.as_mut(), wait_after).await {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    /// `failureCount`: the count, which starts again once the window from
+    /// the first failure has passed.
+    fn failure_count(&self) -> u32 {
+        let mut c = lock(&self.counter);
+        if c.window_start
+            .is_some_and(|w| Instant::now().duration_since(w) > WINDOW)
+        {
+            c.count = 0;
+            c.window_start = None;
+        }
+        c.count
+    }
+
+    fn record_failure(&self) {
+        let mut c = lock(&self.counter);
+        c.count = c.count.saturating_add(1);
+        c.window_start.get_or_insert_with(Instant::now);
+    }
+
+    fn reset_failures(&self) {
+        let mut c = lock(&self.counter);
+        c.count = 0;
+        c.window_start = None;
     }
 
     /// Holds the next attempt while the host protector refuses sockets
@@ -415,6 +509,10 @@ mod tests {
         fn ended(&self) -> Vec<String> {
             lock(&self.ended).clone()
         }
+
+        fn failures_seen(&self) -> Vec<String> {
+            lock(&self.failures).clone()
+        }
     }
 
     impl Rejoin for Session {
@@ -428,6 +526,10 @@ mod tests {
 
         fn failed(&self, err: &String) {
             lock(&self.failures).push(err.clone());
+        }
+
+        fn is_non_failure(&self, err: &String) -> bool {
+            err.starts_with("nofail")
         }
 
         fn limit_reached(&self, reason: &str) {
@@ -467,6 +569,7 @@ mod tests {
         *lock(&r.counter) = Counter {
             count: 2,
             last: Some(Instant::now()),
+            ..Counter::default()
         };
         tokio::time::advance(WINDOW + S(1)).await;
         assert!(!attempt(&r, &s).await, "an expired window ended the loop");
@@ -482,9 +585,91 @@ mod tests {
         *lock(&r.counter) = Counter {
             count: 2,
             last: Some(Instant::now()),
+            ..Counter::default()
         };
         assert!(attempt(&r, &s).await, "the loop went on past the limit");
         assert_eq!(s.calls(), 0, "rejoin called after the limit");
+        assert_eq!(s.ended(), ["limit"]);
+    }
+
+    // TestReconnectorFailureWindowReset
+    #[tokio::test(start_paused = true)]
+    async fn an_expired_failure_window_starts_the_count_again() {
+        let r = ungated(2).with_count_failures(true);
+        let s = Session::ok();
+        *lock(&r.counter) = Counter {
+            count: 3,
+            window_start: Some(Instant::now()),
+            ..Counter::default()
+        };
+        tokio::time::advance(WINDOW + S(1)).await;
+        assert!(!attempt(&r, &s).await, "an expired window ended the loop");
+        let c = lock(&r.counter);
+        assert_eq!((c.count, c.window_start), (0, None));
+        assert_eq!(s.calls(), 1);
+    }
+
+    /// Failures are counted, not requests: six failed attempts wait 0, 2,
+    /// 4, 6, 8 and 10 s (the wait is taken from the count before the
+    /// attempt), and the seventh is the limit.
+    #[tokio::test(start_paused = true)]
+    async fn counted_failures_wait_from_zero_and_run_out_at_the_seventh() {
+        let r = ungated(5).with_count_failures(true);
+        let s = Session::new(|n| Err(format!("no {n}")));
+        assert!(attempt(&r, &s).await, "the loop went on past the limit");
+        assert_eq!(s.at(), [S(0), S(0), S(2), S(6), S(12), S(20)]);
+        assert_eq!(s.began.elapsed(), S(30));
+        assert_eq!(s.failures_seen().len(), 6);
+        assert_eq!(s.ended(), ["limit"]);
+    }
+
+    /// A success empties the count, which request mode never does.
+    #[tokio::test(start_paused = true)]
+    async fn a_success_resets_the_failure_count() {
+        let r = ungated(5).with_count_failures(true);
+        let s = Session::new(|n| if n < 3 { Err("down".into()) } else { Ok(()) });
+        assert!(!attempt(&r, &s).await);
+        assert_eq!(s.calls(), 3);
+        let c = lock(&r.counter);
+        assert_eq!((c.count, c.window_start), (0, None));
+    }
+
+    /// An error the session calls a non-failure resets the count, is not
+    /// reported through `failed`, and ends the served request.
+    #[tokio::test(start_paused = true)]
+    async fn a_non_failure_resets_the_count_and_reports_nothing() {
+        let r = ungated(5).with_count_failures(true);
+        let s = Session::new(|n| match n {
+            1 | 2 => Err("down".into()),
+            _ => Err("nofail: alone in the room".into()),
+        });
+        assert!(
+            !attempt(&r, &s).await,
+            "a non-failure ends the request, not the watch"
+        );
+        assert_eq!(s.calls(), 3);
+        assert_eq!(s.failures_seen(), ["down", "down"]);
+        let c = lock(&r.counter);
+        assert_eq!((c.count, c.window_start), (0, None));
+        assert!(s.ended().is_empty());
+    }
+
+    /// The window runs from the first failure, and a failure after it
+    /// restarts the count.
+    #[tokio::test(start_paused = true)]
+    async fn the_failure_window_runs_from_the_first_failure() {
+        let r = ungated(5).with_count_failures(true);
+        let s = Session::new(|_| Err("down".into()));
+        let t0 = Instant::now();
+        *lock(&r.counter) = Counter {
+            count: 6,
+            window_start: Some(t0),
+            ..Counter::default()
+        };
+        tokio::time::advance(WINDOW).await;
+        // Exactly the window: the count stands, so the limit is met.
+        assert!(attempt(&r, &s).await);
+        assert_eq!(s.calls(), 0);
         assert_eq!(s.ended(), ["limit"]);
     }
 
@@ -885,6 +1070,40 @@ mod tests {
             for gap in list(&run["gaps_ms"]) {
                 tokio::time::advance(ms(gap)).await;
                 got.push(u64::from(r.next_request_count()));
+            }
+            let want: Vec<u64> = list(&run["counts"])
+                .iter()
+                .map(|c| c.as_u64().unwrap())
+                .collect();
+            assert_eq!(got, want, "{}", run["name"]);
+        }
+    }
+
+    /// The count-failures mode's counter, run as Go's runs it (PJ1).
+    #[tokio::test(start_paused = true)]
+    async fn the_failure_count_is_gos() {
+        let cases = cases();
+        let runs = list(&cases["failures"]);
+        assert!(runs.len() >= 9, "{} runs", runs.len());
+        for run in runs {
+            let r = ungated(10).with_count_failures(true);
+            let ops = list(&run["ops"]);
+            let gaps = list(&run["gaps_ms"]);
+            let mut got = Vec::new();
+            for (op, gap) in ops.iter().zip(gaps) {
+                tokio::time::advance(ms(gap)).await;
+                got.push(match op.as_str().unwrap() {
+                    "count" => u64::from(r.failure_count()),
+                    "fail" => {
+                        r.record_failure();
+                        u64::from(count(&r))
+                    }
+                    "reset" => {
+                        r.reset_failures();
+                        u64::from(count(&r))
+                    }
+                    other => panic!("{other}"),
+                });
             }
             let want: Vec<u64> = list(&run["counts"])
                 .iter()

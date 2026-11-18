@@ -54,6 +54,8 @@ var (
 // its token.
 type goJoin struct {
 	Engine, URL, Token string
+	// Provider and RoomURL join through an auth provider (Jitsi's room link).
+	Provider, RoomURL string
 }
 
 // buildGoChild builds cmd/zz-olcrtc-goclient of the module at root. It is
@@ -112,7 +114,7 @@ func (c goChildClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, error) 
 // baseline passes it to the public client, and the profile.
 func goChildConfig(ep Endpoint, j goJoin, profile string) zzgoclient.Config {
 	return zzgoclient.Config{
-		Profile: profile, Transport: ep.Transport, Engine: j.Engine, URL: j.URL, Token: j.Token,
+		Profile: profile, Transport: ep.Transport, Engine: j.Engine, URL: j.URL, Token: j.Token, Provider: j.Provider, RoomURL: j.RoomURL,
 		Channel: ep.Channel, Key: ep.Key, DNS: ep.DNS, DeviceID: "gate-cli", VP8FPS: ep.VP8FPS, VP8Batch: ep.VP8Batch,
 	}
 }

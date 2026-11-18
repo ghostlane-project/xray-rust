@@ -43,6 +43,10 @@ pkgs=(
 	./internal/engine/mtslink
 	./internal/auth/vkcalls
 	./internal/engine/vkcalls
+	# Jitsi: the room link, and the engine's pure parts.
+	./internal/auth/jitsi
+	./internal/engine/jitsi
+	./internal/engine/jitsifake
 	./internal/engine
 	./internal/zzvectors
 )
@@ -65,6 +69,11 @@ expected=(
 	vkcalls/frames.json vkcalls/msgpack.json vkcalls/shape.json vkcalls/stamp.json
 	vkcalls/url.json vkcalls/view.json
 	vkcalls/requests_auth.json vkcalls/url_auth.json
+	# Jitsi: the room link (internal/auth/jitsi), the engine's nicks, config.js
+	# rules, bridge frames and epoch rules (internal/engine/jitsi).
+	jitsi/room.json jitsi/nick.json jitsi/configjs.json jitsi/frames.json jitsi/epoch.json
+	# The fake's half (internal/engine/jitsifake): what the engine says to a room.
+	jitsi/transcript.json jitsi/handshake.json jitsi/offer.json jitsi/accept.json jitsi/relaywin.json
 	# The rejoin supervisor's (internal/engine: olc-net's reconnect.rs).
 	reconnect/backoff.json
 )

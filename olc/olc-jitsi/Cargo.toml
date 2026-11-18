@@ -1,0 +1,23 @@
+[package]
+name = "olc-jitsi"
+description = "The olcRTC Jitsi carrier, ported from the Go engine at 2d4266af (internal/auth/jitsi, internal/engine/jitsi) and the j library it joins with: XMPP signalling, Jingle, the bridge's data channel"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+base64.workspace = true
+olc-net = { path = "../olc-net" }
+olc-rtc = { path = "../olc-rtc" }
+rand.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
+olc-interop = { path = "../interop/oracle-client" }
+tokio = { workspace = true, features = ["test-util"] }

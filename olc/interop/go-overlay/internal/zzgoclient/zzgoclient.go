@@ -49,6 +49,12 @@ type Config struct {
 	DeviceID  string `json:"device_id"`
 	VP8FPS    int    `json:"vp8_fps"`
 	VP8Batch  int    `json:"vp8_batch"`
+
+	// Provider and RoomURL join through an auth provider instead of direct
+	// credentials (Jitsi: its rooms are a provider's link, the engine takes
+	// no direct credentials for them); empty is provider none.
+	Provider string `json:"provider,omitempty"`
+	RoomURL  string `json:"room_url,omitempty"`
 }
 
 // Parse reads a Config. A key it does not know is an error, so the gate and
@@ -71,8 +77,12 @@ func Parse(raw []byte) (Config, error) {
 // passes (goP2PClient, goMTSClient, goVKFakeClient), field for field: an
 // ephemeral SOCKS port on loopback, the UDP relay on (the library's default).
 func (c Config) Client() client.Config {
+	provider := "none"
+	if c.Provider != "" {
+		provider = c.Provider
+	}
 	return client.Config{
-		Transport: c.Transport, Provider: "none", Engine: c.Engine, URL: c.URL, Token: c.Token,
+		Transport: c.Transport, Provider: provider, RoomURL: c.RoomURL, Engine: c.Engine, URL: c.URL, Token: c.Token,
 		ChannelID: c.Channel, KeyHex: c.Key, LocalAddr: "127.0.0.1:0", DNSServer: c.DNS, DeviceID: c.DeviceID,
 		TransportOptions: client.VP8Options{FPS: c.VP8FPS, BatchSize: c.VP8Batch},
 	}

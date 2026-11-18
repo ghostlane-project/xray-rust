@@ -3,7 +3,9 @@
 
 //! A small RFC 6455 WebSocket client, generic over the transport stream.
 //!
-//! The handshake mimics a browser's header order (no extensions are offered),
+//! The handshake mimics a browser's header order (an extension is offered only
+//! when the caller's headers name `Sec-WebSocket-Extensions`: permessage-deflate,
+//! [`crate::ws_deflate`]),
 //! client frames are always masked, and the reader assembles fragmented
 //! messages under a hard size limit. Every buffer is bounded; the bound is
 //! stated in a doc comment next to it.
@@ -17,6 +19,8 @@ use rand::RngCore;
 use sha1::{Digest, Sha1};
 use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 use tokio::sync::Mutex;
+
+use crate::ws_deflate::{self, Deflater, Inflater};
 
 /// The GUID that RFC 6455 mixes into `Sec-WebSocket-Accept`.
 const WS_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -85,12 +89,16 @@ type SharedWrite<S> = Arc<Mutex<WriteHalf<S>>>;
 /// Sending half of a connection. Cheap to clone; sends are serialised.
 pub struct Writer<S> {
     inner: SharedWrite<S>,
+    /// permessage-deflate's compressor when it was negotiated. Locked only
+    /// while `inner` is, so messages are compressed in the order they go.
+    deflate: Option<Arc<std::sync::Mutex<Deflater>>>,
 }
 
 impl<S> Clone for Writer<S> {
     fn clone(&self) -> Self {
         Self {
             inner: Arc::clone(&self.inner),
+            deflate: self.deflate.clone(),
         }
     }
 }
@@ -98,12 +106,31 @@ impl<S> Clone for Writer<S> {
 impl<S: AsyncRead + AsyncWrite> Writer<S> {
     /// Sends `text` as one masked text frame.
     pub async fn send_text(&self, text: &str) -> Result<(), WsError> {
-        send_frame(&self.inner, 0x1, text.as_bytes()).await
+        self.send_data(0x1, text.as_bytes()).await
     }
 
     /// Sends `b` as one masked binary frame.
     pub async fn send_binary(&self, b: &[u8]) -> Result<(), WsError> {
-        send_frame(&self.inner, 0x2, b).await
+        self.send_data(0x2, b).await
+    }
+
+    /// One data message: compressed from [`ws_deflate::THRESHOLD`] bytes
+    /// when the extension is on.
+    async fn send_data(&self, op: u8, payload: &[u8]) -> Result<(), WsError> {
+        let mut g = self.inner.lock().await;
+        let frame = match &self.deflate {
+            Some(d) if payload.len() >= ws_deflate::THRESHOLD => {
+                let packed = d
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .deflate(payload);
+                build_frame_rsv(op, 0x40, &packed)
+            }
+            _ => build_frame(op, payload),
+        };
+        g.write_all(&frame).await?;
+        g.flush().await?;
+        Ok(())
     }
 
     /// Sends a close frame with status 1000; errors are ignored.
@@ -122,16 +149,23 @@ pub struct Reader<S> {
     lead: Vec<u8>,
     lead_pos: usize,
     read_limit: usize,
+    /// permessage-deflate's decompressor when it was negotiated.
+    inflate: Option<Inflater>,
 }
 
 /// Builds one masked, final frame. The result is at most `payload.len() + 14`
 /// bytes long.
 fn build_frame(op: u8, payload: &[u8]) -> Vec<u8> {
+    build_frame_rsv(op, 0, payload)
+}
+
+/// [`build_frame`] with reserved bits (`0x40` is RSV1) set.
+fn build_frame_rsv(op: u8, rsv: u8, payload: &[u8]) -> Vec<u8> {
     let mut mask = [0u8; 4];
     rand::thread_rng().fill_bytes(&mut mask);
     let len = payload.len();
     let mut f = Vec::with_capacity(len + 14);
-    f.push(0x80 | op);
+    f.push(0x80 | rsv | op);
     if len < 126 {
         f.push(0x80 | len as u8);
     } else if len <= 0xffff {
@@ -245,7 +279,12 @@ fn has_token(value: &str, token: &str) -> bool {
         .any(|t| t.trim().eq_ignore_ascii_case(token))
 }
 
-fn check_response(head: &[u8], key: &str) -> Result<(), WsError> {
+/// Checks the reply; the extension it settled on, when the offer had one.
+fn check_response(
+    head: &[u8],
+    key: &str,
+    offered_deflate: bool,
+) -> Result<Option<ws_deflate::Params>, WsError> {
     let text = std::str::from_utf8(head)
         .map_err(|_| WsError::Handshake("response head is not UTF-8".into()))?;
     let mut lines = text.split("\r\n");
@@ -258,6 +297,7 @@ fn check_response(head: &[u8], key: &str) -> Result<(), WsError> {
     }
     let (mut upgrade, mut connection, mut accept) = (false, false, false);
     let want = accept_key(key);
+    let mut extensions: Vec<&str> = Vec::new();
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -269,6 +309,8 @@ fn check_response(head: &[u8], key: &str) -> Result<(), WsError> {
             connection |= has_token(value, "upgrade");
         } else if name.eq_ignore_ascii_case("sec-websocket-accept") {
             accept |= value == want;
+        } else if name.eq_ignore_ascii_case("sec-websocket-extensions") {
+            extensions.push(value);
         }
     }
     if !upgrade {
@@ -280,13 +322,17 @@ fn check_response(head: &[u8], key: &str) -> Result<(), WsError> {
     if !accept {
         return Err(WsError::Handshake("bad Sec-WebSocket-Accept".into()));
     }
-    Ok(())
+    let params = ws_deflate::parse_reply(&extensions)?;
+    if params.is_some() && !offered_deflate {
+        return Err(WsError::Handshake("an extension nobody offered".into()));
+    }
+    Ok(params)
 }
 
 async fn do_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream: &mut S,
     req: &Request<'_>,
-) -> Result<Vec<u8>, WsError> {
+) -> Result<(Vec<u8>, Option<ws_deflate::Params>), WsError> {
     let mut raw = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut raw);
     let key = STANDARD.encode(raw);
@@ -294,8 +340,12 @@ async fn do_handshake<S: AsyncRead + AsyncWrite + Unpin>(
     stream.write_all(text.as_bytes()).await?;
     stream.flush().await?;
     let (head, lead) = read_head(stream).await?;
-    check_response(&head, &key)?;
-    Ok(lead)
+    let offered = req.headers.iter().any(|(n, v)| {
+        n.eq_ignore_ascii_case("sec-websocket-extensions")
+            && v.to_ascii_lowercase().contains("permessage-deflate")
+    });
+    let params = check_response(&head, &key, offered)?;
+    Ok((lead, params))
 }
 
 /// Performs the client handshake on `stream` and splits it into a
@@ -305,10 +355,11 @@ pub async fn handshake<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
     mut stream: S,
     req: &Request<'_>,
 ) -> Result<(Reader<S>, Writer<S>), WsError> {
-    let lead = match tokio::time::timeout(req.timeout, do_handshake(&mut stream, req)).await {
-        Err(_) => return Err(WsError::Timeout),
-        Ok(r) => r?,
-    };
+    let (lead, params) =
+        match tokio::time::timeout(req.timeout, do_handshake(&mut stream, req)).await {
+            Err(_) => return Err(WsError::Timeout),
+            Ok(r) => r?,
+        };
     let (read, write) = split(stream);
     let write = Arc::new(Mutex::new(write));
     let reader = Reader {
@@ -317,8 +368,16 @@ pub async fn handshake<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
         lead,
         lead_pos: 0,
         read_limit: req.read_limit,
+        inflate: params.map(Inflater::new),
     };
-    Ok((reader, Writer { inner: write }))
+    let deflate = params.map(|p| Arc::new(std::sync::Mutex::new(Deflater::new(p))));
+    Ok((
+        reader,
+        Writer {
+            inner: write,
+            deflate,
+        },
+    ))
 }
 
 impl<S: AsyncRead + AsyncWrite> Reader<S> {
@@ -348,14 +407,18 @@ impl<S: AsyncRead + AsyncWrite> Reader<S> {
     pub async fn next(&mut self) -> Result<Message, WsError> {
         let mut msg: Vec<u8> = Vec::new();
         let mut in_progress: Option<bool> = None; // Some(is_text)
+        let mut packed = false; // the message's first frame had RSV1
         loop {
             let mut h = [0u8; 2];
             self.fill(&mut h).await?;
             let fin = h[0] & 0x80 != 0;
-            if h[0] & 0x70 != 0 {
+            let op = h[0] & 0x0f;
+            // RSV1 is permessage-deflate's, on the first frame of a data
+            // message and only when the extension was agreed.
+            let rsv1 = h[0] & 0x40 != 0;
+            if h[0] & 0x30 != 0 || (rsv1 && (self.inflate.is_none() || op == 0 || op & 8 != 0)) {
                 return Err(WsError::Protocol("reserved bits set"));
             }
-            let op = h[0] & 0x0f;
             if h[1] & 0x80 != 0 {
                 return Err(WsError::Protocol("masked server frame"));
             }
@@ -403,8 +466,14 @@ impl<S: AsyncRead + AsyncWrite> Reader<S> {
                 (1 | 2, Some(_)) => {
                     return Err(WsError::Protocol("new message inside fragmented message"))
                 }
-                (1, None) => in_progress = Some(true),
-                (2, None) => in_progress = Some(false),
+                (1, None) => {
+                    in_progress = Some(true);
+                    packed = rsv1;
+                }
+                (2, None) => {
+                    in_progress = Some(false);
+                    packed = rsv1;
+                }
                 _ => {}
             }
             // Checked before any allocation for this frame.
@@ -420,6 +489,11 @@ impl<S: AsyncRead + AsyncWrite> Reader<S> {
                 remaining -= take;
             }
             if fin {
+                if packed {
+                    if let Some(inflater) = self.inflate.as_mut() {
+                        msg = inflater.inflate(&msg, self.read_limit)?;
+                    }
+                }
                 return if in_progress == Some(true) {
                     String::from_utf8(msg)
                         .map(Message::Text)
@@ -838,6 +912,388 @@ mod tests {
             let (mut r, _w, server) = connect(vec![0x81], 1024).await;
             drop(server);
             assert!(matches!(r.next().await, Err(WsError::Io(_))));
+        })
+        .await;
+    }
+
+    // ---- PJ2: the caller's read limit, a subprotocol the reply leaves out ----
+
+    #[tokio::test]
+    async fn a_message_one_byte_over_the_read_limit_ends_the_reader() {
+        within(async {
+            let limit = 1 << 20;
+            let (mut r, _w, _s) =
+                connect(frame(1, true, &vec![b'a'; limit + 1], false), limit).await;
+            assert!(matches!(r.next().await, Err(WsError::TooLarge)));
+            let (mut r, _w, _s) = connect(frame(1, true, &vec![b'a'; limit], false), limit).await;
+            match r.next().await.unwrap() {
+                Message::Text(t) => assert_eq!(t.len(), limit),
+                m => panic!("{m:?}"),
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_reply_without_the_requested_subprotocol_connects() {
+        within(async {
+            let (client, mut server) = tokio::io::duplex(1 << 16);
+            let task = tokio::spawn(async move {
+                let head = read_request_head(&mut server).await;
+                server
+                    .write_all(&ok_response(&key_of(&head)))
+                    .await
+                    .unwrap();
+                head
+            });
+            let headers = [("Sec-WebSocket-Protocol", "xmpp")];
+            let req = Request {
+                host: "example.test",
+                path: "/xmpp-websocket",
+                headers: &headers,
+                read_limit: 1 << 20,
+                timeout: Duration::from_secs(5),
+            };
+            assert!(handshake(client, &req).await.is_ok());
+            let head = task.await.unwrap();
+            assert!(head.contains("Sec-WebSocket-Protocol: xmpp\r\n"), "{head}");
+        })
+        .await;
+    }
+
+    // ---- PJ3: permessage-deflate (RFC 7692) ----
+
+    const OFFER: [(&str, &str); 1] = [("Sec-WebSocket-Extensions", "permessage-deflate")];
+
+    fn ok_with_extension(ext: &'static str) -> impl FnOnce(&str) -> Vec<u8> + Send + 'static {
+        move |key: &str| {
+            format!(
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+                 Sec-WebSocket-Accept: {}\r\nSec-WebSocket-Extensions: {ext}\r\n\r\n",
+                accept_key(key)
+            )
+            .into_bytes()
+        }
+    }
+
+    /// A handshake that offers permessage-deflate and is answered with
+    /// `reply` (the extension header's value; `None` for no header).
+    async fn deflating(
+        reply: Option<&'static str>,
+        first: Vec<u8>,
+        read_limit: usize,
+    ) -> (
+        Result<(Reader<DuplexStream>, Writer<DuplexStream>), WsError>,
+        String,
+        DuplexStream,
+    ) {
+        let (client, mut server) = tokio::io::duplex(1 << 22);
+        let task = tokio::spawn(async move {
+            let head = read_request_head(&mut server).await;
+            let mut out = match reply {
+                Some(ext) => ok_with_extension(ext)(&key_of(&head)),
+                None => ok_response(&key_of(&head)),
+            };
+            out.extend_from_slice(&first);
+            server.write_all(&out).await.unwrap();
+            (head, server)
+        });
+        let req = Request {
+            host: "example.test",
+            path: "/xmpp-websocket",
+            headers: &OFFER,
+            read_limit,
+            timeout: Duration::from_secs(5),
+        };
+        let res = handshake(client, &req).await;
+        let (head, server) = task.await.unwrap();
+        (res, head, server)
+    }
+
+    fn raw_deflate(data: &[u8]) -> Vec<u8> {
+        let mut c = flate2::Compress::new(flate2::Compression::default(), false);
+        let mut out = Vec::with_capacity(data.len() + 64);
+        c.compress_vec(data, &mut out, flate2::FlushCompress::Sync)
+            .unwrap();
+        assert!(out.ends_with(&[0, 0, 0xff, 0xff]));
+        out.truncate(out.len() - 4);
+        out
+    }
+
+    fn raw_inflate(data: &[u8]) -> Vec<u8> {
+        let mut d = flate2::Decompress::new(false);
+        let mut input = data.to_vec();
+        input.extend_from_slice(&[0, 0, 0xff, 0xff]);
+        let mut out = Vec::with_capacity(1 << 20);
+        d.decompress_vec(&input, &mut out, flate2::FlushDecompress::Sync)
+            .unwrap();
+        out
+    }
+
+    fn compressed_frame(op: u8, fin: bool, payload: &[u8]) -> Vec<u8> {
+        let mut f = frame(op, fin, payload, false);
+        f[0] |= 0x40;
+        f
+    }
+
+    #[tokio::test]
+    async fn the_offer_is_the_bare_extension_and_a_reply_with_it_connects() {
+        within(async {
+            let (res, head, _s) = deflating(Some("permessage-deflate"), Vec::new(), 1 << 20).await;
+            assert!(res.is_ok());
+            assert!(
+                head.contains("Sec-WebSocket-Extensions: permessage-deflate\r\n"),
+                "{head}"
+            );
+        })
+        .await;
+    }
+
+    /// RFC 7692 section 7.2.3.1: "Hello" compressed is f2 48 cd c9 c9 07 00.
+    #[tokio::test]
+    async fn rfc_7692_hello_is_read() {
+        within(async {
+            let wire = compressed_frame(1, true, &[0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00]);
+            assert_eq!(&wire[..2], &[0xc1, 0x07]);
+            let (res, _, _s) = deflating(Some("permessage-deflate"), wire, 1 << 20).await;
+            let (mut r, _w) = res.unwrap();
+            assert_eq!(r.next().await.unwrap(), Message::Text("Hello".into()));
+        })
+        .await;
+    }
+
+    /// Section 7.2.3.3: one message in two fragments, RSV1 on the first only.
+    #[tokio::test]
+    async fn rfc_7692_a_fragmented_message_is_read() {
+        within(async {
+            let mut wire = compressed_frame(1, false, &[0xf2, 0x48, 0xcd]);
+            wire.extend(frame(0, true, &[0xc9, 0xc9, 0x07, 0x00], false));
+            assert_eq!(
+                wire,
+                [0x41, 0x03, 0xf2, 0x48, 0xcd, 0x80, 0x04, 0xc9, 0xc9, 0x07, 0x00]
+            );
+            let (res, _, _s) = deflating(Some("permessage-deflate"), wire, 1 << 20).await;
+            let (mut r, _w) = res.unwrap();
+            assert_eq!(r.next().await.unwrap(), Message::Text("Hello".into()));
+        })
+        .await;
+    }
+
+    /// Section 7.2.3.2 and context takeover: the second "Hello" is five
+    /// bytes that only mean something after the first.
+    #[tokio::test]
+    async fn the_context_is_kept_between_messages() {
+        within(async {
+            let mut wire = compressed_frame(1, true, &[0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00]);
+            wire.extend(compressed_frame(1, true, &[0xf2, 0x00, 0x11, 0x00, 0x00]));
+            let (res, _, _s) = deflating(Some("permessage-deflate"), wire, 1 << 20).await;
+            let (mut r, _w) = res.unwrap();
+            assert_eq!(r.next().await.unwrap(), Message::Text("Hello".into()));
+            assert_eq!(r.next().await.unwrap(), Message::Text("Hello".into()));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_message_that_inflates_past_the_limit_ends_the_reader() {
+        within(async {
+            let bomb = raw_deflate(&vec![0u8; 3 << 20]);
+            assert!(bomb.len() < 8192, "{}", bomb.len());
+            let (res, _, _s) = deflating(
+                Some("permessage-deflate"),
+                compressed_frame(2, true, &bomb),
+                1 << 20,
+            )
+            .await;
+            let (mut r, _w) = res.unwrap();
+            assert!(matches!(r.next().await, Err(WsError::TooLarge)));
+            // Exactly the limit passes.
+            let ok = raw_deflate(&vec![7u8; 1 << 20]);
+            let (res, _, _s) = deflating(
+                Some("permessage-deflate"),
+                compressed_frame(2, true, &ok),
+                1 << 20,
+            )
+            .await;
+            let (mut r, _w) = res.unwrap();
+            match r.next().await.unwrap() {
+                Message::Binary(b) => assert_eq!(b.len(), 1 << 20),
+                m => panic!("{m:?}"),
+            }
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn rsv1_without_the_extension_is_still_an_error() {
+        within(async {
+            let wire = compressed_frame(1, true, &[0xf2, 0x48, 0xcd, 0xc9, 0xc9, 0x07, 0x00]);
+            // Not offered, not answered.
+            let (mut r, _w, _s) = connect(wire.clone(), 1 << 20).await;
+            assert!(matches!(
+                r.next().await,
+                Err(WsError::Protocol("reserved bits set"))
+            ));
+            // Offered, but the reply left the extension out.
+            let (res, _, _s) = deflating(None, wire, 1 << 20).await;
+            let (mut r, _w) = res.unwrap();
+            assert!(matches!(
+                r.next().await,
+                Err(WsError::Protocol("reserved bits set"))
+            ));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn rsv1_on_a_continuation_or_a_control_frame_is_an_error() {
+        within(async {
+            let mut wire = compressed_frame(1, false, &[0xf2, 0x48, 0xcd]);
+            wire.extend(compressed_frame(0, true, &[0xc9, 0xc9, 0x07, 0x00]));
+            let (res, _, _s) = deflating(Some("permessage-deflate"), wire, 1 << 20).await;
+            let (mut r, _w) = res.unwrap();
+            assert!(matches!(
+                r.next().await,
+                Err(WsError::Protocol("reserved bits set"))
+            ));
+            let (res, _, _s) = deflating(
+                Some("permessage-deflate"),
+                compressed_frame(9, true, b""),
+                1 << 20,
+            )
+            .await;
+            let (mut r, _w) = res.unwrap();
+            assert!(matches!(
+                r.next().await,
+                Err(WsError::Protocol("reserved bits set"))
+            ));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn the_servers_extension_reply_is_checked_as_gos_is() {
+        within(async {
+            for ok in [
+                "permessage-deflate; client_no_context_takeover",
+                "permessage-deflate; server_no_context_takeover",
+                "permessage-deflate; server_no_context_takeover; client_no_context_takeover",
+                "permessage-deflate; server_max_window_bits=15",
+                "permessage-deflate; server_max_window_bits=10",
+                "Permessage-Deflate",
+            ] {
+                let (res, _, _s) = deflating(Some(ok), Vec::new(), 1 << 20).await;
+                assert!(res.is_ok(), "{ok}");
+            }
+            for bad in [
+                "permessage-deflate; client_max_window_bits=15",
+                "permessage-deflate; client_max_window_bits",
+                "permessage-deflate; unknown",
+                "permessage-deflate; server_max_window_bits=7",
+                "permessage-deflate; server_max_window_bits=16",
+                "permessage-deflate; server_no_context_takeover; server_no_context_takeover",
+                "x-webkit-deflate-frame",
+                "permessage-deflate, permessage-deflate",
+            ] {
+                let (res, _, _s) = deflating(Some(bad), Vec::new(), 1 << 20).await;
+                assert!(matches!(res, Err(WsError::Handshake(_))), "{bad}");
+            }
+            // An extension nobody offered.
+            let (res, _, _s) =
+                run(ok_with_extension("permessage-deflate"), Vec::new(), 1 << 20).await;
+            assert!(matches!(res, Err(WsError::Handshake(_))));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn outgoing_messages_from_128_bytes_are_compressed_and_the_context_is_kept() {
+        within(async {
+            let (res, _, mut s) = deflating(Some("permessage-deflate"), Vec::new(), 1 << 20).await;
+            let (_r, w) = res.unwrap();
+            // Below the threshold: plain.
+            w.send_text(&"a".repeat(127)).await.unwrap();
+            let (b0, p) = read_client_frame(&mut s).await;
+            assert_eq!((b0, p.len()), (0x81, 127));
+            // At it: compressed, RSV1 set.
+            let text = format!("<iq type='result' id='{}'/>", "x".repeat(200));
+            w.send_text(&text).await.unwrap();
+            let (b0, p1) = read_client_frame(&mut s).await;
+            assert_eq!(b0, 0xc1);
+            assert!(p1.len() < text.len() / 2, "{}", p1.len());
+            // The same message again: context kept, so it is smaller still.
+            w.send_text(&text).await.unwrap();
+            let (b0, p2) = read_client_frame(&mut s).await;
+            assert_eq!(b0, 0xc1);
+            assert!(p2.len() < p1.len(), "{} !< {}", p2.len(), p1.len());
+            // Binary too; a fresh inflater reads the first, one that saw the
+            // first reads the second.
+            let mut d = flate2::Decompress::new(false);
+            let mut out = Vec::with_capacity(4096);
+            for p in [&p1, &p2] {
+                let mut input = (*p).clone();
+                input.extend_from_slice(&[0, 0, 0xff, 0xff]);
+                out.clear();
+                d.decompress_vec(&input, &mut out, flate2::FlushDecompress::Sync)
+                    .unwrap();
+                assert_eq!(out, text.as_bytes());
+            }
+            assert_eq!(raw_inflate(&p1), text.as_bytes());
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn client_no_context_takeover_compresses_each_message_alone() {
+        within(async {
+            let (res, _, mut s) = deflating(
+                Some("permessage-deflate; client_no_context_takeover"),
+                Vec::new(),
+                1 << 20,
+            )
+            .await;
+            let (_r, w) = res.unwrap();
+            let text = "y".repeat(500);
+            w.send_text(&text).await.unwrap();
+            w.send_text(&text).await.unwrap();
+            let (_, p1) = read_client_frame(&mut s).await;
+            let (_, p2) = read_client_frame(&mut s).await;
+            assert_eq!(
+                p1, p2,
+                "the second message was compressed with the first in its window"
+            );
+            assert_eq!(raw_inflate(&p2), text.as_bytes());
+        })
+        .await;
+    }
+
+    /// The server's own takeover choice: a fresh window for every message.
+    #[tokio::test]
+    async fn server_no_context_takeover_reads_messages_each_from_a_fresh_window() {
+        within(async {
+            let one = raw_deflate(b"Hello");
+            let mut wire = compressed_frame(1, true, &one);
+            wire.extend(compressed_frame(1, true, &one));
+            let (res, _, _s) = deflating(
+                Some("permessage-deflate; server_no_context_takeover"),
+                wire,
+                1 << 20,
+            )
+            .await;
+            let (mut r, _w) = res.unwrap();
+            assert_eq!(r.next().await.unwrap(), Message::Text("Hello".into()));
+            assert_eq!(r.next().await.unwrap(), Message::Text("Hello".into()));
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn without_the_extension_nothing_is_compressed() {
+        within(async {
+            let (_r, w, mut s) = connect(Vec::new(), 1 << 20).await;
+            w.send_text(&"a".repeat(1000)).await.unwrap();
+            let (b0, p) = read_client_frame(&mut s).await;
+            assert_eq!((b0, p.len()), (0x81, 1000));
         })
         .await;
     }
