@@ -53,7 +53,8 @@ pub const ENGINE_BUDGET: u64 = 12 * 1024 * 1024;
 const NOT_YET: &[(&str, f64)] = &[("str0m", 1.0), ("sctp", 2.5), ("signalling", 1.0)];
 
 /// The readers' hard bound: one carrier runs at a time, so the larger of
-/// MTS Link's and VK Calls' rows.
+/// MTS Link's and VK Calls' rows (Jitsi's datachannel run has no readers;
+/// its rows are in the client's budget, `sizes::jitsi_rows`).
 fn rtp_cap(rows: &[olc_client::sizes::Row]) -> Option<usize> {
     ["MTS Link remote video readers", "VK Calls track readers"]
         .iter()

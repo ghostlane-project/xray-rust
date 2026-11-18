@@ -25,13 +25,14 @@ pub const CARRIED_TRANSPORTS: &[&str] = &[TRANSPORT_DATACHANNEL, TRANSPORT_VP8];
 /// `providerNone`: the room is an engine's URL, dialed directly.
 pub const PROVIDER_NONE: &str = "none";
 /// The providers this build carries: the client's (SaluteJazz, MTS Link,
-/// VK Calls) and `none`; `set_provider` refuses any other, as Go refuses
-/// one it was built without (jitsi, telemost, wbstream, max are not ported).
+/// VK Calls, Jitsi) and `none`; `set_provider` refuses any other, as Go refuses
+/// one it was built without (telemost, wbstream, max are not ported).
 pub const PROVIDERS: &[&str] = &[
     PROVIDER_NONE,
     olc_client::config::PROVIDER_SALUTEJAZZ,
     olc_client::config::PROVIDER_MTSLINK,
     olc_client::config::PROVIDER_VKCALLS,
+    olc_client::config::PROVIDER_JITSI,
 ];
 /// The engine `none` reaches: the interop hub's pipe (`interop-pipe`),
 /// whose rooms are `tcp://host:port/name`.
@@ -481,6 +482,26 @@ mod tests {
         assert_eq!(client.socks, "0.0.0.0:1080");
         assert_eq!(client.device_id, "dev");
         assert!(!format!("{c:?}").contains(&"00".repeat(32)));
+    }
+
+    /// W7: Jitsi starts through the runtime like the other carriers: its
+    /// provider is listed, it carries datachannel (the bridge's data
+    /// channel) and refuses vp8channel, and its room is its link.
+    #[test]
+    fn jitsi_starts_on_datachannel_and_not_on_vp8channel() {
+        assert!(PROVIDERS.contains(&"jitsi"));
+        assert!(CARRIED_TRANSPORTS.contains(&"datachannel"));
+        let mut c = RuntimeConfig::default();
+        c.key_hex = "00".repeat(32);
+        c.provider = "jitsi".into();
+        c.transport = "datachannel".into();
+        c.room = "https://meet.example/room".into();
+        assert_eq!(c.validate(), Ok(()));
+        c.transport = "vp8channel".into();
+        assert_eq!(
+            c.validate().unwrap_err().to_string(),
+            "invalid mobile runtime configuration: transport \"vp8channel\" for engine \"jitsi\""
+        );
     }
 
     /// SaluteJazz, MTS Link and VK Calls start through the runtime, each on
