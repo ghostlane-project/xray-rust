@@ -576,10 +576,18 @@ impl Channel {
     /// `handleIncomingFrame`: a whole frame off the track.
     pub fn handle_incoming_frame(&mut self, frame: &[u8], now: Instant) -> Inbound {
         let Some(h) = parse_epoch_header(frame) else {
+            static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                info!("vp8channel: first incoming frame with a bad header, len={}", frame.len());
+            }
             debug!("vp8channel: incoming frame bad header len={}", frame.len());
             return Inbound::BadHeader;
         };
         if h.token != self.token {
+            static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                info!("vp8channel: first incoming frame of another token");
+            }
             debug!(
                 "vp8channel: incoming frame token mismatch got=0x{:08x} want=0x{:08x}",
                 h.token, self.token

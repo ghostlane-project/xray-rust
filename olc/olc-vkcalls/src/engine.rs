@@ -1209,17 +1209,26 @@ impl Session {
         let held = self.rtp_held.guard();
         let on_frame = Arc::clone(&self.on_frame);
         let mut first = true;
+        let mut seen_pts: Vec<u8> = Vec::new();
+        olc_net::info!(
+            "vkcalls: reading the call's media: video pt {:?}, red pt {:?}",
+            negotiation.publish_pt(),
+            negotiation.red_pt()
+        );
+        let mut frames = 0u32;
         negotiation
             .peer()
             .set_rtp_sink(Some(Box::new(move |packet: &RtpPacket| {
-                if first {
-                    first = false;
+                let pt = *packet.header.payload_type;
+                if !seen_pts.contains(&pt) && seen_pts.len() < 8 {
+                    seen_pts.push(pt);
                     olc_net::info!(
-                        "vkcalls: first media from the call: pt {} ssrc {}",
-                        *packet.header.payload_type,
-                        *packet.header.ssrc
+                        "vkcalls: first media from the call with pt {pt}: ssrc {}{}",
+                        *packet.header.ssrc,
+                        if first { " (the first packet)" } else { "" }
                     );
                 }
+                first = false;
                 let handler = locked(&on_frame).clone();
                 let Some(handler) = handler else { return };
                 readers.push(
@@ -1229,7 +1238,13 @@ impl Session {
                     *packet.header.payload_type,
                     &packet.payload,
                     Instant::now(),
-                    &mut |frame| handler(frame),
+                    &mut |frame| {
+                        frames += 1;
+                        if frames == 1 || frames == 50 {
+                            olc_net::info!("vkcalls: video frame {frames} off the call, {} bytes", frame.len());
+                        }
+                        handler(frame);
+                    },
                 );
                 held.set(readers.held_bytes());
             })));
@@ -1454,6 +1469,8 @@ async fn watch_peer(
     mut events: mpsc::Receiver<PeerEvent>,
 ) {
     let mut watcher = PcWatcher::new();
+    let mut keyframe_asked = false;
+    let mut notified = false;
     loop {
         let step = tokio::select! {
             event = events.recv() => Step::Event(event),
@@ -1468,6 +1485,27 @@ async fn watch_peer(
             Step::Event(Some(event)) => {
                 let change = watcher.observe(&event);
                 let last = matches!(event, PeerEvent::Closed(_));
+                match &event {
+                    PeerEvent::ChannelOpen(id, label) => {
+                        olc_net::info!("vkcalls: data channel {label:?} open");
+                        let _ = id;
+                    }
+                    PeerEvent::ChannelClose(_) => olc_net::info!("vkcalls: a data channel closed"),
+                    PeerEvent::KeyframeRequest(_) if !keyframe_asked => {
+                        keyframe_asked = true;
+                        olc_net::info!("vkcalls: the call asked for a keyframe");
+                    }
+                    PeerEvent::Data(message)
+                        if message.channel == gen.notification && !notified =>
+                    {
+                        notified = true;
+                        olc_net::info!(
+                            "vkcalls: first notification, {} bytes",
+                            message.data.len()
+                        );
+                    }
+                    _ => {}
+                }
                 match event {
                     PeerEvent::ChannelOpen(id, _) if id == gen.command => gen.command_opened(),
                     PeerEvent::ChannelClose(id) if id == gen.command => {
@@ -1634,8 +1672,17 @@ impl Stream for Session {
             }),
         );
         if let Some(n) = written {
-            self.rtp_out
+            let before = self
+                .rtp_out
                 .fetch_add(u64::try_from(n).unwrap_or(u64::MAX), Ordering::Relaxed);
+            if before == 0 && n > 0 {
+                olc_net::info!("vkcalls: first video sent to the call, {n} packets");
+            }
+        } else if self.rtp_out.load(Ordering::Relaxed) == 0 {
+            static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !ONCE.swap(true, Ordering::Relaxed) {
+                olc_net::info!("vkcalls: the call took no video: no publish line");
+            }
         }
         true
     }
