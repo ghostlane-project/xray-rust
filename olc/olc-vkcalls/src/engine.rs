@@ -598,7 +598,11 @@ impl Generation {
         let (frame, known, people) = {
             let mut control = locked(&self.control);
             let frame = control.layout();
-            (frame, control.registry().iter().count(), control.participants().count())
+            (
+                frame,
+                control.registry().iter().count(),
+                control.participants().count(),
+            )
         };
         match frame {
             Ok(None) => olc_net::info!(
@@ -1252,7 +1256,10 @@ impl Session {
                     &mut |frame| {
                         frames += 1;
                         if frames == 1 || frames == 50 {
-                            olc_net::info!("vkcalls: video frame {frames} off the call, {} bytes", frame.len());
+                            olc_net::info!(
+                                "vkcalls: video frame {frames} off the call, {} bytes",
+                                frame.len()
+                            );
                         }
                         handler(frame);
                     },
@@ -1511,10 +1518,7 @@ async fn watch_peer(
                         if message.channel == gen.notification && !notified =>
                     {
                         notified = true;
-                        olc_net::info!(
-                            "vkcalls: first notification, {} bytes",
-                            message.data.len()
-                        );
+                        olc_net::info!("vkcalls: first notification, {} bytes", message.data.len());
                     }
                     _ => {}
                 }
@@ -2393,6 +2397,17 @@ mod tests {
                     json!([{"id": 42, "state": "ACCEPTED"}]),
                 ))
                 .await;
+                // VK's keepalive: a text "ping" every 5 s (signaling's
+                // SIGNALING_SILENCE ends a socket that stays quiet).
+                tokio::spawn({
+                    let conn = Arc::clone(&conn);
+                    async move {
+                        while !conn.gone.load(Ordering::SeqCst) {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            write_text(&conn.write, "ping").await;
+                        }
+                    }
+                });
 
                 // The SFU's peer.
                 tokio::spawn({
@@ -2448,6 +2463,9 @@ mod tests {
                     let mut answered = false;
                     while let Some(frame) = read_frame(&mut read).await {
                         let text = frame.text().to_owned();
+                        if text == "pong" {
+                            continue; // the keepalive's answer is no frame of the test's
+                        }
                         conn.frames.lock().unwrap().push(text.clone());
                         let Ok(v) = serde_json::from_str::<Value>(&text) else {
                             continue;

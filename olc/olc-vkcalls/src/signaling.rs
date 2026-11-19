@@ -1189,10 +1189,31 @@ impl Drop for Unfinished<'_> {
     }
 }
 
-/// The socket's only reader (`readLoop`).
-async fn read_loop(mut reader: ws::Reader<BoxStream>, shared: Arc<Shared>, queue: Queue) {
+/// How long the socket may stay quiet before it is taken for dead
+/// (`signalingSilence`). VK's signalling sends a text "ping" every 5 s
+/// (measured live, 2026-11-19), so six missed pings is no lull. Without it a
+/// socket whose peer vanished without a FIN reads forever, deaf to the call.
+pub const SIGNALING_SILENCE: Duration = Duration::from_secs(30);
+
+/// The socket's only reader (`readLoop`). Nothing read for
+/// [`SIGNALING_SILENCE`] ends the socket like a read error: the reader is
+/// dropped mid-read, which is safe because nothing reads it again.
+async fn read_loop(reader: ws::Reader<BoxStream>, shared: Arc<Shared>, queue: Queue) {
+    read_loop_within(reader, shared, queue, SIGNALING_SILENCE).await;
+}
+
+async fn read_loop_within(
+    mut reader: ws::Reader<BoxStream>,
+    shared: Arc<Shared>,
+    queue: Queue,
+    silence: Duration,
+) {
     loop {
-        let text = match reader.next().await {
+        let Ok(next) = tokio::time::timeout(silence, reader.next()).await else {
+            olc_net::debug!("vkcalls: signalling silent for {silence:?}, ending the socket");
+            break;
+        };
+        let text = match next {
             Ok(ws::Message::Text(text)) => text,
             Ok(ws::Message::Binary(_)) => continue,
             Err(ws::WsError::TooLarge) => {
@@ -2581,6 +2602,39 @@ pub(crate) mod tests {
         .await;
     }
 
+    /// A socket that stays open but says nothing ends after
+    /// SIGNALING_SILENCE, like a read error, so the session rejoins instead of
+    /// staying deaf to the call (the FI servers, 2026-11-19).
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_socket_ends() {
+        bounded_for(Duration::from_secs(120), async {
+            let (listener, endpoint) = listen().await;
+            let (signaling, mut notifications, _sfu, _) = connect(&listener, &endpoint).await;
+            let start = tokio::time::Instant::now();
+            assert_eq!(notifications.recv().await, None);
+            signaling.closed().await;
+            assert!(start.elapsed() >= SIGNALING_SILENCE);
+            assert_eq!(SIGNALING_SILENCE, Duration::from_secs(30));
+        })
+        .await;
+    }
+
+    /// VK's ping every 5 s keeps the socket open well past the deadline.
+    #[tokio::test(start_paused = true)]
+    async fn pings_keep_the_socket() {
+        bounded_for(Duration::from_secs(120), async {
+            let (listener, endpoint) = listen().await;
+            let (signaling, _notifications, sfu, _) = connect(&listener, &endpoint).await;
+            for _ in 0..16 {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                write_text(&sfu.write, "ping").await;
+                tokio::task::yield_now().await;
+                assert!(!signaling.is_closed());
+            }
+        })
+        .await;
+    }
+
     /// A command nobody answers ends after 15 s; the join wait after 30 s.
     #[tokio::test]
     async fn the_waits_end_on_their_timers() {
@@ -2604,6 +2658,14 @@ pub(crate) mod tests {
             .await;
             // Read before the clock stops: the wait must pass over it.
             tokio::time::sleep(Duration::from_millis(50)).await;
+            // VK's keepalive, so SIGNALING_SILENCE does not end the socket
+            // under the waits.
+            let pinger = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    write_text(&write, "ping").await;
+                }
+            });
 
             tokio::time::pause();
             let before = tokio::time::Instant::now();
@@ -2637,6 +2699,7 @@ pub(crate) mod tests {
             assert_eq!(WS_HANDSHAKE_TIMEOUT, Duration::from_secs(20));
             tokio::time::resume();
             assert!(!signaling.is_closed());
+            pinger.abort();
             server.abort();
         })
         .await;
