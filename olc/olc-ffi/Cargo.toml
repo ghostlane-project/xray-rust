@@ -32,6 +32,11 @@ dhat = "0.3.3"
 # The bindings generator (`cargo run -p olc-ffi --features bindgen --bin
 # uniffi-bindgen -- generate ...`), for the build hosts only.
 bindgen = ["uniffi/cli"]
+# Every carrier's DTLS from BoringSSL shaped as Chrome's (olc-rtc's `boring`).
+# The apps ship with it: str0m's own DTLS offers ECDSA suites only, and VK
+# Calls' SFU refused it (handshake_failure, 1.0.476). Needs cmake and
+# libclang, so the build box builds without it.
+boring = ["olc-client/boring"]
 
 [[bin]]
 name = "uniffi-bindgen"

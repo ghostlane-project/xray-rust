@@ -16,6 +16,11 @@ ghostlane-runtime = { path = "../ghostlane-runtime" }
 olc-ffi = { path = "../../olc/olc-ffi" }
 xray-ffi = { path = "../xray-ffi", features = ["shared-runtime"] }
 
+[features]
+# olcRTC's DTLS from BoringSSL shaped as Chrome's (olc-ffi's `boring`); the
+# apps build the library with it.
+boring = ["olc-ffi/boring"]
+
 [dev-dependencies]
 serde_json.workspace = true
 # Already linked through xray-ffi: the test below holds both cores to one byte budget.
