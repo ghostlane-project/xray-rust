@@ -380,10 +380,11 @@ impl BoringDtls {
                     Ok(0) => break,
                     Ok(n) => {
                         self.app_in = self.app_in.saturating_add(1);
-                        if self.app_in == 1 || self.app_in == 20 {
+                        if self.app_in <= 4 || self.app_in == 20 {
                             olc_net::info!(
-                                "webrtc: DTLS application record {} in, {n} bytes",
-                                self.app_in
+                                "webrtc: DTLS application record {} in, {n} bytes: {}",
+                                self.app_in,
+                                sctp_head(&self.read_buf[..n])
                             );
                         }
                         self.app_data.push_back(self.read_buf[..n].to_vec());
@@ -462,11 +463,12 @@ impl BoringDtls {
         match self.stream.ssl_write(data) {
             Ok(_) => {
                 self.app_out = self.app_out.saturating_add(1);
-                if self.app_out == 1 || self.app_out == 20 {
+                if self.app_out <= 4 || self.app_out == 20 {
                     olc_net::info!(
-                        "webrtc: DTLS application record {} out, {} bytes",
+                        "webrtc: DTLS application record {} out, {} bytes: {}",
                         self.app_out,
-                        data.len()
+                        data.len(),
+                        sctp_head(data)
                     );
                 }
                 self.collect();
@@ -478,6 +480,26 @@ impl BoringDtls {
             }
         }
     }
+}
+
+/// An SCTP packet's ports and chunk types with their lengths, for the logs:
+/// no payload bytes.
+fn sctp_head(p: &[u8]) -> String {
+    if p.len() < 12 {
+        return format!("short {}", p.len());
+    }
+    let port = |i: usize| u16::from_be_bytes([p[i], p[i + 1]]);
+    let mut out = format!("ports {}->{}", port(0), port(2));
+    let mut at = 12;
+    while at + 4 <= p.len() && out.len() < 200 {
+        let len = usize::from(port(at + 2));
+        out.push_str(&format!(" chunk {} flags {} len {len}", p[at], p[at + 1]));
+        if len < 4 {
+            break;
+        }
+        at += (len + 3) & !3;
+    }
+    out
 }
 
 impl DtlsInstance for BoringDtls {

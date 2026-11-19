@@ -595,10 +595,21 @@ impl Generation {
     /// participant's camera. The counter advances whether or not anything
     /// goes out.
     fn subscribe_all(&self) {
-        let frame = locked(&self.control).layout();
+        let (frame, known, people) = {
+            let mut control = locked(&self.control);
+            let frame = control.layout();
+            (frame, control.registry().iter().count(), control.participants().count())
+        };
         match frame {
-            Ok(None) => {}
+            Ok(None) => olc_net::info!(
+                "vkcalls: layout: nothing to ask for ({known} streams, {people} participants known)"
+            ),
             Ok(Some(frame)) => {
+                olc_net::info!(
+                    "vkcalls: layout of {} bytes ({known} streams, {people} participants known), channel {}",
+                    frame.len(),
+                    if self.command_open.load(Ordering::Acquire) { "open" } else { "not open" }
+                );
                 if self.command_open.load(Ordering::Acquire) {
                     self.send("layout", &frame);
                 }
@@ -1471,6 +1482,7 @@ async fn watch_peer(
     let mut watcher = PcWatcher::new();
     let mut keyframe_asked = false;
     let mut notified = false;
+    let mut notes = 0u32;
     loop {
         let step = tokio::select! {
             event = events.recv() => Step::Event(event),
@@ -1512,10 +1524,25 @@ async fn watch_peer(
                         gen.command_open.store(false, Ordering::Release);
                     }
                     PeerEvent::Data(message) if message.channel == gen.notification => {
+                        if notes < 6 {
+                            notes += 1;
+                            let head: String = message.data[..message.data.len().min(48)]
+                                .iter()
+                                .map(|b| format!("{b:02x}"))
+                                .collect();
+                            olc_net::info!(
+                                "vkcalls: notification {notes}, {} bytes: {head}",
+                                message.data.len()
+                            );
+                        }
                         gen.service_frame(&message.data);
                     }
                     PeerEvent::Data(message) if message.channel == gen.command => {
-                        olc_net::info!("vkcalls: command reply, {} bytes", message.data.len());
+                        olc_net::info!(
+                            "vkcalls: command reply, {} bytes: {}",
+                            message.data.len(),
+                            String::from_utf8_lossy(&message.data[..message.data.len().min(160)])
+                        );
                     }
                     _ => {}
                 }
