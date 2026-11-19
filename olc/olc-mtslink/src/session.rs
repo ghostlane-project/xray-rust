@@ -991,7 +991,7 @@ impl Session {
         self.media_ready(peer, gen, publish);
         self.still_joining(gen)?;
         if let Err(e) = signal::pin_peer(&target, peer_id, &sfu).await {
-            olc_net::info!("mtslink: {}", cleared(&held, e));
+            olc_net::debug!("mtslink: {}", cleared(&held, e));
         }
         Ok(())
     }
@@ -1014,7 +1014,7 @@ impl Session {
                 .map(|p| p.pt())
         });
         let Some(pt) = pt else {
-            olc_net::info!("mtslink: the answer left no VP9 on the published line");
+            olc_net::debug!("mtslink: the answer left no VP9 on the published line");
             return;
         };
         let line = SendLine::new(publish, None, pt);
@@ -1027,7 +1027,7 @@ impl Session {
             },
         );
         if !sized {
-            olc_net::info!("mtslink: no send stream on the published line");
+            olc_net::debug!("mtslink: no send stream on the published line");
         }
         // The sink owns the readers: they go with the generation.
         let mut readers = Readers::new();
@@ -1053,7 +1053,7 @@ impl Session {
             held.set(readers.held_bytes());
             if matches!(fed, Fed::New | Fed::Replaced(_)) && said < TRACK_LINES {
                 said += 1;
-                olc_net::info!("mtslink: remote track kind=video codec={MIME_VP9}");
+                olc_net::debug!("mtslink: remote track kind=video codec={MIME_VP9}");
             }
         })));
         let mut m = locked(&self.media);
@@ -1101,7 +1101,7 @@ impl Session {
         let held = held_of(creds, None);
         Some(tokio::spawn(async move {
             if let Ok(Err(e)) = asked.await {
-                olc_net::info!("mtslink: {}", cleared(&held, e));
+                olc_net::debug!("mtslink: {}", cleared(&held, e));
             }
             drop(busy);
         }))

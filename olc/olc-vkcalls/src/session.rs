@@ -727,7 +727,7 @@ impl Negotiation {
                     seen.push(line.chars().take(40).collect::<String>());
                 }
             }
-            olc_net::info!("vkcalls: the offer's data section: {}", seen.join(" | "));
+            olc_net::debug!("vkcalls: the offer's data section: {}", seen.join(" | "));
         }
         let native_answer = accept(peer, given).map_err(NegotiateError::Remote)?;
         peer.remote_described(given);

@@ -369,7 +369,7 @@ impl BoringDtls {
                 }
                 Err(e) => {
                     self.collect();
-                    olc_net::info!("webrtc: DTLS handshake failed: {e}");
+                    olc_net::debug!("webrtc: DTLS handshake failed: {e}");
                     return Err(op_failed(DtlsCryptoOperation::Decrypt));
                 }
             }
@@ -381,7 +381,7 @@ impl BoringDtls {
                     Ok(n) => {
                         self.app_in = self.app_in.saturating_add(1);
                         if self.app_in <= 4 || self.app_in == 20 {
-                            olc_net::info!(
+                            olc_net::debug!(
                                 "webrtc: DTLS application record {} in, {n} bytes: {}",
                                 self.app_in,
                                 sctp_head(&self.read_buf[..n])
@@ -409,7 +409,7 @@ impl BoringDtls {
                             self.close_received = true;
                             break;
                         }
-                        olc_net::info!("webrtc: DTLS read failed: {e}");
+                        olc_net::debug!("webrtc: DTLS read failed: {e}");
                         return Err(op_failed(DtlsCryptoOperation::Decrypt));
                     }
                 }
@@ -439,7 +439,7 @@ impl BoringDtls {
         let mut km = vec![0u8; profile.keying_material_len()];
         ssl.export_keying_material(&mut km, DTLS_SRTP_LABEL, None)
             .map_err(|_| op_failed(DtlsCryptoOperation::Decrypt))?;
-        olc_net::info!(
+        olc_net::debug!(
             "webrtc: DTLS {} {} {} srtp {profile:?}, {} ms as the {}",
             ssl.version_str(),
             ssl.current_cipher().map_or("", |c| c.name()),
@@ -464,7 +464,7 @@ impl BoringDtls {
             Ok(_) => {
                 self.app_out = self.app_out.saturating_add(1);
                 if self.app_out <= 4 || self.app_out == 20 {
-                    olc_net::info!(
+                    olc_net::debug!(
                         "webrtc: DTLS application record {} out, {} bytes: {}",
                         self.app_out,
                         data.len(),
@@ -475,7 +475,7 @@ impl BoringDtls {
                 Ok(())
             }
             Err(e) => {
-                olc_net::info!("webrtc: DTLS write of {} bytes failed: {e}", data.len());
+                olc_net::debug!("webrtc: DTLS write of {} bytes failed: {e}", data.len());
                 Err(op_failed(DtlsCryptoOperation::Encrypt))
             }
         }

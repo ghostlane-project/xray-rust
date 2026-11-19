@@ -605,11 +605,11 @@ impl Generation {
             )
         };
         match frame {
-            Ok(None) => olc_net::info!(
+            Ok(None) => olc_net::debug!(
                 "vkcalls: layout: nothing to ask for ({known} streams, {people} participants known)"
             ),
             Ok(Some(frame)) => {
-                olc_net::info!(
+                olc_net::debug!(
                     "vkcalls: layout of {} bytes ({known} streams, {people} participants known), channel {}",
                     frame.len(),
                     if self.command_open.load(Ordering::Acquire) { "open" } else { "not open" }
@@ -1225,7 +1225,7 @@ impl Session {
         let on_frame = Arc::clone(&self.on_frame);
         let mut first = true;
         let mut seen_pts: Vec<u8> = Vec::new();
-        olc_net::info!(
+        olc_net::debug!(
             "vkcalls: reading the call's media: video pt {:?}, red pt {:?}",
             negotiation.publish_pt(),
             negotiation.red_pt()
@@ -1237,7 +1237,7 @@ impl Session {
                 let pt = *packet.header.payload_type;
                 if !seen_pts.contains(&pt) && seen_pts.len() < 8 {
                     seen_pts.push(pt);
-                    olc_net::info!(
+                    olc_net::debug!(
                         "vkcalls: first media from the call with pt {pt}: ssrc {}{}",
                         *packet.header.ssrc,
                         if first { " (the first packet)" } else { "" }
@@ -1256,7 +1256,7 @@ impl Session {
                     &mut |frame| {
                         frames += 1;
                         if frames == 1 || frames == 50 {
-                            olc_net::info!(
+                            olc_net::debug!(
                                 "vkcalls: video frame {frames} off the call, {} bytes",
                                 frame.len()
                             );
@@ -1509,16 +1509,19 @@ async fn watch_peer(
                         olc_net::info!("vkcalls: data channel {label:?} open");
                         let _ = id;
                     }
-                    PeerEvent::ChannelClose(_) => olc_net::info!("vkcalls: a data channel closed"),
+                    PeerEvent::ChannelClose(_) => olc_net::debug!("vkcalls: a data channel closed"),
                     PeerEvent::KeyframeRequest(_) if !keyframe_asked => {
                         keyframe_asked = true;
-                        olc_net::info!("vkcalls: the call asked for a keyframe");
+                        olc_net::debug!("vkcalls: the call asked for a keyframe");
                     }
                     PeerEvent::Data(message)
                         if message.channel == gen.notification && !notified =>
                     {
                         notified = true;
-                        olc_net::info!("vkcalls: first notification, {} bytes", message.data.len());
+                        olc_net::debug!(
+                            "vkcalls: first notification, {} bytes",
+                            message.data.len()
+                        );
                     }
                     _ => {}
                 }
@@ -1534,7 +1537,7 @@ async fn watch_peer(
                                 .iter()
                                 .map(|b| format!("{b:02x}"))
                                 .collect();
-                            olc_net::info!(
+                            olc_net::debug!(
                                 "vkcalls: notification {notes}, {} bytes: {head}",
                                 message.data.len()
                             );
@@ -1542,7 +1545,7 @@ async fn watch_peer(
                         gen.service_frame(&message.data);
                     }
                     PeerEvent::Data(message) if message.channel == gen.command => {
-                        olc_net::info!(
+                        olc_net::debug!(
                             "vkcalls: command reply, {} bytes: {}",
                             message.data.len(),
                             String::from_utf8_lossy(&message.data[..message.data.len().min(160)])
@@ -1707,12 +1710,12 @@ impl Stream for Session {
                 .rtp_out
                 .fetch_add(u64::try_from(n).unwrap_or(u64::MAX), Ordering::Relaxed);
             if before == 0 && n > 0 {
-                olc_net::info!("vkcalls: first video sent to the call, {n} packets");
+                olc_net::debug!("vkcalls: first video sent to the call, {n} packets");
             }
         } else if self.rtp_out.load(Ordering::Relaxed) == 0 {
             static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !ONCE.swap(true, Ordering::Relaxed) {
-                olc_net::info!("vkcalls: the call took no video: no publish line");
+                olc_net::debug!("vkcalls: the call took no video: no publish line");
             }
         }
         true
