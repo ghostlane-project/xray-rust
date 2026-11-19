@@ -1,0 +1,50 @@
+diff -ruN a/sctp-proto-0.10.8/src/chunk/chunk_test.rs b/sctp-proto-0.10.8/src/chunk/chunk_test.rs
+--- a/src/chunk/chunk_test.rs	2026-11-19 18:10:45.870434780 +0000
++++ b/src/chunk/chunk_test.rs	2026-11-19 18:10:45.876434765 +0000
+@@ -889,3 +889,30 @@
+     );
+     Ok(())
+ }
++
++/// XRAY-PATCH: VK Calls' SFU answers an INIT naming Supported Extensions with
++/// an INIT ACK carrying an Unrecognized Parameter (type 8) and the State
++/// Cookie; the chunk is read and the cookie found.
++#[test]
++fn test_init_ack_with_an_unrecognized_parameter() -> Result<()> {
++    let mut raw: Vec<u8> = vec![
++        0x02, 0x00, 0x00, 0x2c, // INIT ACK, length 44
++        0x58, 0xf1, 0xa5, 0x8f, // initiate tag
++        0x00, 0x01, 0x90, 0x00, // a_rwnd
++        0xff, 0xff, 0xff, 0xff, // streams
++        0x7f, 0x64, 0xbf, 0x05, // initial TSN
++        0x00, 0x08, 0x00, 0x0a, 0x80, 0x08, 0x00, 0x06, 0x82, 0xc0, 0x00, 0x00, // unrecognized: supported extensions
++        0x00, 0x07, 0x00, 0x0c, // state cookie, 8 bytes
++    ];
++    raw.extend_from_slice(b"cookie-1");
++    let c = ChunkInit::unmarshal(&Bytes::from(raw))?;
++    assert!(c.is_ack);
++    assert_eq!(c.params.len(), 2);
++    let cookie = c
++        .params
++        .iter()
++        .find_map(|p| p.as_any().downcast_ref::<crate::param::param_state_cookie::ParamStateCookie>())
++        .expect("the cookie is read");
++    assert_eq!(&cookie.cookie[..], b"cookie-1");
++    Ok(())
++}
+diff -ruN a/sctp-proto-0.10.8/src/param/mod.rs b/sctp-proto-0.10.8/src/param/mod.rs
+--- a/src/param/mod.rs	2026-11-19 18:10:45.870434780 +0000
++++ b/src/param/mod.rs	2026-11-19 18:10:45.875434767 +0000
+@@ -79,6 +79,12 @@
+         ParamType::HeartbeatInfo => Ok(Box::new(ParamHeartbeatInfo::unmarshal(raw_param)?)),
+         ParamType::OutSsnResetReq => Ok(Box::new(ParamOutgoingResetRequest::unmarshal(raw_param)?)),
+         ParamType::ReconfigResp => Ok(Box::new(ParamReconfigResponse::unmarshal(raw_param)?)),
++        // XRAY-PATCH: an INIT ACK's Unrecognized Parameter (RFC 9260
++        // section 3.3.3.1) is a report, not a parameter to act on: kept as
++        // an unknown one. Its type's top bit is 0, so the arm below would
++        // drop the whole INIT ACK (VK Calls' SFU sends one for the Supported
++        // Extensions parameter it does not know).
++        ParamType::UnrecognizedParam => Ok(Box::new(ParamUnknown::unmarshal(raw_param)?)),
+         _ => {
+             // According to RFC https://datatracker.ietf.org/doc/html/rfc4960#section-3.2.1
+             let stop_processing = ((raw_type >> 15) & 0x01) == 0;

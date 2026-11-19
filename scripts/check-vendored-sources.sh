@@ -7,7 +7,7 @@ trap 'rm -rf "$temporary"' EXIT
 
 # Include ignored files here: an upstream .gitignore can hide crate files on
 # the developer's filesystem even though a clean checkout will omit them.
-untracked="$(git -C "$ROOT" ls-files --others -- vendor/blake3 vendor/h2 vendor/h3 vendor/h3-quinn vendor/quinn vendor/quinn-proto vendor/gotatun vendor/smoltcp olc/vendor/str0m-0.25.0 olc/vendor/is-0.12.0 olc/vendor/stun-proto-2.0.5 olc/vendor/turn-client-proto-0.8.0)"
+untracked="$(git -C "$ROOT" ls-files --others -- vendor/blake3 vendor/h2 vendor/h3 vendor/h3-quinn vendor/quinn vendor/quinn-proto vendor/gotatun vendor/smoltcp olc/vendor/str0m-0.25.0 olc/vendor/sctp-proto-0.10.8 olc/vendor/is-0.12.0 olc/vendor/stun-proto-2.0.5 olc/vendor/turn-client-proto-0.8.0)"
 if [[ -n "$untracked" ]]; then
   echo 'vendored source files are absent from the Git index:' >&2
   printf '%s\n' "$untracked" >&2
@@ -201,6 +201,19 @@ for path in Cargo.toml README.md src; do
 done
 cp "$temporary/turn-client-proto-0.8.0.published.toml" "$temporary/turn-client-proto-0.8.0/Cargo.toml"
 cargo test --locked --manifest-path "$temporary/turn-client-proto-0.8.0/Cargo.toml" --lib
+
+download_and_verify \
+  sctp-proto 0.10.8 \
+  28aca56f649fa088cbdda778a5121f2227995ed057e77de462112b2e5890d591
+patch --batch --fuzz=0 -p1 \
+  -d "$temporary/sctp-proto-0.10.8" \
+  <"$ROOT/olc/vendor/sctp-proto-0.10.8/XRAY-PATCH.diff"
+for path in Cargo.toml README.md src; do
+  diff -ruN \
+    "$temporary/sctp-proto-0.10.8/$path" \
+    "$ROOT/olc/vendor/sctp-proto-0.10.8/$path"
+done
+cargo test --locked --manifest-path "$temporary/sctp-proto-0.10.8/Cargo.toml" --lib
 
 bash "$ROOT/scripts/check-wireguard-adapter-prototype.sh" --verify-vendor-only
 
