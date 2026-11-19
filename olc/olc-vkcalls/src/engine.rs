@@ -1208,9 +1208,18 @@ impl Session {
         let mut readers = Readers::new(negotiation.publish_pt(), negotiation.red_pt());
         let held = self.rtp_held.guard();
         let on_frame = Arc::clone(&self.on_frame);
+        let mut first = true;
         negotiation
             .peer()
             .set_rtp_sink(Some(Box::new(move |packet: &RtpPacket| {
+                if first {
+                    first = false;
+                    olc_net::info!(
+                        "vkcalls: first media from the call: pt {} ssrc {}",
+                        *packet.header.payload_type,
+                        *packet.header.ssrc
+                    );
+                }
                 let handler = locked(&on_frame).clone();
                 let Some(handler) = handler else { return };
                 readers.push(
@@ -1468,7 +1477,7 @@ async fn watch_peer(
                         gen.service_frame(&message.data);
                     }
                     PeerEvent::Data(message) if message.channel == gen.command => {
-                        olc_net::debug!("vkcalls: command reply, {} bytes", message.data.len());
+                        olc_net::info!("vkcalls: command reply, {} bytes", message.data.len());
                     }
                     _ => {}
                 }
@@ -1476,7 +1485,7 @@ async fn watch_peer(
             }
         };
         if let Some(pc) = change.pc {
-            olc_net::debug!("vkcalls: peer connection {pc}");
+            olc_net::info!("vkcalls: peer connection {pc}");
             match session.upgrade() {
                 Some(session) => session.moved(&gen, pc, was_connected),
                 None => return,
@@ -1515,7 +1524,7 @@ async fn run(
     };
     {
         let others = participant_ids(&connection, gen.signal.self_id());
-        olc_net::debug!("vkcalls: connected, {} other participants", others.len());
+        olc_net::info!("vkcalls: connected, {} other participants", others.len());
         let mut control = locked(&gen.control);
         for id in &others {
             control.note_participant(id);

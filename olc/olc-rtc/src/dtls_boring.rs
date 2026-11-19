@@ -363,7 +363,7 @@ impl BoringDtls {
                 }
                 Err(e) => {
                     self.collect();
-                    olc_net::debug!("webrtc: DTLS handshake failed: {e}");
+                    olc_net::info!("webrtc: DTLS handshake failed: {e}");
                     return Err(op_failed(DtlsCryptoOperation::Decrypt));
                 }
             }
@@ -393,7 +393,7 @@ impl BoringDtls {
                             self.close_received = true;
                             break;
                         }
-                        olc_net::debug!("webrtc: DTLS read failed: {e}");
+                        olc_net::info!("webrtc: DTLS read failed: {e}");
                         return Err(op_failed(DtlsCryptoOperation::Decrypt));
                     }
                 }
@@ -423,7 +423,7 @@ impl BoringDtls {
         let mut km = vec![0u8; profile.keying_material_len()];
         ssl.export_keying_material(&mut km, DTLS_SRTP_LABEL, None)
             .map_err(|_| op_failed(DtlsCryptoOperation::Decrypt))?;
-        olc_net::debug!(
+        olc_net::info!(
             "webrtc: DTLS {} {} {} srtp {profile:?}, {} ms as the {}",
             ssl.version_str(),
             ssl.current_cipher().map_or("", |c| c.name()),

@@ -991,7 +991,7 @@ impl Session {
         self.media_ready(peer, gen, publish);
         self.still_joining(gen)?;
         if let Err(e) = signal::pin_peer(&target, peer_id, &sfu).await {
-            olc_net::debug!("mtslink: {}", cleared(&held, e));
+            olc_net::info!("mtslink: {}", cleared(&held, e));
         }
         Ok(())
     }
@@ -1014,7 +1014,7 @@ impl Session {
                 .map(|p| p.pt())
         });
         let Some(pt) = pt else {
-            olc_net::debug!("mtslink: the answer left no VP9 on the published line");
+            olc_net::info!("mtslink: the answer left no VP9 on the published line");
             return;
         };
         let line = SendLine::new(publish, None, pt);
@@ -1027,7 +1027,7 @@ impl Session {
             },
         );
         if !sized {
-            olc_net::debug!("mtslink: no send stream on the published line");
+            olc_net::info!("mtslink: no send stream on the published line");
         }
         // The sink owns the readers: they go with the generation.
         let mut readers = Readers::new();
@@ -1053,7 +1053,7 @@ impl Session {
             held.set(readers.held_bytes());
             if matches!(fed, Fed::New | Fed::Replaced(_)) && said < TRACK_LINES {
                 said += 1;
-                olc_net::debug!("mtslink: remote track kind=video codec={MIME_VP9}");
+                olc_net::info!("mtslink: remote track kind=video codec={MIME_VP9}");
             }
         })));
         let mut m = locked(&self.media);
@@ -1101,7 +1101,7 @@ impl Session {
         let held = held_of(creds, None);
         Some(tokio::spawn(async move {
             if let Ok(Err(e)) = asked.await {
-                olc_net::debug!("mtslink: {}", cleared(&held, e));
+                olc_net::info!("mtslink: {}", cleared(&held, e));
             }
             drop(busy);
         }))
@@ -1159,7 +1159,7 @@ impl Session {
     /// connected is the join's to report; after, it asks for a rejoin,
     /// unless the generation was torn down on purpose.
     fn moved(&self, gen: u64, pc: PcState, was_connected: bool) {
-        olc_net::debug!("mtslink: peer connection {pc}");
+        olc_net::info!("mtslink: peer connection {pc}");
         let current = self.life.send_if_modified(|l| {
             if l.gen != gen {
                 return false;
@@ -1375,7 +1375,7 @@ impl Drop for EndOnDrop {
         }
         // A session its owner closed has nothing left to end.
         if let Some(session) = self.session.upgrade().filter(|s| !s.is_closed()) {
-            olc_net::debug!("mtslink: {}", self.reason);
+            olc_net::info!("mtslink: {}", self.reason);
             session.end(self.reason);
         }
     }
@@ -1406,7 +1406,7 @@ impl Rejoin for Rejoiner {
 
     /// `OnError`.
     fn failed(&self, err: &Error) {
-        olc_net::debug!("mtslink: reconnect failed: {err}");
+        olc_net::info!("mtslink: reconnect failed: {err}");
     }
 
     /// `OnLimit`.
@@ -1508,7 +1508,7 @@ impl Stream for Session {
         if self.is_closed() {
             return;
         }
-        olc_net::debug!("mtslink: reconnect requested: {reason}");
+        olc_net::info!("mtslink: reconnect requested: {reason}");
         let _ = self.ask_rejoin();
     }
 }
