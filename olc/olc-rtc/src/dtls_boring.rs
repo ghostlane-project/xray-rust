@@ -269,6 +269,10 @@ struct BoringDtls {
     close_received: bool,
     close_emitted: bool,
     close_sent: bool,
+    /// Application records read and written: the first and the 20th of
+    /// each are logged (SCTP's first packets each way).
+    app_in: u32,
+    app_out: u32,
 }
 
 // SAFETY: str0m owns one instance per Rtc and calls it only through
@@ -315,6 +319,8 @@ impl BoringDtls {
             close_received: false,
             close_emitted: false,
             close_sent: false,
+            app_in: 0,
+            app_out: 0,
         })
     }
 
@@ -372,7 +378,16 @@ impl BoringDtls {
             loop {
                 match self.stream.ssl_read(&mut self.read_buf) {
                     Ok(0) => break,
-                    Ok(n) => self.app_data.push_back(self.read_buf[..n].to_vec()),
+                    Ok(n) => {
+                        self.app_in = self.app_in.saturating_add(1);
+                        if self.app_in == 1 || self.app_in == 20 {
+                            olc_net::info!(
+                                "webrtc: DTLS application record {} in, {n} bytes",
+                                self.app_in
+                            );
+                        }
+                        self.app_data.push_back(self.read_buf[..n].to_vec());
+                    }
                     Err(e) if e.code() == ErrorCode::ZERO_RETURN => {
                         self.close_received = true;
                         if !self.close_sent {
@@ -446,10 +461,21 @@ impl BoringDtls {
     fn write_app(&mut self, data: &[u8]) -> Result<(), DtlsImplError> {
         match self.stream.ssl_write(data) {
             Ok(_) => {
+                self.app_out = self.app_out.saturating_add(1);
+                if self.app_out == 1 || self.app_out == 20 {
+                    olc_net::info!(
+                        "webrtc: DTLS application record {} out, {} bytes",
+                        self.app_out,
+                        data.len()
+                    );
+                }
                 self.collect();
                 Ok(())
             }
-            Err(_) => Err(op_failed(DtlsCryptoOperation::Encrypt)),
+            Err(e) => {
+                olc_net::info!("webrtc: DTLS write of {} bytes failed: {e}", data.len());
+                Err(op_failed(DtlsCryptoOperation::Encrypt))
+            }
         }
     }
 }

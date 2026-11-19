@@ -708,6 +708,27 @@ impl Negotiation {
         (memo, claims): (ViewMemo, StackClaims),
         ids: &TrackIds,
     ) -> Result<(Negotiation, String, SdpAnswer), NegotiateError> {
+        {
+            // The data-channel section as the SFU offered it (1.0.479: no
+            // channel opened): its m-line and SCTP attributes only.
+            let mut app = false;
+            let mut seen = Vec::new();
+            for line in given.lines() {
+                if line.starts_with("m=") {
+                    app = line.starts_with("m=application");
+                }
+                if app
+                    && (line.starts_with("m=")
+                        || line.starts_with("a=sctp")
+                        || line.starts_with("a=max-message-size")
+                        || line.starts_with("a=setup"))
+                    && seen.len() < 6
+                {
+                    seen.push(line.chars().take(40).collect::<String>());
+                }
+            }
+            olc_net::info!("vkcalls: the offer's data section: {}", seen.join(" | "));
+        }
         let native_answer = accept(peer, given).map_err(NegotiateError::Remote)?;
         peer.remote_described(given);
         let known = section_mids(given);
