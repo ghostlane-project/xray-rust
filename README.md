@@ -52,21 +52,19 @@ kept in [`docs/`](docs) with our additions: [status](docs/status.md),
 
 ## What Ghostlane adds
 
-| Where | What |
-| --- | --- |
-| [`olc/`](olc) | The olcRTC client in Rust, ported from the Go engine |
-| [`crates/ghostlane-core`](crates/ghostlane-core) | The one library the apps link, with both engines |
-| [`crates/ghostlane-runtime`](crates/ghostlane-runtime) | The runtime, counting allocator and byte budget they share |
-| [`crates/xray-ffi`](crates/xray-ffi) | A [network reset](docs/ffi.md#network-reset) and a [log callback](docs/ffi.md#runtime-log-abi-119) in the C ABI |
-| `crates/xray-core-rs`, `xray-proxy`, `xray-config` | hev-socks5's [`FWD_UDP`](docs/xray-core-differences.md#socks-inbound-fwd_udp-hev-socks5), a [DNS forward rule](docs/config-compatibility.md#dns-outbound), a runtime log that follows the config |
-| `crates/xray-transport`, [`vendor/`](vendor) | One byte budget for the payload held in flight, HTTP/2 receive credit inside it |
-| [`ghostlane-guards.yml`](.github/workflows/ghostlane-guards.yml) | Memory guards: size lints and release-profile size tests |
+- [`olc/`](olc): the olcRTC client in Rust, ported from the Go engine
+- [`crates/ghostlane-core`](crates/ghostlane-core): the one library the apps link, with both engines
+- [`crates/ghostlane-runtime`](crates/ghostlane-runtime): the runtime, counting allocator and byte budget they share
+- [`crates/xray-ffi`](crates/xray-ffi): a [network reset](docs/ffi.md#network-reset) and a [log callback](docs/ffi.md#runtime-log-abi-119) in the C ABI
+- `crates/xray-core-rs`, `xray-proxy`, `xray-config`: hev-socks5's [`FWD_UDP`](docs/xray-core-differences.md#socks-inbound-fwd_udp-hev-socks5), a [DNS forward rule](docs/config-compatibility.md#dns-outbound), a runtime log that follows the config
+- `crates/xray-transport`, [`vendor/`](vendor): one byte budget for the payload held in flight, HTTP/2 receive credit inside it
+- [`ghostlane-guards.yml`](.github/workflows/ghostlane-guards.yml): memory guards (size lints and release-profile size tests)
 
 Inside `olc/`: the client and its SOCKS5 front, WebRTC on str0m, the wire and
 mux crates, one crate per meeting service, the apps' API (`olc-ffi`), patched
 dependencies (`olc/vendor`) and an interop suite that runs this client against
 the Go engine at a pinned commit (`olc/interop`). The changes to the proxy core
-in the table are described under `Unreleased` in the [changelog](CHANGELOG.md).
+in this list are described under `Unreleased` in the [changelog](CHANGELOG.md).
 
 ## Branches
 
@@ -78,15 +76,13 @@ in the table are described under `Unreleased` in the [changelog](CHANGELOG.md).
 
 ## Layout
 
-```text
-crates/           xray-* (the proxy core), ghostlane-core, ghostlane-runtime
-olc/              the olcRTC client, its vendored crates, its interop suite
-platform/         upstream's Swift and Kotlin adapters and sample apps
-vendor/           patched third-party crates
-tests/  fuzz/     shared fixtures, cargo-fuzz targets
-tools/  scripts/  Go oracles; build, interop, benchmark and release checks
-docs/   website/  documentation, upstream's website source
-```
+- [`crates/`](crates): `xray-*` (the proxy core), `ghostlane-core`, `ghostlane-runtime`
+- [`olc/`](olc): the olcRTC client, its vendored crates, its interop suite
+- [`platform/`](platform): upstream's Swift and Kotlin adapters and sample apps
+- [`vendor/`](vendor): patched third-party crates
+- [`tests/`](tests), [`fuzz/`](fuzz): shared fixtures, cargo-fuzz targets
+- [`tools/`](tools), [`scripts/`](scripts): Go oracles; build, interop, benchmark and release checks
+- [`docs/`](docs), [`website/`](website): documentation, upstream's website source
 
 ## Building and testing
 
