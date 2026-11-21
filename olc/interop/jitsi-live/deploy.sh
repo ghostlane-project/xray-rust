@@ -51,8 +51,9 @@ usage="usage: deploy.sh up <dir> | bosh-only <dir> | first <dir> | bosh <dir> ru
 what=${1:?$usage}
 dir=${2:?$usage}
 
-[ "${GITHUB_ACTIONS:-}" = true ] && [ -n "${RUNNER_TEMP:-}" ] ||
+if [ "${GITHUB_ACTIONS:-}" != true ] || [ -z "${RUNNER_TEMP:-}" ]; then
 	die "this starts containers and edits /etc/hosts: a GitHub-hosted runner's job only"
+fi
 
 compose() {
 	docker compose --project-directory "$dir/djm" -p "$PROJECT" "$@"
@@ -143,7 +144,9 @@ up() {
 	setting LOG_LEVEL debug
 
 	# Every host directory a container mounts, made before Docker makes it
-	# root's: the containers run as an unprivileged user.
+	# root's: the containers run as an unprivileged user. (The pattern is the
+	# compose file's own ${CONFIG}, to the letter.)
+	# shellcheck disable=SC2016
 	grep -o '\${CONFIG}/[^:]*' "$dir/djm/docker-compose.yml" | sort -u | while read -r path; do
 		mkdir -p "$dir/config/${path#\$\{CONFIG\}/}"
 	done
@@ -287,7 +290,9 @@ collect() {
 	done
 	front /config.js >"$out/config.js" 2>&1 || true
 	for f in jicofo/jicofo.conf jvb/jvb.conf prosody/config/prosody.cfg.lua prosody/config/conf.d/jitsi-meet.cfg.lua; do
-		[ -f "$dir/config/$f" ] && cp "$dir/config/$f" "$out/$(basename "$f")" 2>/dev/null || true
+		if [ -f "$dir/config/$f" ]; then
+			cp "$dir/config/$f" "$out/$(basename "$f")" 2>/dev/null || true
+		fi
 	done
 	grep -v -i 'PASSWORD\|SECRET\|TOKEN' "$dir/djm/.env" | grep -v '^#' | grep -v '^$' >"$out/settings.env" || true
 	# The generated passwords, and a SASL PLAIN answer that carries one.
