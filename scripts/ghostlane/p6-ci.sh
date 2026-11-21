@@ -66,18 +66,30 @@ windows-report)
         status=0
         cargo "${args[@]}" > "$out" 2> "$err" || status=$?
         echo "cargo check exit status ($feat): $status"
-        n=$(python3 -I - "$out" "$err" "$feat" "$status" "$summary" <<'PY'
+        pyf="$tmp/count.py"
+        cat > "$pyf" <<'PY'
 import json, re, sys, collections
 out, err, feat, status, summary = sys.argv[1:6]
 counts = collections.Counter()
+built = set()
 codes = collections.defaultdict(collections.Counter)
 def name(pid):
-    m = re.search(r"#([A-Za-z0-9_-]+)@", pid) or re.match(r"([A-Za-z0-9_-]+) ", pid)
+    # "registry+https://...#name@1.0", "path+file:///dir/name#1.0" or "name 1.0 (path+...)"
+    m = re.search(r"#([A-Za-z0-9_-]+)@", pid)
+    if m:
+        return m.group(1)
+    m = re.search(r"/([A-Za-z0-9_-]+)#[0-9]", pid)
+    if m:
+        return m.group(1)
+    m = re.match(r"([A-Za-z0-9_-]+) ", pid)
     return m.group(1) if m else pid
 for line in open(out, errors="replace"):
     try:
         d = json.loads(line)
     except ValueError:
+        continue
+    if d.get("reason") == "compiler-artifact":
+        built.add(name(d.get("package_id", "?")))
         continue
     if d.get("reason") != "compiler-message":
         continue
@@ -104,13 +116,18 @@ if not counts:
 if scripts:
     lines.append("")
     lines.append("Build scripts that failed: " + ", ".join(scripts))
+asked = sys.argv[6].split()
+notdone = [c for c in asked if c not in built and c not in counts]
+if notdone:
+    lines.append("")
+    lines.append("Not reached (a crate they need failed first, so their own errors are not counted yet): " + ", ".join(notdone))
 lines.append("")
 text = "\n".join(lines)
 print(text, file=sys.stderr)
 open(summary, "a").write(text + "\n")
 print(sum(counts.values()) + len(scripts))
 PY
-)
+        n=$(python3 -I "$pyf" "$out" "$err" "$feat" "$status" "$summary" "ghostlane-core $OLC_CRATES")
         total=$((total + n))
     done
     echo "windows-report: $total problems in total"

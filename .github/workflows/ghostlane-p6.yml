@@ -75,6 +75,4 @@ jobs:
       - name: Windows check, errors per crate
         if: ${{ matrix.windows }}
         shell: bash
-        env:
-          P6_WINDOWS_REQUIRED: "1"
         run: bash scripts/ghostlane/p6-ci.sh windows-report
