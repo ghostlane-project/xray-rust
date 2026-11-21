@@ -22,6 +22,7 @@ members = [
     "olc/olc-net",
     "olc/olc-rtc",
     "olc/olc-salutejazz",
+    "olc/olc-jitsi",
     "olc/olc-mtslink",
     "olc/olc-vkcalls",
     "olc/olc-client",

@@ -1,0 +1,355 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/jitsi/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/jitsi/configjs.go (libraryDomain, wholeLines, statusError, mediaType, shouldRetryWithFallback, fallbackConfig)"
+ ],
+ "cases": {
+  "library_domain": [
+   {
+    "name": "jitsi-meet config",
+    "body": "var config = {\n    // Connection\n    //\n\n    hosts: {\n        // XMPP domain.\n        domain: 'jitsi-meet.example.com',\n\n        muc: 'conference.' + subdomain + 'jitsi-meet.example.com',\n    },\n\n    bosh: 'https://jitsi-meet.example.com/' + subdir + 'http-bind',\n};\n",
+    "want": "jitsi-meet.example.com"
+   },
+   {
+    "name": "docker-jitsi-meet config",
+    "body": "var config = {};\nconfig.hosts = {};\nconfig.hosts.domain = 'meet.jitsi';\nvar subdomain = '';\nconfig.hosts.muc = 'muc.' + subdomain + 'meet.jitsi';\n",
+    "want": "meet.jitsi"
+   },
+   {
+    "name": "double quotes and a trailing comment",
+    "body": "config.hosts.domain = \"meet.example.org\"; // XMPP\n",
+    "want": "meet.example.org"
+   },
+   {
+    "name": "concatenated literals",
+    "body": "var config = {\n    hosts: {\n        domain: 'meet.' + subdomain + 'example.org',\n    },\n};\n",
+    "want": "meet.example.org"
+   },
+   {
+    "name": "hosts opened on the config line",
+    "body": "var config = { hosts: {\n        domain: 'xmpp.custom.example',\n    },\n};\n",
+    "want": "xmpp.custom.example"
+   },
+   {
+    "name": "hosts brace on a line of its own",
+    "body": "var config = {\n    hosts:\n    {\n        domain: 'xmpp.custom.example',\n    },\n};\n",
+    "want": "xmpp.custom.example"
+   },
+   {
+    "name": "the first domain key wins",
+    "body": "var other = {\n    domain: 'other.example',\n};\nvar config = {\n    hosts: {\n        domain: 'meet.example.org',\n    },\n};\n",
+    "want": "other.example"
+   },
+   {
+    "name": "a key without a literal gives way",
+    "body": "config.hosts.domain = someVariable;\nconfig.hosts.domain = 'meet.example.org';\n",
+    "want": "meet.example.org"
+   },
+   {
+    "name": "a semicolon in the literal",
+    "body": "config.hosts.domain = 'meet;example.org';\n",
+    "want": ""
+   },
+   {
+    "name": "a comma in the literal",
+    "body": "config.hosts.domain = 'meet,example.org';\n",
+    "want": ""
+   },
+   {
+    "name": "html error page",
+    "body": "\u003chtml\u003e\u003cbody\u003eAttention Required!\u003c/body\u003e\u003c/html\u003e",
+    "want": ""
+   },
+   {
+    "name": "file cut before hosts",
+    "body": "var config = {\n    // Connection\n",
+    "want": ""
+   },
+   {
+    "name": "commented out",
+    "body": "var config = {\n    hosts: {\n        // domain: 'x.example',\n    },\n};\n",
+    "want": ""
+   },
+   {
+    "name": "only anonymousdomain",
+    "body": "var config = {\n    hosts: {\n        anonymousdomain: 'guest.example',\n    },\n};\n",
+    "want": ""
+   },
+   {
+    "name": "longer key",
+    "body": "config.hosts.domainAlias = 'x.example';\n",
+    "want": ""
+   },
+   {
+    "name": "not a string",
+    "body": "config.hosts.domain = someVariable;\n",
+    "want": ""
+   },
+   {
+    "name": "a literal left open",
+    "body": "config.hosts.domain = 'meet.' + 'exam",
+    "want": "meet."
+   },
+   {
+    "name": "a // inside a literal",
+    "body": "config.hosts.domain = 'http://x';\n",
+    "want": "http://x"
+   },
+   {
+    "name": "crlf lines",
+    "body": "config.hosts.domain = 'crlf.example';\r\nconfig.hosts.muc = 'muc.crlf.example';\r\n",
+    "want": "crlf.example"
+   },
+   {
+    "name": "a tab after the key",
+    "body": "domain\t= 'tab.example';\n",
+    "want": "tab.example"
+   },
+   {
+    "name": "a space after the key",
+    "body": "domain 'space.example'\n",
+    "want": "space.example"
+   },
+   {
+    "name": "no separator",
+    "body": "domain'x.example'\n",
+    "want": ""
+   },
+   {
+    "name": "config. prefix only",
+    "body": "config.domain = 'plain.example';\n",
+    "want": "plain.example"
+   },
+   {
+    "name": "config.hosts. twice",
+    "body": "config.hosts.config.hosts.domain = 'x.example';\n",
+    "want": ""
+   },
+   {
+    "name": "mixed quotes",
+    "body": "domain: 'a\"b' + \"c'd\"\n",
+    "want": "a\"bc'd"
+   },
+   {
+    "name": "empty literal then a literal",
+    "body": "domain: '' + 'x.example'\n",
+    "want": "x.example"
+   },
+   {
+    "name": "indented",
+    "body": "        \t  domain: 'indented.example',\n",
+    "want": "indented.example"
+   },
+   {
+    "name": "two keys on a line",
+    "body": "domain: 'one.example', muc: 'two.example'\n",
+    "want": "one.example"
+   },
+   {
+    "name": "unicode",
+    "body": "domain: 'м.example'\n",
+    "want": "м.example"
+   },
+   {
+    "name": "empty",
+    "body": "",
+    "want": ""
+   }
+  ],
+  "whole_lines": [
+   {
+    "name": "",
+    "body": "a\nb\nc",
+    "want": "a\nb\n"
+   },
+   {
+    "name": "",
+    "body": "abc",
+    "want": ""
+   },
+   {
+    "name": "",
+    "body": "a\n",
+    "want": "a\n"
+   },
+   {
+    "name": "",
+    "body": "",
+    "want": ""
+   },
+   {
+    "name": "",
+    "body": "\n",
+    "want": "\n"
+   },
+   {
+    "name": "",
+    "body": "a\n\nb",
+    "want": "a\n\n"
+   }
+  ],
+  "status": [
+   {
+    "code": 200,
+    "media_type": "text/html",
+    "final": false,
+    "text": "HTTP 200 text/html"
+   },
+   {
+    "code": 301,
+    "media_type": "text/html",
+    "final": true,
+    "text": "HTTP 301 text/html"
+   },
+   {
+    "code": 302,
+    "media_type": "x",
+    "final": true,
+    "text": "HTTP 302 x"
+   },
+   {
+    "code": 307,
+    "media_type": "x",
+    "final": true,
+    "text": "HTTP 307 x"
+   },
+   {
+    "code": 399,
+    "media_type": "x",
+    "final": true,
+    "text": "HTTP 399 x"
+   },
+   {
+    "code": 400,
+    "media_type": "x",
+    "final": false,
+    "text": "HTTP 400 x"
+   },
+   {
+    "code": 403,
+    "media_type": "text/html",
+    "final": false,
+    "text": "HTTP 403 text/html"
+   },
+   {
+    "code": 404,
+    "media_type": "x",
+    "final": true,
+    "text": "HTTP 404 x"
+   },
+   {
+    "code": 410,
+    "media_type": "x",
+    "final": true,
+    "text": "HTTP 410 x"
+   },
+   {
+    "code": 429,
+    "media_type": "x",
+    "final": false,
+    "text": "HTTP 429 x"
+   },
+   {
+    "code": 500,
+    "media_type": "x",
+    "final": false,
+    "text": "HTTP 500 x"
+   },
+   {
+    "code": 502,
+    "media_type": "x",
+    "final": false,
+    "text": "HTTP 502 x"
+   },
+   {
+    "code": 503,
+    "media_type": "no content-type",
+    "final": false,
+    "text": "HTTP 503 no content-type"
+   }
+  ],
+  "media_type": [
+   {
+    "header": "text/html; charset=utf-8",
+    "set": true,
+    "want": "text/html"
+   },
+   {
+    "header": "  ; x",
+    "set": true,
+    "want": "no content-type"
+   },
+   {
+    "header": "",
+    "set": false,
+    "want": "no content-type"
+   },
+   {
+    "header": "application/javascript",
+    "set": true,
+    "want": "application/javascript"
+   },
+   {
+    "header": " text/plain ;a=b",
+    "set": true,
+    "want": "text/plain"
+   },
+   {
+    "header": ";",
+    "set": true,
+    "want": "no content-type"
+   },
+   {
+    "header": "",
+    "set": true,
+    "want": "no content-type"
+   }
+  ],
+  "retry": [
+   {
+    "err": "xmpp dial: initial features: server error: \u003cstream:error xmlns='jabber:client'\u003e\u003chost-unknown xmlns='urn:ietf:params:xml:ns:xmpp-streams'/\u003e\u003ctext\u003eThis server does not serve meet.example.com\u003c/text\u003e\u003c/stream:error\u003e",
+    "has_err": true,
+    "failed": true,
+    "want": true
+   },
+   {
+    "err": "xmpp dial: initial features: server error: \u003cstream:error xmlns='jabber:client'\u003e\u003chost-unknown xmlns='urn:ietf:params:xml:ns:xmpp-streams'/\u003e\u003ctext\u003eThis server does not serve meet.example.com\u003c/text\u003e\u003c/stream:error\u003e",
+    "has_err": true,
+    "failed": false,
+    "want": false
+   },
+   {
+    "err": "xmpp dial: failed to WebSocket dial: expected handshake response status code 101 but got 502",
+    "has_err": true,
+    "failed": true,
+    "want": false
+   },
+   {
+    "err": "xmpp dial: failed to WebSocket dial: expected handshake response status code 101 but got 502",
+    "has_err": true,
+    "failed": false,
+    "want": false
+   },
+   {
+    "err": "dial tcp: lookup host-unknown.example: no such host",
+    "has_err": true,
+    "failed": true,
+    "want": false
+   },
+   {
+    "err": "",
+    "has_err": false,
+    "failed": true,
+    "want": false
+   },
+   {
+    "err": "\u003chost-unknown",
+    "has_err": true,
+    "failed": true,
+    "want": true
+   }
+  ],
+  "fallback_config": "var config = {};\nconfig.hosts = {};\nconfig.hosts.domain = 'meet.jitsi';\nconfig.hosts.muc = 'muc.meet.jitsi';\n"
+ }
+}

@@ -48,11 +48,64 @@ type zzReconnectDuration struct {
 	Rounded string `json:"rounded"`
 }
 
+// zzReconnectFailureRun is one run of the count-failures mode's counter: before
+// op i the clock moves on by GapsMS[i], the op is "count" (failureCount),
+// "fail" (recordFailure) or "reset" (resetFailures), and Counts[i] is what the
+// counter holds after it.
+type zzReconnectFailureRun struct {
+	Name   string   `json:"name"`
+	Ops    []string `json:"ops"`
+	GapsMS []int64  `json:"gaps_ms"`
+	Counts []int    `json:"counts"`
+}
+
 type zzReconnectCases struct {
-	Constants zzReconnectConstants  `json:"constants"`
-	Backoff   []zzReconnectBackoff  `json:"backoff"`
-	Counter   []zzReconnectCounter  `json:"counter"`
-	Durations []zzReconnectDuration `json:"durations"`
+	Constants zzReconnectConstants    `json:"constants"`
+	Backoff   []zzReconnectBackoff    `json:"backoff"`
+	Counter   []zzReconnectCounter    `json:"counter"`
+	Failures  []zzReconnectFailureRun `json:"failures"`
+	Durations []zzReconnectDuration   `json:"durations"`
+}
+
+func zzReconnectFailureCases() []zzReconnectFailureRun {
+	window := reconnectFailureWindow.Milliseconds()
+	in := []struct {
+		name string
+		ops  []string
+		gaps []int64
+	}{
+		{"nothing yet", []string{"count"}, []int64{0}},
+		{"failures one after another", []string{"fail", "fail", "fail", "count"}, []int64{0, 0, 0, 0}},
+		{"the window runs from the first failure", []string{"fail", "fail", "count", "count", "count"}, []int64{0, window - 1000, 0, 999, 2}},
+		{"a count at exactly the window keeps it", []string{"fail", "count"}, []int64{0, window}},
+		{"a count one millisecond past it starts again", []string{"fail", "fail", "count", "fail", "count"}, []int64{0, 1000, window, 0, 0}},
+		{"a failure after the window restarts the run", []string{"fail", "count", "fail", "count"}, []int64{0, window + 1, 5000, 0}},
+		{"a reset empties the count and the window", []string{"fail", "fail", "reset", "count", "fail", "count"}, []int64{0, 1000, 0, 0, 0, window - 1}},
+		{"six failures", []string{"fail", "fail", "fail", "fail", "fail", "fail", "count"}, []int64{0, 0, 0, 0, 0, 0, 0}},
+		{"a quiet stretch of several windows", []string{"fail", "count", "fail", "count"}, []int64{0, 3 * window, 0, 0}},
+	}
+	out := make([]zzReconnectFailureRun, 0, len(in))
+	for _, c := range in {
+		now := time.Date(2026, time.November, 15, 12, 0, 0, 0, time.UTC)
+		r := NewReconnector(ReconnectorConfig{MaxAttempts: 10, CountFailures: true})
+		r.now = func() time.Time { return now }
+		counts := make([]int, 0, len(c.ops))
+		for i, op := range c.ops {
+			now = now.Add(time.Duration(c.gaps[i]) * time.Millisecond)
+			switch op {
+			case "count":
+				counts = append(counts, r.failureCount())
+			case "fail":
+				r.recordFailure()
+				counts = append(counts, r.count)
+			case "reset":
+				r.resetFailures()
+				counts = append(counts, r.count)
+			}
+		}
+		out = append(out, zzReconnectFailureRun{Name: c.name, Ops: c.ops, GapsMS: c.gaps, Counts: counts})
+	}
+	return out
 }
 
 func zzReconnectCounterCases() []zzReconnectCounter {
@@ -112,6 +165,7 @@ func TestZZVectors(t *testing.T) {
 			NoRouteMaxWaitMS:    noRouteMaxWait.Milliseconds(),
 		},
 		Counter:   zzReconnectCounterCases(),
+		Failures:  zzReconnectFailureCases(),
 		Durations: zzReconnectDurations(),
 	}
 	for count := 0; count <= 40; count++ {
@@ -122,6 +176,7 @@ func TestZZVectors(t *testing.T) {
 			"internal/engine/reconnect.go:12-24 (the constants)",
 			"internal/engine/reconnect.go:382-388 (reconnectBackoff)",
 			"internal/engine/reconnect.go:270-280 (nextRequestCount)",
+			"internal/engine/reconnect.go:282-307 (failureCount, recordFailure, resetFailures)",
 			"internal/engine/reconnect.go:254-267 (the durations awaitRoute logs)",
 		}, cases)
 }

@@ -134,9 +134,86 @@ pub fn budget_with(bytes: ByteBudgetSettings) -> Vec<Row> {
     });
     rows.extend(mtslink_rows());
     rows.extend(vkcalls_rows());
+    rows.extend(jitsi_rows());
     #[cfg(feature = "boring")]
     rows.extend(turns_rows());
     rows
+}
+
+/// Jitsi's rows (plan section 8): what its session holds. No reader per SSRC
+/// exists in a datachannel run, and no queue of raw stanzas (decision D4).
+fn jitsi_rows() -> [Row; 9] {
+    use olc_jitsi::bridge::{BACKLOG_HIGH_WATER, SEND_QUEUE};
+    use olc_jitsi::frame::MAX_MESSAGE;
+    use olc_jitsi::join::{FETCH_MAX, WS_READ_LIMIT};
+    use olc_jitsi::session::SCTP_BUFFERED;
+    use olc_jitsi::xmpp::bosh::{INBOX_BYTES, REPLY_LIMIT};
+    use olc_jitsi::xmpp::conn::{MAX_IQ_WAITERS, MAX_NICK, MAX_OCCUPANTS};
+    [
+        Row {
+            layer: "Jitsi inbound stanza (one at a time) and the kept session-initiate",
+            cap: 2 * WS_READ_LIMIT,
+            burst: 24 << 10,
+            formula: "WS_READ_LIMIT (1 MiB, Go's read limit) for the stanza being read, parsed in \
+                      place, and the same for the one session-initiate kept parsed (its parts are \
+                      capped, a few KiB in a two-party room); no queue of stanzas",
+        },
+        Row {
+            layer: "Jitsi BOSH answers and unread stanzas (only when the WebSocket did not dial)",
+            cap: 2 * REPLY_LIMIT + INBOX_BYTES,
+            burst: 24 << 10,
+            formula: "REPLY_LIMIT (1 MiB, the WebSocket's limit for a stanza) for the answer of \
+                      each of the two requests that can be open, the poll and one stanza's, and \
+                      INBOX_BYTES (1 MiB) of stanzas taken out of answers and not yet read, \
+                      those that wait for an earlier request's answer among them, past which the \
+                      transport ends; an answer in a two-party room is a few KiB",
+        },
+        Row {
+            layer: "Jitsi config.js (only while it is fetched)",
+            cap: FETCH_MAX,
+            burst: olc_jitsi::configjs::MAX_BODY,
+            formula: "the HTTP client's body bound (1 MiB), cut to the library's 64 KiB window",
+        },
+        Row {
+            layer: "Jitsi send queue",
+            cap: SEND_QUEUE * MAX_MESSAGE,
+            burst: SEND_QUEUE * MAX_MESSAGE / 4,
+            formula: "SEND_QUEUE (32) x MAX_MESSAGE (16 KiB); a send waits when it is full",
+        },
+        Row {
+            layer: "Jitsi one outbound message as JSON text",
+            cap: MAX_MESSAGE * 4 / 3 + 128,
+            burst: MAX_MESSAGE * 4 / 3 + 128,
+            formula: "base64 of at most MAX_MESSAGE and the wrapper; transient",
+        },
+        Row {
+            layer: "Jitsi data channel send backlog",
+            cap: SCTP_BUFFERED,
+            burst: BACKLOG_HIGH_WATER / 2,
+            formula: "SCTP_BUFFERED: BACKLOG_HIGH_WATER (256 KiB, the sender waits above it) and \
+                      one message",
+        },
+        Row {
+            layer: "Jitsi inbound bridge messages",
+            cap: olc_rtc::peer::INBOUND_BYTES,
+            burst: 64 << 10,
+            formula: "olc-rtc's INBOUND_BYTES: 256 KiB of data events, back-pressure into SCTP",
+        },
+        Row {
+            layer: "Jitsi occupants and IQ waiters",
+            cap: MAX_OCCUPANTS * MAX_NICK + MAX_IQ_WAITERS * 2048,
+            burst: 1 << 10,
+            formula: "MAX_OCCUPANTS (256) nicks of at most MAX_NICK (64) bytes, a longer nick \
+                      is not kept; MAX_IQ_WAITERS (16) replies",
+        },
+        Row {
+            layer: "Jitsi permessage-deflate state",
+            cap: 400 << 10,
+            burst: 400 << 10,
+            formula: "derived, not measured: miniz_oxide's compressor (made at the first message \
+                      of 128 bytes or more) and the 32 KiB inflate window",
+        },
+    ]
 }
 
 /// MTS Link's rows: what its session holds per join ([`olc_mtslink::session`]).
@@ -595,6 +672,42 @@ mod tests {
 
     fn phone() -> ByteBudgetSettings {
         ByteBudgetSettings::for_class(ghostlane_runtime::MemoryClass::Constrained)
+    }
+
+    /// Plan section 8, the BOSH row: an answer is read up to the limit of a
+    /// WebSocket stanza; two requests are open at most (the poll and one
+    /// stanza), and what was taken out of answers and not yet read is bounded
+    /// too.
+    #[test]
+    fn the_jitsi_bosh_row_follows_the_constants() {
+        use olc_jitsi::xmpp::bosh::{INBOX_BYTES, REPLY_LIMIT};
+        let rows = budget_with(phone());
+        let bosh = rows
+            .iter()
+            .find(|r| r.layer.starts_with("Jitsi BOSH"))
+            .expect("a row for BOSH");
+        assert_eq!(REPLY_LIMIT, olc_jitsi::join::WS_READ_LIMIT);
+        assert_eq!(REPLY_LIMIT, 1 << 20);
+        assert_eq!(INBOX_BYTES, 1 << 20);
+        assert_eq!(bosh.cap, 2 * REPLY_LIMIT + INBOX_BYTES);
+        assert!(bosh.burst <= 64 << 10, "{}", bosh.burst);
+    }
+
+    /// Plan section 8, the occupants: 256 nicks of at most 64 bytes, 16 KiB.
+    /// olc-jitsi holds a nick to that length (its test
+    /// `a_nick_longer_than_the_bound_is_not_kept`); the row is counted on
+    /// the same constant, not on a number of its own.
+    #[test]
+    fn the_jitsi_occupants_row_follows_the_constants() {
+        use olc_jitsi::xmpp::conn::{MAX_IQ_WAITERS, MAX_NICK, MAX_OCCUPANTS};
+        let rows = budget_with(phone());
+        let row = rows
+            .iter()
+            .find(|r| r.layer.starts_with("Jitsi occupants"))
+            .expect("a row for the occupants");
+        assert_eq!(MAX_OCCUPANTS * MAX_NICK, 16 << 10);
+        assert_eq!(row.cap, MAX_OCCUPANTS * MAX_NICK + MAX_IQ_WAITERS * 2048);
+        assert!(row.formula.contains("MAX_NICK (64)"), "{}", row.formula);
     }
 
     #[test]

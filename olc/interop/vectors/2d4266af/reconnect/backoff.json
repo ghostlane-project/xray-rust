@@ -5,6 +5,7 @@
   "internal/engine/reconnect.go:12-24 (the constants)",
   "internal/engine/reconnect.go:382-388 (reconnectBackoff)",
   "internal/engine/reconnect.go:270-280 (nextRequestCount)",
+  "internal/engine/reconnect.go:282-307 (failureCount, recordFailure, resetFailures)",
   "internal/engine/reconnect.go:254-267 (the durations awaitRoute logs)"
  ],
  "cases": {
@@ -301,6 +302,203 @@
     "counts": [
      1,
      2
+    ]
+   }
+  ],
+  "failures": [
+   {
+    "name": "nothing yet",
+    "ops": [
+     "count"
+    ],
+    "gaps_ms": [
+     0
+    ],
+    "counts": [
+     0
+    ]
+   },
+   {
+    "name": "failures one after another",
+    "ops": [
+     "fail",
+     "fail",
+     "fail",
+     "count"
+    ],
+    "gaps_ms": [
+     0,
+     0,
+     0,
+     0
+    ],
+    "counts": [
+     1,
+     2,
+     3,
+     3
+    ]
+   },
+   {
+    "name": "the window runs from the first failure",
+    "ops": [
+     "fail",
+     "fail",
+     "count",
+     "count",
+     "count"
+    ],
+    "gaps_ms": [
+     0,
+     299000,
+     0,
+     999,
+     2
+    ],
+    "counts": [
+     1,
+     2,
+     2,
+     2,
+     0
+    ]
+   },
+   {
+    "name": "a count at exactly the window keeps it",
+    "ops": [
+     "fail",
+     "count"
+    ],
+    "gaps_ms": [
+     0,
+     300000
+    ],
+    "counts": [
+     1,
+     1
+    ]
+   },
+   {
+    "name": "a count one millisecond past it starts again",
+    "ops": [
+     "fail",
+     "fail",
+     "count",
+     "fail",
+     "count"
+    ],
+    "gaps_ms": [
+     0,
+     1000,
+     300000,
+     0,
+     0
+    ],
+    "counts": [
+     1,
+     2,
+     0,
+     1,
+     1
+    ]
+   },
+   {
+    "name": "a failure after the window restarts the run",
+    "ops": [
+     "fail",
+     "count",
+     "fail",
+     "count"
+    ],
+    "gaps_ms": [
+     0,
+     300001,
+     5000,
+     0
+    ],
+    "counts": [
+     1,
+     0,
+     1,
+     1
+    ]
+   },
+   {
+    "name": "a reset empties the count and the window",
+    "ops": [
+     "fail",
+     "fail",
+     "reset",
+     "count",
+     "fail",
+     "count"
+    ],
+    "gaps_ms": [
+     0,
+     1000,
+     0,
+     0,
+     0,
+     299999
+    ],
+    "counts": [
+     1,
+     2,
+     0,
+     0,
+     1,
+     1
+    ]
+   },
+   {
+    "name": "six failures",
+    "ops": [
+     "fail",
+     "fail",
+     "fail",
+     "fail",
+     "fail",
+     "fail",
+     "count"
+    ],
+    "gaps_ms": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "counts": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     6
+    ]
+   },
+   {
+    "name": "a quiet stretch of several windows",
+    "ops": [
+     "fail",
+     "count",
+     "fail",
+     "count"
+    ],
+    "gaps_ms": [
+     0,
+     900000,
+     0,
+     0
+    ],
+    "counts": [
+     1,
+     0,
+     1,
+     1
     ]
    }
   ],

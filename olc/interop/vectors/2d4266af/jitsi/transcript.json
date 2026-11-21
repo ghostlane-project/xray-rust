@@ -1,0 +1,28 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/jitsifake/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/jitsi/jitsi.go",
+  "j/internal/xmpp/conn.go"
+ ],
+ "cases": {
+  "room": "secret-room",
+  "user": "0123456789abcdef",
+  "nick": "01234567",
+  "name": "olcrtc",
+  "login": [
+   "\u003copen to=\"meet.jitsi\" version=\"1.0\" xmlns=\"urn:ietf:params:xml:ns:xmpp-framing\"/\u003e",
+   "\u003cauth mechanism=\"ANONYMOUS\" xmlns=\"urn:ietf:params:xml:ns:xmpp-sasl\"/\u003e",
+   "\u003copen to=\"meet.jitsi\" version=\"1.0\" xmlns=\"urn:ietf:params:xml:ns:xmpp-framing\"/\u003e",
+   "\u003ciq type=\"set\" id=\"bind_1\" xmlns=\"jabber:client\"\u003e\u003cbind xmlns=\"urn:ietf:params:xml:ns:xmpp-bind\"/\u003e\u003c/iq\u003e",
+   "\u003ciq type=\"set\" id=\"sess_1\" xmlns=\"jabber:client\"\u003e\u003csession xmlns=\"urn:ietf:params:xml:ns:xmpp-session\"/\u003e\u003c/iq\u003e",
+   "\u003cenable resume=\"true\" xmlns=\"urn:xmpp:sm:3\"/\u003e",
+   "\u003ciq to=\"focus.meet.jitsi\" type=\"set\" id=\"focus_1\" xmlns=\"jabber:client\"\u003e\u003cconference room=\"secret-room@muc.meet.jitsi\" machine-uid=\"01234567\" xmlns=\"http://jitsi.org/protocol/focus\"\u003e\u003cproperty name=\"rtcstatsEnabled\" value=\"false\"/\u003e\u003cproperty name=\"visitors-version\" value=\"1\"/\u003e\u003c/conference\u003e\u003c/iq\u003e",
+   "\u003ciq type=\"get\" to=\"meet.jitsi\" id=\"disco_1\" xmlns=\"jabber:client\"\u003e\u003cservices xmlns=\"urn:xmpp:extdisco:2\"/\u003e\u003c/iq\u003e",
+   "\u003cpresence to=\"secret-room@muc.meet.jitsi/01234567\" xmlns=\"jabber:client\"\u003e\u003cx xmlns=\"http://jabber.org/protocol/muc\"/\u003e\u003cstats-id\u003eolc-j\u003c/stats-id\u003e\u003cc hash=\"sha-1\" node=\"https://jitsi.org/jitsi-meet\" ver=\"xUTPQ7C5wic8q6nOytcEI8dwRJI=\" xmlns=\"http://jabber.org/protocol/caps\"/\u003e\u003cSourceInfo\u003e{\"01234567-a0\":{\"muted\":true},\"01234567-v0\":{\"muted\":true}}\u003c/SourceInfo\u003e\u003cjitsi_participant_codecList\u003evp8,h264,av1,vp9\u003c/jitsi_participant_codecList\u003e\u003cnick xmlns=\"http://jabber.org/protocol/nick\"\u003eolcrtc\u003c/nick\u003e\u003c/presence\u003e",
+   "\u003ciq to=\"secret-room@muc.meet.jitsi\" type=\"get\" id=\"j-1\" xmlns=\"jabber:client\"\u003e\u003cquery xmlns=\"http://jabber.org/protocol/disco#info\"/\u003e\u003c/iq\u003e"
+  ],
+  "disco_reply": "\u003ciq to=\"secret-room@muc.meet.jitsi/focus\" id=\"disco-1\" type=\"result\" xmlns=\"jabber:client\"\u003e\u003cquery xmlns=\"http://jabber.org/protocol/disco#info\"\u003e\u003cfeature var=\"http://jabber.org/protocol/caps\"/\u003e\u003cfeature var=\"http://jitsi.org/json-encoded-sources\"/\u003e\u003cfeature var=\"http://jitsi.org/receive-multiple-video-streams\"/\u003e\u003cfeature var=\"http://jitsi.org/remb\"/\u003e\u003cfeature var=\"http://jitsi.org/source-name\"/\u003e\u003cfeature var=\"http://jitsi.org/start-muted-room-metadata\"/\u003e\u003cfeature var=\"http://jitsi.org/tcc\"/\u003e\u003cfeature var=\"http://jitsi.org/visitors-1\"/\u003e\u003cfeature var=\"urn:ietf:rfc:4588\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:1\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:apps:dtls:0\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:apps:rtp:1\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:apps:rtp:audio\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:apps:rtp:video\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:transports:dtls-sctp:1\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:transports:ice-udp:1\"/\u003e\u003c/query\u003e\u003c/iq\u003e",
+  "leave": "\u003cpresence to=\"secret-room@muc.meet.jitsi/01234567\" type=\"unavailable\" xmlns=\"jabber:client\"/\u003e"
+ }
+}
