@@ -156,6 +156,11 @@ pub const MAX_NICK: usize = 64;
 pub const MAX_IQ_WAITERS: usize = 16;
 /// How many stanzas the session's channel holds.
 pub const INCOMING_QUEUE: usize = 64;
+/// How long the transport's goodbye (the WebSocket's close frame, BOSH's
+/// terminate) may take where a close must not outlast its caller's own
+/// bound: after a join that failed, and for a connection nobody holds any
+/// more.
+pub const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 struct State {
@@ -181,10 +186,39 @@ struct Shared {
     events: mpsc::Sender<Incoming>,
 }
 
-/// A logged-in connection. Clones share it.
+/// What the handles of a connection share and its own tasks do not. The
+/// read loop and the keepalive hold the connection up by themselves, so a
+/// handle that is dropped unclosed (a join whose future was dropped after
+/// the login, a rejoin aborted between the old connection's leave and its
+/// close) would leave it logged in for the life of the process: the last
+/// handle to go closes it. Go has no such case, a goroutine is not dropped.
+struct Held(Arc<Shared>);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // Closed already (by `close`, by the transport, by the keepalive):
+        // nothing is left to do. Else the flag ends the read loop and the
+        // keepalive, and the transport goes with them.
+        if self.0.closed.send_replace(true) {
+            return;
+        }
+        // The goodbye is the transport's to say, and takes a task.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let sh = self.0.clone();
+        runtime.spawn(async move {
+            let _ = tokio::time::timeout(CLOSE_WAIT, sh.tx.close()).await;
+        });
+    }
+}
+
+/// A logged-in connection. Clones share it; when the last of them is dropped
+/// the connection is closed, if [`Conn::close`] did not close it before.
 #[derive(Clone)]
 pub struct Conn {
     sh: Arc<Shared>,
+    _held: Arc<Held>,
 }
 
 impl std::fmt::Debug for Conn {
@@ -288,7 +322,8 @@ impl Conn {
         if framing == Framing::WebSocket {
             tokio::spawn(keepalive(sh.clone()));
         }
-        Ok((Self { sh }, incoming))
+        let held = Arc::new(Held(sh.clone()));
+        Ok((Self { sh, _held: held }, incoming))
     }
 
     async fn login_steps<R: Rx>(
@@ -1384,6 +1419,53 @@ mod tests {
         );
         assert!(incoming.try_recv().is_ok());
         assert!(!conn.is_closed());
+    }
+
+    /// A connection is its handles': when the last of them is dropped
+    /// without a close (a join whose future was dropped after the login, a
+    /// rejoin aborted between the old connection's leave and its close) the
+    /// transport is closed, once, and the keepalive asks no more. Go has no
+    /// such case: a goroutine is not dropped. A clone keeps the connection.
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_nobody_holds_any_more_is_closed() {
+        let (conn, _inc, mut server) = up().await;
+        let second = conn.clone();
+        drop(conn);
+        settle().await;
+        assert_eq!(server.closes(), 0, "a clone still holds it");
+        assert!(!second.is_closed());
+        drop(second);
+        settle().await;
+        assert_eq!(server.closes(), 1, "the transport was not closed");
+        // Left open, it would ask at SM_INTERVAL.
+        tokio::time::sleep(SM_INTERVAL + SM_ACK_WAIT + S(5)).await;
+        settle().await;
+        assert!(
+            server.drain().is_empty(),
+            "a connection nobody holds still asks <r/>"
+        );
+        assert_eq!(server.closes(), 1);
+    }
+
+    /// A connection that was closed is not closed again when its handles go,
+    /// and one the server hung up on has nothing left to close.
+    #[tokio::test(start_paused = true)]
+    async fn the_last_handle_of_a_closed_connection_closes_nothing_more() {
+        let (conn, _inc, server) = up().await;
+        let second = conn.clone();
+        conn.close().await;
+        assert_eq!(server.closes(), 1);
+        drop(conn);
+        drop(second);
+        settle().await;
+        assert_eq!(server.closes(), 1);
+
+        let (conn, _inc, mut server) = up().await;
+        server.hang_up();
+        conn.closed().await;
+        drop(conn);
+        settle().await;
+        assert_eq!(server.closes(), 0);
     }
 
     /// `TestStress_ReadLoopCloseRace`: the server hanging up closes the

@@ -25,9 +25,11 @@ use crate::configjs::{
     JitsiConfig, StatusError, ATTEMPTS, ATTEMPT_TIMEOUT, BROWSER_USER_AGENT, BUDGET,
     FALLBACK_CONFIG, FALLBACK_XMPP_DOMAIN, GRACE, MAX_BODY, PAUSE,
 };
-use crate::ice::{convert_ice, IceServer};
+use crate::ice::{convert_ice, IceServer, Service};
 use crate::xmpp::bosh;
-use crate::xmpp::conn::{BoxFut, Conn, ConnConfig, ConnError, FocusInfo, Incoming, Rx, Tx};
+use crate::xmpp::conn::{
+    BoxFut, Conn, ConnConfig, ConnError, FocusInfo, Incoming, Rx, Tx, CLOSE_WAIT,
+};
 
 /// The WebSocket's read limit (`SetReadLimit(1 << 20)`).
 pub const WS_READ_LIMIT: usize = 1 << 20;
@@ -290,7 +292,9 @@ async fn try_once(
     Ok((String::from_utf8_lossy(body).into_owned(), domain))
 }
 
-/// The library's `Dial`, then the focus, the services and the room.
+/// The library's `Dial`, then the focus, the services and the room, all
+/// within `cfg.budget` of the dial's start. A join that fails after the
+/// login closes the connection it logged in on, whatever the failure.
 async fn join_once(cfg: &JoinConfig, fallback: bool) -> (Result<Joined, JoinError>, Discovery) {
     let mut disc = Discovery::default();
     let body = if fallback {
@@ -319,74 +323,127 @@ async fn join_once(cfg: &JoinConfig, fallback: bool) -> (Result<Joined, JoinErro
         }
         None => jc.websocket_url(&cfg.host, &cfg.room),
     };
-    let steps = async {
-        let cc = ConnConfig {
-            host: cfg.host.clone(),
-            room: cfg.room.clone(),
-            xmpp_domain: jc.xmpp_domain.clone(),
-            muc_domain: jc.muc_domain.clone(),
-        };
-        let login = match dial_ws(&ws_url, &cfg.host, cfg.deflate).await {
-            Ok((tx, rx)) => Conn::login(std::sync::Arc::new(tx), rx, cc, cfg.budget).await,
-            Err(e) if jc.bosh.is_empty() => {
-                return Err(JoinError(format!(
-                    "xmpp dial: failed to WebSocket dial: {e}"
-                )));
-            }
-            // The library's order: BOSH when the WebSocket did not dial and
-            // config.js names one.
-            Err(e) => {
-                olc_net::debug!("jitsi: the WebSocket did not dial ({e}); BOSH instead");
-                login_bosh(&jc.bosh, cc, cfg.budget).await
-            }
-        };
-        let (conn, incoming) = login.map_err(|e| JoinError(format!("xmpp dial: {e}")))?;
-        let focus = match conn.allocate_focus(cfg.budget).await {
-            Ok(f) => f,
-            Err(e) => {
-                conn.close().await;
-                return Err(JoinError(format!("allocate focus: {e}")));
-            }
-        };
-        let services = match conn.discover_services(cfg.budget).await {
-            Ok(s) => s,
-            Err(e) => {
-                conn.close().await;
-                return Err(JoinError(format!("discover services: {e}")));
-            }
-        };
-        if let Err(e) = conn.join_muc(&cfg.nick, cfg.budget).await {
-            conn.close().await;
-            return Err(JoinError(format!("join muc: {e}")));
-        }
-        Ok((conn, incoming, focus, services))
-    };
-    let result = match tokio::time::timeout(cfg.budget, steps).await {
-        Ok(Ok((conn, incoming, focus, services))) => Ok(Joined {
+    let result = join_steps(cfg, &jc, &ws_url)
+        .await
+        .map(|(conn, incoming, focus, services)| Joined {
             conn,
             incoming,
             ice: convert_ice(&services),
             focus,
             discovery: disc.clone(),
             fell_back: fallback,
-        }),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err(JoinError("join muc: context deadline exceeded".into())),
-    };
+        });
     (result, disc)
 }
 
+/// The connection of a join, what its read loop hands on, the focus's answer
+/// and the services.
+type Entered = (Conn, mpsc::Receiver<Incoming>, FocusInfo, Vec<Service>);
+
+/// The dial and every step after it under one deadline, `cfg.budget` from
+/// here, as Go's steps share one context: each gets what is left of it, so
+/// the step that runs out of time fails as itself. A step that fails after
+/// the login, the deadline among the failures, closes the connection
+/// (`_ = conn.Close()`, `j.go:516,523,528`) before the failure is said.
+async fn join_steps(
+    cfg: &JoinConfig,
+    jc: &JitsiConfig,
+    ws_url: &str,
+) -> Result<Entered, JoinError> {
+    let deadline = Instant::now() + cfg.budget;
+    let (conn, incoming) = dial_and_login(cfg, jc, ws_url, deadline).await?;
+    match enter_room(&conn, &cfg.nick, deadline).await {
+        Ok((focus, services)) => Ok((conn, incoming, focus, services)),
+        Err(e) => {
+            let _ = tokio::time::timeout(CLOSE_WAIT, conn.close()).await;
+            Err(e)
+        }
+    }
+}
+
+/// What is left until `deadline`.
+fn left(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
+/// `Dial`: the WebSocket and the login over it, or over BOSH when the
+/// WebSocket did not dial and config.js names one (the library's order).
+async fn dial_and_login(
+    cfg: &JoinConfig,
+    jc: &JitsiConfig,
+    ws_url: &str,
+    deadline: Instant,
+) -> Result<(Conn, mpsc::Receiver<Incoming>), JoinError> {
+    let cc = ConnConfig {
+        host: cfg.host.clone(),
+        room: cfg.room.clone(),
+        xmpp_domain: jc.xmpp_domain.clone(),
+        muc_domain: jc.muc_domain.clone(),
+    };
+    let login = match dial_ws(ws_url, &cfg.host, cfg.deflate, left(deadline)).await {
+        Ok((tx, rx)) => Conn::login(std::sync::Arc::new(tx), rx, cc, left(deadline)).await,
+        Err(e) if jc.bosh.is_empty() => {
+            return Err(JoinError(format!(
+                "xmpp dial: failed to WebSocket dial: {e}"
+            )));
+        }
+        // The library's order: BOSH when the WebSocket did not dial and
+        // config.js names one.
+        Err(e) => {
+            olc_net::debug!("jitsi: the WebSocket did not dial ({e}); BOSH instead");
+            login_bosh(&jc.bosh, cc, deadline).await
+        }
+    };
+    login.map_err(|e| JoinError(format!("xmpp dial: {e}")))
+}
+
+/// One step of the join within the join's deadline. A step that ran out of
+/// time fails as a context that did (`ctx.Err()`), whichever said so first,
+/// its own wait or the deadline.
+async fn within<T>(
+    deadline: Instant,
+    step: impl std::future::Future<Output = Result<T, ConnError>>,
+) -> Result<T, ConnError> {
+    match tokio::time::timeout_at(deadline, step).await {
+        Ok(Err(ConnError::Timeout(_))) | Err(_) => Err(ConnError::JoinTimeout),
+        Ok(done) => done,
+    }
+}
+
+/// The focus, the services and the room on a connection that is logged in
+/// (`j.go:515-529`). On a failure the connection is the caller's to close.
+async fn enter_room(
+    conn: &Conn,
+    nick: &str,
+    deadline: Instant,
+) -> Result<(FocusInfo, Vec<Service>), JoinError> {
+    let focus = within(deadline, conn.allocate_focus(left(deadline)))
+        .await
+        .map_err(|e| JoinError(format!("allocate focus: {e}")))?;
+    let services = within(deadline, conn.discover_services(left(deadline)))
+        .await
+        .map_err(|e| JoinError(format!("discover services: {e}")))?;
+    within(deadline, conn.join_muc(nick, left(deadline)))
+        .await
+        .map_err(|e| JoinError(format!("join muc: {e}")))?;
+    Ok((focus, services))
+}
+
 /// `dialBOSH`: the session at the URL config.js names, and the login over
-/// it. A login that fails ends the session it opened.
+/// it, both within what is left until `deadline`. A login that fails ends
+/// the session it opened.
 async fn login_bosh(
     url: &str,
     cc: ConnConfig,
-    budget: Duration,
+    deadline: Instant,
 ) -> Result<(Conn, mpsc::Receiver<Incoming>), ConnError> {
     let post = bosh::Http::new(url).map_err(|e| ConnError::Transport(format!("bosh init: {e}")))?;
-    let (tx, rx) = bosh::open(std::sync::Arc::new(post), &cc.xmpp_domain).await?;
+    let open = bosh::open(std::sync::Arc::new(post), &cc.xmpp_domain);
+    let (tx, rx) = tokio::time::timeout_at(deadline, open)
+        .await
+        .map_err(|_| ConnError::JoinTimeout)??;
     let tx = std::sync::Arc::new(tx);
-    match Conn::login(tx.clone(), rx, cc, budget).await {
+    match Conn::login(tx.clone(), rx, cc, left(deadline)).await {
         Ok(ok) => Ok(ok),
         Err(e) => {
             tx.close().await;
@@ -395,7 +452,14 @@ async fn login_bosh(
     }
 }
 
-async fn dial_ws(url: &str, host: &str, deflate: bool) -> Result<(WsTx, WsRx), String> {
+/// The WebSocket, dialled and upgraded within `budget` and its own cap.
+async fn dial_ws(
+    url: &str,
+    host: &str,
+    deflate: bool,
+    budget: Duration,
+) -> Result<(WsTx, WsRx), String> {
+    let wait = budget.min(WS_HANDSHAKE_TIMEOUT);
     let target = parse_url(url).map_err(|e| e.to_string())?;
     let origin = format!("https://{host}");
     let mut headers: Vec<(&str, &str)> = vec![
@@ -419,11 +483,11 @@ async fn dial_ws(url: &str, host: &str, deflate: bool) -> Result<(WsTx, WsRx), S
             path: &target.path,
             headers: &headers,
             read_limit: WS_READ_LIMIT,
-            timeout: WS_HANDSHAKE_TIMEOUT,
+            timeout: wait,
         };
         ws::handshake(stream, &req).await.map_err(|e| e.to_string())
     };
-    let (r, w) = tokio::time::timeout(WS_HANDSHAKE_TIMEOUT, fut)
+    let (r, w) = tokio::time::timeout(wait, fut)
         .await
         .map_err(|_| "i/o timeout".to_owned())??;
     Ok((WsTx(w), WsRx(r)))
@@ -496,6 +560,10 @@ pub(crate) mod tests {
         pub bosh: Option<BoshServer>,
         /// `/http-bind` answers every request with this status and body.
         pub bosh_status: Option<(u16, &'static str)>,
+        /// From the connection of this index on, a stanza that holds these
+        /// words is read and never answered: a focus that does not say, a
+        /// room that does not echo.
+        pub no_answer: Option<(usize, &'static str)>,
     }
 
     impl Default for Opts {
@@ -507,6 +575,7 @@ pub(crate) mod tests {
                 refuse_ws: false,
                 bosh: None,
                 bosh_status: None,
+                no_answer: None,
             }
         }
     }
@@ -523,6 +592,9 @@ pub(crate) mod tests {
         pub compressed: usize,
         /// The request heads of `/http-bind`, in order.
         pub posts: Vec<String>,
+        /// Whether the client's side of each socket has ended, per
+        /// connection: nothing more can come on it.
+        pub gone: Vec<bool>,
     }
 
     pub(crate) struct Fake {
@@ -649,6 +721,7 @@ pub(crate) mod tests {
             let mut s = seen.lock().unwrap();
             s.upgrades.push(head.clone());
             s.said.push(Vec::new());
+            s.gone.push(false);
             s.said.len() - 1
         };
         let accept = {
@@ -672,7 +745,37 @@ pub(crate) mod tests {
             deflate: opts.deflate && head.contains("permessage-deflate"),
             ..opts
         };
-        xmpp_server(sock, seen, index, serves, opts).await;
+        let mut ws = Wsc {
+            sock,
+            deflate: opts.deflate.then(|| {
+                (
+                    flate2::Compress::new(flate2::Compression::default(), false),
+                    flate2::Decompress::new(false),
+                )
+            }),
+            compressed_seen: false,
+        };
+        xmpp_server(&mut ws, &seen, index, serves, &opts).await;
+        // Whatever ended the talk (a close frame among them), the client is
+        // done with the connection when its side of the socket ends.
+        let mut rest = [0u8; 256];
+        while matches!(ws.sock.read(&mut rest).await, Ok(n) if n > 0) {}
+        seen.lock().unwrap().gone[index] = true;
+    }
+
+    /// Waits, at most `within`, for the client's side of connection
+    /// `index`'s socket to end.
+    pub(crate) async fn gone(f: &Fake, index: usize, within: Duration) -> bool {
+        let until = Instant::now() + within;
+        loop {
+            if f.seen.lock().unwrap().gone.get(index) == Some(&true) {
+                return true;
+            }
+            if Instant::now() >= until {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     }
 
     /// A server-side WebSocket: frames in the clear, or permessage-deflate
@@ -741,75 +844,63 @@ pub(crate) mod tests {
     /// Prosody and Jicofo for one connection: the login, the focus, the
     /// services, the room's echo. A domain it does not serve is `host-unknown`.
     async fn xmpp_server(
-        sock: TcpStream,
-        seen: Arc<Mutex<Seen>>,
+        ws: &mut Wsc,
+        seen: &Arc<Mutex<Seen>>,
         index: usize,
         serves: &'static str,
-        opts: Opts,
+        opts: &Opts,
     ) {
-        let mut ws = Wsc {
-            sock,
-            deflate: opts.deflate.then(|| {
-                (
-                    flate2::Compress::new(flate2::Compression::default(), false),
-                    flate2::Decompress::new(false),
-                )
-            }),
-            compressed_seen: false,
-        };
         let record = |t: &str| seen.lock().unwrap().said[index].push(t.to_owned());
-        let Some(open) = hear(&mut ws).await else {
+        let Some(open) = hear(ws).await else {
             return;
         };
         record(&open);
         if !open.contains(&format!("to=\"{serves}\"")) {
-            say(&mut ws, "<stream:error xmlns:stream='http://etherx.jabber.org/streams'><host-unknown xmlns='urn:ietf:params:xml:ns:xmpp-streams'/><text>This server does not serve that</text></stream:error>").await;
+            say(ws, "<stream:error xmlns:stream='http://etherx.jabber.org/streams'><host-unknown xmlns='urn:ietf:params:xml:ns:xmpp-streams'/><text>This server does not serve that</text></stream:error>").await;
             return;
         }
         say(
-            &mut ws,
+            ws,
             "<open xmlns='urn:ietf:params:xml:ns:xmpp-framing' from='x' version='1.0'/>",
         )
         .await;
-        say(&mut ws, "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>ANONYMOUS</mechanism></mechanisms></stream:features>").await;
-        while let Some(t) = hear(&mut ws).await {
+        say(ws, "<stream:features><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>ANONYMOUS</mechanism></mechanisms></stream:features>").await;
+        while let Some(t) = hear(ws).await {
             if ws.compressed_seen {
                 seen.lock().unwrap().compressed += 1;
                 ws.compressed_seen = false;
             }
             record(&t);
+            if opts
+                .no_answer
+                .is_some_and(|(from, words)| index >= from && t.contains(words))
+            {
+                continue;
+            }
             if t.starts_with("<auth ") {
-                say(
-                    &mut ws,
-                    "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>",
-                )
-                .await;
+                say(ws, "<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>").await;
             } else if t.starts_with("<open ") {
                 say(
-                    &mut ws,
+                    ws,
                     "<open xmlns='urn:ietf:params:xml:ns:xmpp-framing' from='x' version='1.0'/>",
                 )
                 .await;
-                say(&mut ws, "<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>").await;
+                say(ws, "<stream:features><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>").await;
             } else if t.contains("bind_1") {
-                say(&mut ws, &format!("<iq type='result' id='bind_1' xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>0123456789abcdef@{serves}/res</jid></bind></iq>")).await;
+                say(ws, &format!("<iq type='result' id='bind_1' xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>0123456789abcdef@{serves}/res</jid></bind></iq>")).await;
             } else if t.contains("sess_1") {
-                say(
-                    &mut ws,
-                    "<iq type='result' id='sess_1' xmlns='jabber:client'/>",
-                )
-                .await;
+                say(ws, "<iq type='result' id='sess_1' xmlns='jabber:client'/>").await;
             } else if t.starts_with("<enable ") {
-                say(&mut ws, "<enabled xmlns='urn:xmpp:sm:3' id='1'/>").await;
+                say(ws, "<enabled xmlns='urn:xmpp:sm:3' id='1'/>").await;
             } else if t.contains("focus_1") {
-                say(&mut ws, "<iq id='focus_1' type='result' xmlns='jabber:client'><conference xmlns='http://jitsi.org/protocol/focus' ready='true'/></iq>").await;
+                say(ws, "<iq id='focus_1' type='result' xmlns='jabber:client'><conference xmlns='http://jitsi.org/protocol/focus' ready='true'/></iq>").await;
             } else if t.contains("disco_1") {
                 let turn = if opts.turn {
                     "<service type='turn' host='turn.example' port='3478' transport='udp' username='u' password='p'/>"
                 } else {
                     ""
                 };
-                say(&mut ws, &format!("<iq id='disco_1' type='result' xmlns='jabber:client'><services xmlns='urn:xmpp:extdisco:2'>{turn}<service type='stun' host='stun.example'/></services></iq>")).await;
+                say(ws, &format!("<iq id='disco_1' type='result' xmlns='jabber:client'><services xmlns='urn:xmpp:extdisco:2'>{turn}<service type='stun' host='stun.example'/></services></iq>")).await;
             } else if t.starts_with("<presence ") {
                 let to = t
                     .split("to=\"")
@@ -817,13 +908,13 @@ pub(crate) mod tests {
                     .and_then(|r| r.split('"').next())
                     .unwrap_or("");
                 if t.contains("type=\"unavailable\"") {
-                    say(&mut ws, &format!("<presence from='{to}' type='unavailable' xmlns='jabber:client'><x xmlns='http://jabber.org/protocol/muc#user'><status code='110'/></x></presence>")).await;
+                    say(ws, &format!("<presence from='{to}' type='unavailable' xmlns='jabber:client'><x xmlns='http://jabber.org/protocol/muc#user'><status code='110'/></x></presence>")).await;
                     continue;
                 }
-                say(&mut ws, &format!("<presence from='{to}' xmlns='jabber:client'><x xmlns='http://jabber.org/protocol/muc#user'><status code='110'/></x></presence>")).await;
+                say(ws, &format!("<presence from='{to}' xmlns='jabber:client'><x xmlns='http://jabber.org/protocol/muc#user'><status code='110'/></x></presence>")).await;
                 if let Some(h) = &opts.after_join {
                     for stanza in h() {
-                        say(&mut ws, &stanza).await;
+                        say(ws, &stanza).await;
                     }
                 }
             }
@@ -1189,6 +1280,141 @@ pub(crate) mod tests {
         let n = bosh.state().bodies.len();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(bosh.state().bodies.len(), n, "no poll after the terminate");
+    }
+
+    /// A join on a fake that reads a stanza holding `words` and never
+    /// answers it, with `budget` for the dial and everything after it.
+    async fn starved(words: &'static str, budget: Duration) -> (Fake, JoinError) {
+        let f = fake_with(
+            vec![(200, "application/javascript", DOCKER.into())],
+            "meet.jitsi",
+            Opts {
+                no_answer: Some((0, words)),
+                ..Opts::default()
+            },
+        )
+        .await;
+        let mut c = quick(&f, "web.example");
+        c.budget = budget;
+        let e = join_muc(&c).await.unwrap_err();
+        (f, e)
+    }
+
+    /// The steps after the login, by what each says and what Go calls it:
+    /// the focus, the services, the room's echo of the join.
+    const STEPS: [(&str, &str); 3] = [
+        ("focus_1", "allocate focus"),
+        ("disco_1", "discover services"),
+        ("<presence ", "join muc"),
+    ];
+
+    /// `j.go:515-529`: a step after the login that fails closes the
+    /// connection (`_ = conn.Close()`), a deadline that passed among the
+    /// failures. The server sees the socket end, and nothing was said on it
+    /// after the request it did not answer: no join that ran out of time
+    /// leaves a connection logged in and keeping itself alive.
+    #[tokio::test]
+    async fn a_join_that_runs_out_of_time_after_the_login_closes_its_connection() {
+        let case = |(words, step): (&'static str, &'static str)| async move {
+            let (f, e) = starved(words, Duration::from_millis(1500)).await;
+            assert!(e.0.ends_with("context deadline exceeded"), "{step}: {e}");
+            assert!(
+                gone(&f, 0, Duration::from_secs(3)).await,
+                "{step}: the connection is still open 3 s after its join gave up"
+            );
+            let s = f.seen.lock().unwrap();
+            assert_eq!(s.upgrades.len(), 1, "{step}");
+            let last = s.said[0].last().unwrap();
+            assert!(last.contains(words), "{step}: said after it: {last}");
+        };
+        tokio::join!(case(STEPS[0]), case(STEPS[1]), case(STEPS[2]));
+    }
+
+    /// The steps share one deadline, as Go's share one context: the failure
+    /// names the step that was waiting when it passed, in Go's words
+    /// (`ctx.Err()` under `allocate focus:`, `discover services:` and
+    /// `join muc:`), and the join does not outlast its budget.
+    #[tokio::test]
+    async fn a_step_that_runs_out_of_time_is_named_in_go_s_words() {
+        let budget = Duration::from_millis(1500);
+        let case = |(words, step): (&'static str, &'static str)| async move {
+            let started = Instant::now();
+            let (_f, e) = starved(words, budget).await;
+            let took = started.elapsed();
+            assert_eq!(
+                e.0,
+                format!("jitsi join muc: {step}: context deadline exceeded")
+            );
+            assert!(
+                took >= budget && took < budget + Duration::from_secs(1),
+                "{step}: {took:?}"
+            );
+        };
+        tokio::join!(case(STEPS[0]), case(STEPS[1]), case(STEPS[2]));
+    }
+
+    /// A join whose future is dropped after the login (a caller that gave up
+    /// on `Session::connect`, a rejoin the session's close aborted) closes
+    /// the connection it had logged in on. Its budget is far away: it is the
+    /// drop that ends it.
+    #[tokio::test]
+    async fn a_join_dropped_after_the_login_closes_its_connection() {
+        let f = fake_with(
+            vec![(200, "application/javascript", DOCKER.into())],
+            "meet.jitsi",
+            Opts {
+                no_answer: Some((0, "focus_1")),
+                ..Opts::default()
+            },
+        )
+        .await;
+        let c = quick(&f, "web.example");
+        let join = tokio::spawn(async move { join_muc(&c).await.map(|_| ()) });
+        let asked = || {
+            let s = f.seen.lock().unwrap();
+            s.said
+                .first()
+                .is_some_and(|v| v.iter().any(|t| t.contains("focus_1")))
+        };
+        for _ in 0..250 {
+            if asked() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(asked(), "the join never asked for the focus");
+        join.abort();
+        assert!(join.await.unwrap_err().is_cancelled());
+        assert!(
+            gone(&f, 0, Duration::from_secs(3)).await,
+            "the connection is still open 3 s after its join was dropped"
+        );
+    }
+
+    /// The same over BOSH: a join that runs out of time after the login ends
+    /// the session it opened (`terminate`), and nothing polls after that.
+    /// The close is the join's own, as Go's is (`_ = conn.Close()` before
+    /// the error is returned): the session is over by the time the failure
+    /// is said, not some time after it.
+    #[tokio::test]
+    async fn a_join_over_bosh_that_runs_out_of_time_after_the_login_ends_its_session() {
+        let (f, bosh) = bosh_fake(WITH_BOSH, no_ws()).await;
+        bosh.state().unanswered = Some("focus_1");
+        let mut c = quick(&f, "web.example");
+        c.budget = Duration::from_millis(1500);
+        let e = join_muc(&c).await.unwrap_err();
+        assert!(
+            bosh.state().terminated,
+            "the join said its failure and had not ended its session"
+        );
+        let n = bosh.state().bodies.len();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(bosh.state().bodies.len(), n, "no poll after the terminate");
+        assert_eq!(
+            e.0,
+            "jitsi join muc: allocate focus: context deadline exceeded"
+        );
+        assert!(bosh.state().said.iter().any(|t| t.contains("focus_1")));
     }
 
     /// PJ3 inside the join: the extension is offered, the fake takes it, and

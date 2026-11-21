@@ -32,7 +32,7 @@ use crate::frame::{decode_raw, encode_frame, endpoint_message, Message, CLIENT_H
 use crate::jingle::build::accept_body;
 use crate::jingle::parse::parse_stanza;
 use crate::jingle::sdp::to_sdp;
-use crate::join::tests::{fake_with, AfterJoin, Fake, Opts};
+use crate::join::tests::{fake_with, gone, AfterJoin, Fake, Opts};
 use crate::join::{JoinConfig, Limits};
 use crate::relaywin::Timing;
 use crate::session::{Session, SessionConfig, CHANNEL_LABEL, CHANNEL_PROTOCOL};
@@ -476,4 +476,66 @@ async fn alone_in_the_room_a_rejoin_parks_and_counts_no_failure() {
     );
     assert_eq!(seen.reconnected.load(Ordering::Relaxed), 0);
     session.close().await;
+}
+
+/// A room with no Jicofo offer, whose fake reads a stanza holding `words` on
+/// every connection from `from` on and never answers it.
+async fn fake_silent_on(from: usize, words: &'static str) -> Fake {
+    fake_with(
+        vec![(200, "application/javascript", DOCKER.into()); 20],
+        "meet.jitsi",
+        Opts {
+            turn: false,
+            no_answer: Some((from, words)),
+            ..Opts::default()
+        },
+    )
+    .await
+}
+
+/// Whether connection `index` has said a stanza holding `words`.
+fn said(f: &Fake, index: usize, words: &str) -> bool {
+    let s = f.seen.lock().unwrap();
+    s.said
+        .get(index)
+        .is_some_and(|v| v.iter().any(|t| t.contains(words)))
+}
+
+/// The session is closed while a rejoin's join is between its login and the
+/// room (the focus does not answer): the close aborts the rejoin, and the
+/// connection that join had logged in on must not be left behind, logged in
+/// and keeping itself alive. The join's own budget is 30 s away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_closed_during_a_rejoin_s_join_closes_the_connection_it_logged_in_on() {
+    let f = fake_silent_on(1, "focus_1").await;
+    let (session, seen) = connect(&f, crate::session::RejoinTimes::default()).await;
+    session.reconnect("test");
+    until("the rejoin's focus request", || said(&f, 1, "focus_1")).await;
+    session.close().await;
+    assert!(
+        gone(&f, 1, Duration::from_secs(3)).await,
+        "the rejoin's connection is still open 3 s after the session closed"
+    );
+    assert!(gone(&f, 0, Duration::from_secs(3)).await);
+    assert_eq!(f.seen.lock().unwrap().upgrades.len(), 2);
+    assert!(seen.ended.lock().unwrap().is_empty());
+}
+
+/// The session is closed while a rejoin is still leaving the room on the old
+/// connection (the leave's echo does not come). That connection is out of the
+/// session's hands by then, so the close finds nothing to close and aborts
+/// the rejoin: the connection must not be left behind between its leave and
+/// its close.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_session_closed_while_a_rejoin_leaves_the_room_closes_the_old_connection() {
+    let f = fake_silent_on(0, "type=\"unavailable\"").await;
+    let (session, _seen) = connect(&f, crate::session::RejoinTimes::default()).await;
+    session.reconnect("test");
+    until("the leave", || said(&f, 0, "type=\"unavailable\"")).await;
+    session.close().await;
+    assert!(
+        gone(&f, 0, Duration::from_secs(3)).await,
+        "the old connection is still open 3 s after the session closed"
+    );
+    assert_eq!(f.seen.lock().unwrap().upgrades.len(), 1, "no second join");
 }

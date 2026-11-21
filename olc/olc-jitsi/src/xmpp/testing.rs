@@ -7,6 +7,7 @@
 //! a Prosody and a Jicofo behind it, for the tests of [`super::bosh`].
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use crate::xml;
 /// The client's half of the pipe.
 pub struct MemTx {
     out: mpsc::UnboundedSender<String>,
-    closed: Mutex<bool>,
+    closes: Arc<AtomicUsize>,
     bosh: bool,
 }
 
@@ -37,6 +38,7 @@ pub struct Server {
     /// What the client wrote, in order.
     pub sent: mpsc::UnboundedReceiver<String>,
     to_client: Option<mpsc::UnboundedSender<String>>,
+    closes: Arc<AtomicUsize>,
 }
 
 impl Server {
@@ -45,6 +47,12 @@ impl Server {
         if let Some(tx) = &self.to_client {
             let _ = tx.send(stanza.to_owned());
         }
+    }
+
+    /// How many times the client closed its transport.
+    #[must_use]
+    pub fn closes(&self) -> usize {
+        self.closes.load(Ordering::Acquire)
     }
 
     /// The server goes away: the client's reads fail.
@@ -75,16 +83,18 @@ impl Server {
 pub fn pipe() -> (MemTx, MemRx, Server) {
     let (out, sent) = mpsc::unbounded_channel();
     let (to_client, inbound) = mpsc::unbounded_channel();
+    let closes = Arc::new(AtomicUsize::new(0));
     (
         MemTx {
             out,
-            closed: Mutex::new(false),
+            closes: closes.clone(),
             bosh: false,
         },
         MemRx { inbound },
         Server {
             sent,
             to_client: Some(to_client),
+            closes,
         },
     )
 }
@@ -101,7 +111,7 @@ pub fn pipe_bosh() -> (MemTx, MemRx, Server) {
 impl Tx for MemTx {
     fn send<'a>(&'a self, text: &'a str) -> BoxFut<'a, Result<(), ConnError>> {
         Box::pin(async move {
-            if *self.closed.lock().unwrap() {
+            if self.closes.load(Ordering::Acquire) > 0 {
                 return Err(ConnError::Transport("closed".into()));
             }
             self.out
@@ -112,7 +122,7 @@ impl Tx for MemTx {
 
     fn close(&self) -> BoxFut<'_, ()> {
         Box::pin(async move {
-            *self.closed.lock().unwrap() = true;
+            self.closes.fetch_add(1, Ordering::AcqRel);
         })
     }
 
@@ -221,6 +231,10 @@ pub struct BoshState {
     pub late: Option<String>,
     /// A request that carries a stanza is never answered.
     pub stall: bool,
+    /// A stanza that holds these words gets no answer of Prosody's or
+    /// Jicofo's (its request is answered as any is): a focus that does not
+    /// say, a room that does not echo.
+    pub unanswered: Option<&'static str>,
     /// The stream's features after the SASL exchange are the restart's
     /// answer, as XEP-0206 has it and as the Go fake says them by default.
     /// Off, they are said as Prosody says them (13.0.7, the Prosody log of
@@ -297,6 +311,9 @@ impl BoshState {
 
     /// Prosody and Jicofo: what one stanza of the client is answered with.
     fn answer(&mut self, t: &str) {
+        if self.unanswered.is_some_and(|words| t.contains(words)) {
+            return;
+        }
         let mut say = |s: String| self.out.push_back((s, false));
         if t.starts_with("<auth ") {
             say("<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>".into());
@@ -350,6 +367,7 @@ impl BoshServer {
             terminated: false,
             late: None,
             stall: false,
+            unanswered: None,
             features_at_restart: false,
             slow: None,
             not_open: false,
