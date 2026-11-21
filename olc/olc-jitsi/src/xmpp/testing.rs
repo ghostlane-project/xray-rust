@@ -213,6 +213,11 @@ pub struct BoshState {
     pub jid: String,
     /// The client said terminate.
     pub terminated: bool,
+    /// Said as soon as the next request that carries a stanza is on hold: it
+    /// goes back on that request, the poll before it having gone back empty.
+    pub late: Option<String>,
+    /// A request that carries a stanza is never answered.
+    pub stall: bool,
     open: usize,
     seq: u64,
     held: VecDeque<(u64, oneshot::Sender<String>)>,
@@ -311,6 +316,8 @@ impl BoshServer {
             create: None,
             jid: "fedcba9876543210@meet.jitsi/res".into(),
             terminated: false,
+            late: None,
+            stall: false,
             open: 0,
             seq: 0,
             held: VecDeque::new(),
@@ -367,6 +374,14 @@ impl BoshServer {
     }
 
     async fn serve(&self, body: String) -> Result<String, String> {
+        let stalled = {
+            let st = self.state();
+            st.stall && !body.ends_with("/>")
+        };
+        if stalled {
+            self.state().bodies.push(body);
+            return std::future::pending().await;
+        }
         let (id, mut rx, hold, mute) = {
             let mut st = self.state();
             st.bodies.push(body.clone());
@@ -395,6 +410,7 @@ impl BoshServer {
                 }
                 return Ok(BOSH_TERMINATE.into());
             }
+            let mut carried = false;
             if attr("xmpp:restart") == "true" {
                 st.out.push_back(("<stream:features xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></stream:features>".into(), false));
             } else {
@@ -403,6 +419,7 @@ impl BoshServer {
                     .into_iter()
                     .map(str::to_owned)
                     .collect();
+                carried = !stanzas.is_empty();
                 for t in stanzas {
                     st.answer(&t);
                     st.said.push(t);
@@ -416,6 +433,12 @@ impl BoshServer {
             let id = st.seq;
             st.held.push_back((id, tx));
             st.flush();
+            if carried {
+                if let Some(late) = st.late.take() {
+                    st.out.push_back((late, false));
+                    st.flush();
+                }
+            }
             (id, rx, st.hold, st.mute)
         };
         tokio::select! {

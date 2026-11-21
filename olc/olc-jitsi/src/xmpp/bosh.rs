@@ -33,15 +33,15 @@
 //!   stanzas not yet read of [`INBOX_BYTES`] at most, past which the
 //!   transport ends (the library stops its poll at 64 unread stanzas, and a
 //!   stanza being sent then waits for that poll); and after a poll that came
-//!   back empty at once the next waits for [`POLL_FLOOR`], unless a stanza
-//!   is on its way.
+//!   back empty at once the next waits for [`POLL_FLOOR`], unless another
+//!   request went out since (the manager lets a poll go for it).
 //! - The requests name the `User-Agent` this client names on config.js and
 //!   on the WebSocket, where the library leaves Go's own; and no
 //!   `Accept-Encoding`, because `olc-net` reads no coded answer.
 
 use std::borrow::Cow;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -69,7 +69,7 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the terminate's answer is waited for.
 pub const TERMINATE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The least time between two polls when the first came back empty and no
-/// stanza is on its way.
+/// other request went out since.
 pub const POLL_FLOOR: Duration = Duration::from_secs(1);
 /// The most of a server's answer that an error text quotes.
 pub const QUOTE_MAX: usize = 512;
@@ -239,8 +239,8 @@ struct Inner {
     rid: AtomicU64,
     /// One request besides the poll at a time (the library's mutex).
     turn: tokio::sync::Mutex<()>,
-    /// Requests besides the poll that are out or wait for their turn.
-    out: AtomicUsize,
+    /// How many requests besides the poll were ever started.
+    started: AtomicU64,
     /// Wakes the poll loop out of its floor when a request starts.
     kick: Notify,
     inbox: Mutex<Inbox>,
@@ -250,15 +250,6 @@ struct Inner {
     ended: AtomicBool,
     /// The terminate was said.
     terminated: AtomicBool,
-}
-
-/// Counts a request besides the poll for as long as it lives.
-struct Out<'a>(&'a AtomicUsize);
-
-impl Drop for Out<'_> {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
 }
 
 fn closed_error() -> ConnError {
@@ -333,8 +324,7 @@ impl Inner {
         if self.is_closed() {
             return Err(closed_error());
         }
-        self.out.fetch_add(1, Ordering::AcqRel);
-        let _out = Out(&self.out);
+        self.started.fetch_add(1, Ordering::AcqRel);
         self.kick.notify_one();
         let mut closed = self.closed.subscribe();
         let exchange = async {
@@ -379,6 +369,9 @@ impl Inner {
 /// as the last is answered.
 async fn poll_loop(inner: Arc<Inner>) {
     let mut closed = inner.closed.subscribe();
+    // The requests besides the poll that an empty answer was already put
+    // down to.
+    let mut seen = 0;
     loop {
         if inner.is_closed() {
             return;
@@ -405,10 +398,23 @@ async fn poll_loop(inner: Arc<Inner>) {
             continue;
         }
         // An empty answer before the floor: a manager that holds nothing, or
-        // one that let this poll go for a request that is out. Only the
-        // second is a reason to ask again at once (XEP-0124, section 12).
+        // one that let this poll go for another request. Only the second is
+        // a reason to ask again at once (XEP-0124, section 12), and it is
+        // one whether or not that request is still out: its answer may have
+        // been read before this poll's, and with no poll out what the
+        // manager says next would wait for the floor. A request is that
+        // reason once: while it stays out, a manager that holds nothing is
+        // still asked once a floor.
         let floor = started + POLL_FLOOR;
-        while inner.out.load(Ordering::Acquire) == 0 && Instant::now() < floor {
+        loop {
+            let others = inner.started.load(Ordering::Acquire);
+            if others != seen {
+                seen = others;
+                break;
+            }
+            if Instant::now() >= floor {
+                break;
+            }
             tokio::select! {
                 () = wait_closed(&mut closed) => return,
                 () = tokio::time::sleep_until(floor) => {}
@@ -478,7 +484,7 @@ pub async fn open(post: Arc<dyn Post>, xmpp_domain: &str) -> Result<(BoshTx, Bos
         poll_wait: wait + POLL_MARGIN,
         rid: AtomicU64::new(rid),
         turn: tokio::sync::Mutex::new(()),
-        out: AtomicUsize::new(0),
+        started: AtomicU64::new(0),
         kick: Notify::new(),
         inbox: Mutex::new(Inbox::default()),
         arrived: Notify::new(),
@@ -884,6 +890,71 @@ mod tests {
             "{:?}",
             t.elapsed()
         );
+    }
+
+    /// The manager lets a poll go, empty, for a stanza's request, and what it
+    /// says next comes back on that request. Whichever of the two answers the
+    /// client reads first, the next poll is out at once: with none out, what
+    /// the manager says after that would wait for the floor (the gate's S0
+    /// over BOSH: a tunnel ready in 0.2 s in one run and in 2.2 s in the next).
+    #[tokio::test(start_paused = true)]
+    async fn a_poll_let_go_for_a_stanza_is_followed_by_the_next_at_once() {
+        let server = BoshServer::new();
+        let (conn, _incoming, _tx) = up(&server).await;
+        // The first poll is out and held, and young: its floor is ahead.
+        settle().await;
+        let before = server.state().bodies.len();
+        let t = Instant::now();
+        server.state().late = Some(
+            "<presence from='secret-room@muc.meet.jitsi/other' xmlns='jabber:client'/>".into(),
+        );
+        // The stanza's request is answered, with what the manager said late,
+        // before the poll loop has seen its own poll come back.
+        conn.send("<message to='x'/>").await.unwrap();
+        settle().await;
+        assert_eq!(conn.occupants(), ["other"], "what the request brought");
+        let (polls, last) = {
+            let st = server.state();
+            (
+                st.bodies.len() - before - 1,
+                st.bodies.last().cloned().unwrap_or_default(),
+            )
+        };
+        assert_eq!(
+            polls, 1,
+            "the polls since the stanza, no time having passed"
+        );
+        assert!(!last.contains("<message"), "{last}");
+        assert_eq!(t.elapsed(), Duration::ZERO);
+        assert!(!conn.is_closed());
+    }
+
+    /// A request is a reason to ask again at once one time, not for as long
+    /// as it is out: a manager that holds nothing and is slow with a stanza
+    /// is still asked once a floor.
+    #[tokio::test(start_paused = true)]
+    async fn a_stanza_that_stays_out_does_not_lift_the_floor_for_good() {
+        let server = BoshServer::new();
+        let (conn, _incoming, tx) = up(&server).await;
+        settle().await;
+        {
+            let mut st = server.state();
+            st.at_once = true;
+            st.stall = true;
+        }
+        let before = server.state().bodies.len();
+        let stuck = tokio::spawn(async move { tx.send("<message to='x'/>").await });
+        settle().await;
+        // The poll that was held comes back, empty, and from here on every
+        // poll does, at once; the stanza's request stays out.
+        server.say_whole(&format!("<body xmlns='{NS}' sid='{BOSH_SID}'/>"));
+        tokio::time::sleep(S(20)).await;
+        let polls = server.state().bodies.len() - before - 1;
+        assert!(polls < BOSH_SPIN, "the client spins");
+        assert!((20..=23).contains(&polls), "{polls} polls in 20 s");
+        assert!(!conn.is_closed());
+        assert!(!stuck.is_finished());
+        stuck.abort();
     }
 
     /// The server ends the session with the body's `type`; the same words
