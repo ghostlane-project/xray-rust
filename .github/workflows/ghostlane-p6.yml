@@ -8,7 +8,9 @@ name: Ghostlane p6
 #
 # The Windows leg does not build the shipped library: the olc crates use
 # std::os::fd with no cfg, so it only checks, and reports per crate how many
-# errors the compiler gave (job summary). It never fails the run.
+# errors the compiler gave (job summary). `required` on its matrix entry
+# moves two things together: continue-on-error and P6_WINDOWS_REQUIRED. While it
+# is false the Windows job cannot fail the run; set it true once the crates build.
 #
 # Upstream's ci.yml runs at the pin from the app's driver; this file is not
 # part of that.
