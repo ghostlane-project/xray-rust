@@ -17,8 +17,8 @@ trap 'rm -rf "$tmp"' EXIT
 failed=0
 ran=0
 
-room=first-0123456789ab@muc.meet.jitsi
-gate=gate-ba5eba11cafe@muc.meet.jitsi
+room='first-0123456789ab@muc.meet.jitsi'
+gate='gate-ba5eba11cafe@muc.meet.jitsi'
 node='https://jitsi.org/jitsi-meet#AAAAbbbbCCCCddddEEEEffffGGGG='
 info='http://jabber.org/protocol/disco#info'
 features='[XMPP_CAPS, JSON_SOURCES, RECEIVE_MULTIPLE_STREAMS, REMB, SOURCE_NAMES, START_MUTED_RMD, TCC, VISITORS_V1, RTX, JINGLE, DTLS, JINGLE_RTP, AUDIO, VIDEO, SCTP, JINGLE_ICE]'
