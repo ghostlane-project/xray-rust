@@ -32,7 +32,7 @@ jobs:
     name: host (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    continue-on-error: ${{ matrix.windows }}
+    continue-on-error: ${{ matrix.windows && !matrix.required }}
     strategy:
       fail-fast: false
       matrix:
@@ -43,6 +43,7 @@ jobs:
             windows: false
           - os: windows-2025
             windows: true
+            required: true
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,6 +68,10 @@ jobs:
           restore-keys: |
             p6-${{ matrix.os }}-
 
+      - name: Script self-test
+        shell: bash
+        run: bash scripts/ghostlane/p6-ci.sh selftest
+
       - name: Build and test the host target
         if: ${{ !matrix.windows }}
         shell: bash
@@ -75,4 +80,6 @@ jobs:
       - name: Windows check, errors per crate
         if: ${{ matrix.windows }}
         shell: bash
+        env:
+          P6_WINDOWS_REQUIRED: ${{ matrix.required && '1' || '0' }}
         run: bash scripts/ghostlane/p6-ci.sh windows-report

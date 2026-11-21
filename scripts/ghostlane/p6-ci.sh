@@ -18,7 +18,7 @@
 # (boring-sys's bindgen), python3.
 set -euo pipefail
 
-mode="${1:?usage: p6-ci.sh host|windows-report}"
+mode="${1:?usage: p6-ci.sh host|windows-report|selftest}"
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 export CARGO_TERM_COLOR=never CARGO_INCREMENTAL=0 CARGO_NET_RETRY=5
 summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
@@ -135,6 +135,41 @@ PY
         echo "P6_WINDOWS_REQUIRED=1 and the Windows check is not clean" >&2
         exit 1
     fi
+    ;;
+selftest)
+    # Seconds-long checks of the script's own rules, run on every leg.
+    st="$(mktemp -d)"; fail=0
+    ok() { if [ "$1" = "$2" ]; then echo "ok: $3"; else echo "FAIL: $3 (got $1, want $2)"; fail=1; fi; }
+    # 1. drop-in tests run sorted, with the mode, and one failing fails the lot.
+    mkdir "$st/d"
+    printf 'echo "$1" >> "%s/ran"\n' "$st" > "$st/d/20-b.sh"
+    printf 'echo "$1" >> "%s/ran"\n' "$st" > "$st/d/10-a.sh"
+    P6_TESTS_DIR="$st/d" run_dropins host && r=0 || r=$?
+    ok "$r" 0 "drop-ins that pass pass"
+    ok "$(tr '\n' ' ' < "$st/ran")" "host host " "both drop-ins ran with the mode"
+    printf 'exit 3\n' > "$st/d/15-bad.sh"
+    P6_TESTS_DIR="$st/d" run_dropins host >/dev/null 2>&1 && r=0 || r=$?
+    ok "$r" 1 "a failing drop-in fails"
+    P6_TESTS_DIR="$st/none" run_dropins host && r=0 || r=$?
+    ok "$r" 0 "no drop-in directory is fine"
+    # 2. the Windows verdict: required fails on errors, on a cargo failure with
+    #    no compiler message, and on a failing drop-in; not required never fails.
+    ok "$(windows_exit_code 1 0 0 0)" 0 "required, all clean"
+    ok "$(windows_exit_code 1 3 0 0)" 1 "required, compiler errors"
+    ok "$(windows_exit_code 1 0 101 0)" 1 "required, cargo failed with no message"
+    ok "$(windows_exit_code 1 0 0 1)" 1 "required, a drop-in failed"
+    ok "$(windows_exit_code 0 3 101 1)" 0 "not required never fails"
+    # 3. the report names every crate: an error in xray-wireguard leaves xray-ffi unreached.
+    printf '%s\n' '{"reason":"compiler-artifact","package_id":"path+file:///w/crates/olc-wire#0.1.0"}' \
+        '{"reason":"compiler-message","package_id":"path+file:///w/crates/xray-wireguard#0.1.0","message":{"level":"error","message":"x","code":{"code":"E0433"}}}' > "$st/o.json"
+    : > "$st/e.err"; : > "$st/sum"
+    write_report_py "$st/count.py"
+    n=$(python3 -I "$st/count.py" "$st/o.json" "$st/e.err" none 101 "$st/sum" "olc-wire xray-wireguard xray-ffi")
+    ok "$n" 1 "one error counted"
+    ok "$(grep -c 'olc-wire | clean' "$st/sum")" 1 "a clean crate is listed as clean"
+    ok "$(grep -c 'xray-wireguard | 1 error' "$st/sum")" 1 "an erroring crate is listed with its count"
+    ok "$(grep -c 'xray-ffi | not reached' "$st/sum")" 1 "an unreached crate is listed as not reached"
+    exit "$fail"
     ;;
 *)
     echo "unknown mode $mode" >&2; exit 2 ;;
