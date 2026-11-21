@@ -321,16 +321,24 @@ impl Inner {
             self.shut();
             return None;
         }
-        let bytes: usize = reply.stanzas.iter().map(|s| s.len()).sum();
+        let stanzas: Vec<String> = reply.stanzas.iter().map(|s| (*s).to_owned()).collect();
+        let n = stanzas.len();
+        self.hand_on(rid, stanzas).then_some(n)
+    }
+
+    /// Puts what request `rid`'s answer held in its place among the others:
+    /// in the inbox when every earlier request's is there, else beside it
+    /// until they are. `false` when it ended the transport.
+    fn hand_on(&self, rid: u64, stanzas: Vec<String>) -> bool {
+        let bytes: usize = stanzas.iter().map(String::len).sum();
         let handed_on = {
             let mut inbox = self.inbox();
             if inbox.bytes + bytes > INBOX_BYTES {
                 drop(inbox);
                 olc_net::debug!("jitsi: bosh: more than {INBOX_BYTES} bytes of stanzas unread");
                 self.shut();
-                return None;
+                return false;
             }
-            let stanzas = reply.stanzas.iter().map(|s| (*s).to_owned());
             if rid == inbox.turn {
                 inbox.bytes += bytes;
                 inbox.stanzas.extend(stanzas);
@@ -347,19 +355,19 @@ impl Inner {
                 true
             } else if inbox.early.len() < EARLY_MAX {
                 inbox.bytes += bytes;
-                inbox.early.insert(rid, stanzas.collect());
+                inbox.early.insert(rid, stanzas);
                 false
             } else {
                 drop(inbox);
                 olc_net::debug!("jitsi: bosh: {EARLY_MAX} answers wait for an earlier one");
                 self.shut();
-                return None;
+                return false;
             }
         };
         if handed_on {
             self.arrived.notify_one();
         }
-        Some(reply.stanzas.len())
+        true
     }
 
     /// One request besides the poll (`Send`, and the restart): alone among
@@ -378,7 +386,14 @@ impl Inner {
                 return Err(closed_error());
             }
             let rid = self.next_rid();
-            match self.post.post(body(rid), REQUEST_TIMEOUT).await {
+            let mut out = Out {
+                inner: self,
+                rid,
+                answered: false,
+            };
+            let answer = self.post.post(body(rid), REQUEST_TIMEOUT).await;
+            out.answered = true;
+            match answer {
                 Ok(text) => self.take(rid, &text).map(|_| ()).ok_or_else(closed_error),
                 Err(e) => {
                     self.shut();
@@ -406,6 +421,23 @@ impl Inner {
         let body = terminate_body(self.next_rid(), &self.sid);
         if let Err(e) = self.post.post(body, TERMINATE_TIMEOUT).await {
             olc_net::debug!("jitsi: bosh: terminate: {e}");
+        }
+    }
+}
+
+/// A request besides the poll that is out. Dropped before its answer came
+/// (its sender gave up on it), it gives its turn up: no answer of it will be
+/// read, and the answers of the requests after it are not to wait for one.
+struct Out<'a> {
+    inner: &'a Inner,
+    rid: u64,
+    answered: bool,
+}
+
+impl Drop for Out<'_> {
+    fn drop(&mut self) {
+        if !self.answered && !self.inner.is_closed() {
+            self.inner.hand_on(self.rid, Vec::new());
         }
     }
 }
@@ -1256,6 +1288,37 @@ mod tests {
         assert_eq!(started.elapsed(), Duration::from_millis(300));
         assert_eq!(send.await.unwrap(), Ok(()));
         assert_eq!(server.state().bodies.len(), 4, "create, poll, stanza, poll");
+    }
+
+    /// A request whose sender gave up on it while it was out gives its turn
+    /// up: what the answers after it hold is read all the same. (No caller
+    /// gives up on a send today; a timeout around one is a line anyone may
+    /// write, and without this it would hold every later stanza back.)
+    #[tokio::test(start_paused = true)]
+    async fn a_request_its_sender_gave_up_on_does_not_keep_later_answers_waiting() {
+        let server = BoshServer::new();
+        let (tx, mut rx) = open(Arc::new(server.clone()), "meet.jitsi").await.unwrap();
+        let tx = Arc::new(tx);
+        assert!(rx.recv().await.unwrap().contains("mechanisms"));
+        settle().await; // the first poll is out, and held
+        server.state().stall = true; // a stanza's request is never answered
+        let gave_up = {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_millis(100), tx.send("<message/>")).await
+            })
+        };
+        settle().await; // the stanza's request is out, after the poll
+        server.say("<message id='before'/>"); // on the poll: the request before it
+        assert_eq!(rx.recv().await.unwrap(), "<message id='before'/>");
+        settle().await; // the next poll is out: the request after it
+        assert!(
+            gave_up.await.unwrap().is_err(),
+            "the sender did not give up"
+        );
+        server.say("<message id='after'/>");
+        let got = tokio::time::timeout(S(5), rx.recv()).await;
+        assert_eq!(got, Ok(Ok("<message id='after'/>".to_owned())));
     }
 
     /// What waits for an earlier answer is unread like the rest: it counts

@@ -164,8 +164,9 @@ fn jitsi_rows() -> [Row; 9] {
             burst: 24 << 10,
             formula: "REPLY_LIMIT (1 MiB, the WebSocket's limit for a stanza) for the answer of \
                       each of the two requests that can be open, the poll and one stanza's, and \
-                      INBOX_BYTES (1 MiB) of stanzas taken out of answers and not yet read, past \
-                      which the transport ends; an answer in a two-party room is a few KiB",
+                      INBOX_BYTES (1 MiB) of stanzas taken out of answers and not yet read, \
+                      those that wait for an earlier request's answer among them, past which the \
+                      transport ends; an answer in a two-party room is a few KiB",
         },
         Row {
             layer: "Jitsi config.js (only while it is fetched)",
