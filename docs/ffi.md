@@ -138,6 +138,11 @@ stopping the core or its listeners, it:
   under way;
 - makes the core's own DNS caches forget their answers, so the next lookup
   asks on the new network; FakeDNS mappings are kept;
+- empties what the REALITY hello fallback remembers of servers, so the next
+  dial to each starts with its configured hello again, and a dial under way
+  at the call keeps nothing; this memory is the process's, so a reset of any
+  core empties it (see
+  [REALITY hello fallback](xray-core-differences.md#reality-hello-fallback));
 - moves QUIC carriers and WireGuard to fresh sockets, as
   `xray_core_rebind_hysteria` and `xray_core_rebind_wireguard` do. XHTTP over
   HTTP/3 is moved this way, not let go;

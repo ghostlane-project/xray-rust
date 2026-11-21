@@ -4,6 +4,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc, Mutex,
     },
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -72,6 +73,7 @@ impl RealityTlsSessionProvider for RustlsRealityTlsSessionProvider {
             prepared_client_hello: prepared,
             spider: RealitySpider::parse(""),
             roots: None,
+            first_answer_window: None,
         }))
     }
 }
@@ -482,6 +484,8 @@ struct RustlsRealityTlsSession {
     /// Trust anchors for a server that answers with a real certificate;
     /// `None` is the bundled Web PKI roots. Tests substitute their own.
     roots: Option<Arc<RootCertStore>>,
+    /// Set by [`RealityTlsSession::watch_first_answer`].
+    first_answer_window: Option<Duration>,
 }
 
 impl fmt::Debug for RustlsRealityTlsSession {
@@ -500,6 +504,10 @@ impl fmt::Debug for RustlsRealityTlsSession {
 impl RealityTlsSession for RustlsRealityTlsSession {
     fn set_spider_x(&mut self, spider_x: &str) {
         self.spider = RealitySpider::parse(spider_x);
+    }
+
+    fn watch_first_answer(&mut self, window: Duration) {
+        self.first_answer_window = Some(window);
     }
 
     fn prepared_client_hello(&self) -> Result<RealityPreparedClientHello, RealityError> {
@@ -597,7 +605,10 @@ impl RustlsRealityTlsSession {
         let connector = TokioTlsConnector::from(config);
         let tcp_stream = CapturedStream::new(tcp_stream, server_read_log);
         let connect = connector.connect(server_name, tcp_stream);
-        let stream = connect.await.map_err(TransportError::Tls)?;
+        let stream = match self.first_answer_window {
+            None => connect.await.map_err(TransportError::Tls)?,
+            Some(window) => connect_unless_unanswered(connect, window).await?,
+        };
 
         if real_certificate.accepted.load(Ordering::Acquire) {
             // Xray-core finishes this handshake and crawls the real site
@@ -609,6 +620,34 @@ impl RustlsRealityTlsSession {
 
         Ok(Box::new(PenetratingTlsStream::new(stream)))
     }
+}
+
+/// Drives a handshake whose ClientHello `connect` writes, and gives up with
+/// [`RealityError::ClientHelloUnanswered`] when `window` passes without one
+/// byte from the server. A byte of any kind ends the watch: the handshake
+/// then ends as it would without one, however long that takes.
+///
+/// `connect` is polled before the clock, so a read that was ready when the
+/// window closed has been taken and counts as an answer.
+async fn connect_unless_unanswered<S>(
+    mut connect: tokio_rustls::Connect<CapturedStream<S>>,
+    window: Duration,
+) -> Result<tokio_rustls::client::TlsStream<CapturedStream<S>>, TransportError>
+where
+    S: crate::Carrier,
+{
+    tokio::select! {
+        biased;
+        result = &mut connect => return result.map_err(TransportError::Tls),
+        () = tokio::time::sleep(window) => {}
+    }
+    if connect.get_ref().is_some_and(|carrier| carrier.answered()) {
+        return connect.await.map_err(TransportError::Tls);
+    }
+    Err(RealityError::ClientHelloUnanswered {
+        waited_ms: u64::try_from(window.as_millis()).unwrap_or(u64::MAX),
+    }
+    .into())
 }
 
 fn reality_client_config(
@@ -1131,6 +1170,7 @@ mod tests {
             prepared_client_hello,
             spider: RealitySpider::parse("/probe?c=1&t=1"),
             roots,
+            first_answer_window: None,
         };
         let prepared = prepare_reality_handshake(RealityHandshakeInput {
             version: [26, 10, 31],

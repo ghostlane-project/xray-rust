@@ -1543,6 +1543,53 @@ not byte-identical with, `golang.org/x/net/http2`. As in Xray-core, an empty
 `spiderX` is crawled as `/` and any other value without a leading slash is a
 configuration error.
 
+## REALITY hello fallback
+
+A REALITY ClientHello with the `X25519MLKEM768` key share is about 1.8 KB
+and leaves in two TCP segments. Some networks deliver the first segment and
+never the rest, retransmissions included: the server waits for the end of the
+hello, and the client sees a handshake nobody answers. Xray-core's client
+then waits until its handshake deadline, on every dial. xray-rust watches
+such a hello and retries once with a short one
+(`crates/xray-transport/src/reality_hello_fallback.rs`):
+
+- A dial whose fingerprint has the hybrid share (`chrome`, `firefox`,
+  `safari`, `random` and the other names `is_reality_fingerprint_hybrid`
+  lists), on a bare TCP socket, is watched. When not one byte of answer
+  arrives within 4 s of the ClientHello, that connection is closed and one
+  more is made with the hello of `hellochrome_120`, uTLS's Chrome 120
+  profile, whose only key share beside GREASE is X25519 and whose first
+  flight stays under 1,200 bytes. Any byte of answer ends the watch, an alert
+  or a certificate that then fails verification included: a server that
+  answers the hybrid hello is never retried.
+- The outcome is kept for 10 minutes per server (address, port and server
+  name), for at most 64 servers, the oldest going first. Where the short
+  hello worked, later dials send it at once. Where it stalled as well, or its
+  answer failed REALITY's verification (a server from Xray-core v26.10.21 on
+  hands a hello without the hybrid share to its camouflage target), the dial
+  fails with the stall as its error and later dials send only the configured
+  hello, unwatched, as before. A retry that is reset, closed or never
+  connects fails the dial with the stall and is not kept, and a failure is
+  not kept over a short hello that worked at the same server.
+  `xray_core_reset_network` empties the memory, and a dial under way at the
+  reset keeps nothing.
+- Raw TCP (VLESS with Vision), XHTTP over REALITY on HTTP/1.1 and HTTP/2,
+  and gRPC over REALITY reach the watch; gRPC's 5 s bound on a cold
+  connection leaves the retry about one second. A REALITY handshake behind
+  `tlshello` fragmentation, `sudoku` or `xmc`, or through another outbound,
+  dials as before, and so does plain TLS. There is no config field.
+
+What it gives up. The short hello's connection is keyed by X25519 alone,
+without the post-quantum ML-KEM-768 half, and so is every dial the memory
+starts short in those 10 minutes. That is the key exchange every REALITY
+client used before the hybrid share; REALITY's own authentication (the
+sealed session id and the certificate binding, with ML-DSA-65 when
+configured) is the same for both hellos. Whoever stands on the path and can
+drop packets can force the fallback by dropping the hybrid hello's second
+segment, and renew it every 10 minutes; the same party can also drop the
+connection altogether. A recorded session that used the short hello is not
+protected against a later quantum computer.
+
 ## Request header and first payload
 
 VLESS (including Vision), Trojan, VMess and Shadowsocks outbounds hold the

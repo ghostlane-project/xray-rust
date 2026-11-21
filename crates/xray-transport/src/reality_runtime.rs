@@ -2,7 +2,7 @@ use std::{
     fmt,
     net::SocketAddr,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -55,6 +55,9 @@ struct DeferredRuntimeRealityConnection {
     config: RealityClientConfig,
     session_provider: Arc<dyn RealityTlsSessionProvider>,
     context_provider: Arc<dyn RealityHandshakeContextProvider>,
+    /// The first-answer watch of `crate::reality_hello_fallback`, for a
+    /// handshake over the bare socket only.
+    first_answer_window: Option<Duration>,
 }
 
 #[async_trait]
@@ -64,6 +67,9 @@ impl PreparedRealityTlsConnection for DeferredRuntimeRealityConnection {
         tcp_stream: tokio::net::TcpStream,
     ) -> Result<BoxedTransportStream, TransportError> {
         self.complete_inner(Carrier::Tcp(tcp_stream)).await
+    }
+    fn watch_first_answer(&mut self, window: Duration) {
+        self.first_answer_window = Some(window);
     }
     async fn complete_fragmented(
         self: Box<Self>,
@@ -98,6 +104,7 @@ impl DeferredRuntimeRealityConnection {
             mut config,
             session_provider,
             context_provider,
+            first_answer_window,
         } = *self;
         let connector = RealityConnector::new(config.clone());
         let mut session = session_provider.create_session(RealityClientHelloRequest {
@@ -105,6 +112,9 @@ impl DeferredRuntimeRealityConnection {
             fingerprint: &config.fingerprint,
         })?;
         session.set_spider_x(&config.spider_x);
+        if let (Some(window), Carrier::Tcp(_)) = (first_answer_window, &carrier) {
+            session.watch_first_answer(window);
+        }
         let prepared_client_hello = session.prepared_client_hello()?;
         let context = context_provider.context();
         let prepared_handshake =
@@ -194,6 +204,7 @@ impl RealityRuntimeEngine {
             config: config.clone(),
             session_provider: Arc::clone(&self.session_provider),
             context_provider: Arc::clone(&self.context_provider),
+            first_answer_window: None,
         }))
     }
 }

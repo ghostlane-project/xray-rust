@@ -43,7 +43,8 @@ impl NetworkChanges {
 /// One core's signal that the host reset its network, as a host does when
 /// the device moved to another network: a connection a transport keeps for
 /// later flows, opened on the old path, is let go instead of waiting for its
-/// timeouts, and so is an answer a DNS cache kept from it.
+/// timeouts, and so is an answer a DNS cache kept from it. What the REALITY
+/// hello fallback remembers of the old path is forgotten at once.
 ///
 /// Each reset starts a new generation. A pooled connection belongs to the
 /// generation its dial started in: it is handed to no flow of a later one,
@@ -68,6 +69,10 @@ impl NetworkResets {
     /// TCP however many slots it keeps. It is not a count of connections let
     /// go.
     pub fn reset(&self) -> u64 {
+        // What `reality_hello_fallback` remembers was seen on the old
+        // network. Its memory is the process's, not one core's, so any
+        // core's reset empties it.
+        crate::reality_hello_fallback::forget_all();
         self.0
             .send_modify(|generation| *generation = generation.wrapping_add(1));
         self.0.receiver_count() as u64

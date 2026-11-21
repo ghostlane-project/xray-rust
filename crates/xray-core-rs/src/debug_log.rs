@@ -100,6 +100,33 @@ fn route_decision_message(event: &RouteDecisionLog<'_>) -> String {
     )
 }
 
+/// One line for what the REALITY hello fallback did on a dial to `server`:
+/// that the configured hello got no answer and the short one is tried, or
+/// what the retry's outcome is remembered as. The server is written as every
+/// dial line writes a target, by its port alone.
+pub(crate) fn reality_hello_message(
+    server: &Target,
+    event: xray_transport::RealityHelloEvent,
+) -> String {
+    use xray_transport::{RealityHelloEvent, ShortHelloVerdict};
+    match event {
+        RealityHelloEvent::FallbackUsed { waited } => format!(
+            "Debug realityHelloFallback server={} unansweredMs={} retry=shortHello",
+            target_label(server),
+            waited.as_millis()
+        ),
+        RealityHelloEvent::Remembered { verdict, ttl } => format!(
+            "Debug realityHelloFallback server={} remembered={} forSecs={}",
+            target_label(server),
+            match verdict {
+                ShortHelloVerdict::Works => "shortHelloWorks",
+                ShortHelloVerdict::DoesNotHelp => "shortHelloDoesNotHelp",
+            },
+            ttl.as_secs()
+        ),
+    }
+}
+
 pub(crate) fn configured_tag_label(tag: Option<&str>) -> &'static str {
     if tag.is_some() {
         "<configured>"
@@ -181,6 +208,52 @@ mod tests {
         assert_eq!(
             route_decision_message(&event),
             "Debug routeDecision inbound=<configured> network=udp original_target=<redacted-ip>:443 sniffed_protocol=quic sniffed_domain=<redacted-domain> route_target=<redacted-domain>:443 dial_target=<redacted-ip>:443 selected_outbound=vless"
+        );
+    }
+
+    #[test]
+    fn reality_hello_lines_name_the_server_by_its_port_alone() {
+        use std::time::Duration;
+        use xray_transport::{RealityHelloEvent, ShortHelloVerdict};
+
+        let by_name = Target::new(
+            TargetAddr::Domain("exit.example".to_owned()),
+            443,
+            Network::Tcp,
+        );
+        let by_address = Target::new(
+            TargetAddr::Ip("192.0.2.10".parse().unwrap()),
+            8443,
+            Network::Tcp,
+        );
+        assert_eq!(
+            reality_hello_message(
+                &by_name,
+                RealityHelloEvent::FallbackUsed {
+                    waited: Duration::from_secs(4)
+                }
+            ),
+            "Debug realityHelloFallback server=<redacted-domain>:443 unansweredMs=4000 retry=shortHello"
+        );
+        assert_eq!(
+            reality_hello_message(
+                &by_address,
+                RealityHelloEvent::Remembered {
+                    verdict: ShortHelloVerdict::Works,
+                    ttl: Duration::from_secs(600)
+                }
+            ),
+            "Debug realityHelloFallback server=<redacted-ip>:8443 remembered=shortHelloWorks forSecs=600"
+        );
+        assert_eq!(
+            reality_hello_message(
+                &by_name,
+                RealityHelloEvent::Remembered {
+                    verdict: ShortHelloVerdict::DoesNotHelp,
+                    ttl: Duration::from_secs(600)
+                }
+            ),
+            "Debug realityHelloFallback server=<redacted-domain>:443 remembered=shortHelloDoesNotHelp forSecs=600"
         );
     }
 

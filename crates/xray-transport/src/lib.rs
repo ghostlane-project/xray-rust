@@ -48,6 +48,7 @@ mod quic_congestion;
 mod quic_receive_batch;
 pub mod reality;
 pub mod reality_connector;
+pub mod reality_hello_fallback;
 pub mod reality_runtime;
 mod reality_rustls;
 mod reality_spider;
@@ -78,6 +79,7 @@ pub use memory_budget::{
 pub use network_change::{NetworkChanges, NetworkResets};
 pub(crate) use penetrating_tls::{CapturedStream, Carrier, PenetratingTlsStream, ServerReadLog};
 pub use reality_connector::{RealityTlsSession, RealityTlsSessionProvider};
+pub use reality_hello_fallback::{RealityHelloEvent, RealityHelloReport, ShortHelloVerdict};
 pub use reality_runtime::{
     RealityHandshakeContextProvider, RealityRuntimeEngine, SystemRealityHandshakeContextProvider,
 };
@@ -444,6 +446,13 @@ pub trait PreparedRealityTlsConnection: Send {
         self: Box<Self>,
         tcp_stream: TcpStream,
     ) -> Result<BoxedTransportStream, TransportError>;
+
+    /// Arms the first-answer watch for [`Self::complete`]: it then fails
+    /// with [`reality::RealityError::ClientHelloUnanswered`] when the server
+    /// sends not one byte within `window` of the ClientHello, the signal
+    /// [`reality_hello_fallback`] retries on. Any byte ends the watch. An
+    /// engine that cannot watch ignores it and is never retried.
+    fn watch_first_answer(&mut self, _window: std::time::Duration) {}
 
     /// Optional one-shot record transform. Legacy engines fail explicitly.
     async fn complete_fragmented(

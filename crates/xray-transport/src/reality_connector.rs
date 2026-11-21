@@ -72,6 +72,14 @@ pub trait RealityTlsSession: Send {
     /// that cannot crawl ignore it.
     fn set_spider_x(&mut self, _spider_x: &str) {}
 
+    /// Arms the first-answer watch for [`Self::complete`]: the handshake
+    /// fails with [`RealityError::ClientHelloUnanswered`] when the server
+    /// sends not one byte within `window` of the ClientHello. Any byte ends
+    /// the watch, and the handshake then ends as it would without one.
+    /// Sessions that cannot watch ignore it, so nothing is ever retried for
+    /// them.
+    fn watch_first_answer(&mut self, _window: std::time::Duration) {}
+
     async fn complete(
         self: Box<Self>,
         tcp_stream: TcpStream,
