@@ -23,16 +23,21 @@ use xray_config::{parse_xray_json_with_exclusive_geodata_dirs, OutboundSettings,
 const NAMES: usize = 81_000;
 const PREFIXES: usize = 25_000;
 
-/// The heap the config holds for 81,000 names in one routing rule.
-const NAMES_BOUND: usize = 1;
-/// The same for 25,000 prefixes in one routing rule.
-const PREFIXES_BOUND: usize = 1;
+/// The heap the config holds for 81,000 names in one routing rule. Measured
+/// 4.05 MiB (4,242,777 bytes, 52 a name; the names are 22 to 27 bytes long).
+const NAMES_BOUND: usize = 5 << 20;
+/// The same for 25,000 prefixes in one routing rule. Measured 205 KiB
+/// (209,577 bytes, 8 a prefix).
+const PREFIXES_BOUND: usize = 256 << 10;
 /// The app's shape: the names in a routing rule and again in the DNS
-/// outbound's rule, the prefixes in a second routing rule.
-const APP_SHAPE_BOUND: usize = 1;
+/// outbound's rule, the prefixes in a second routing rule. Measured 8.27 MiB
+/// (8,676,092 bytes): each rule that names the list holds a copy of its own.
+const APP_SHAPE_BOUND: usize = 10 << 20;
 /// The peak over the heap before the load, while the app's shape loads: the
 /// file's bytes, the decoded list and the matchers are alive together.
-const APP_SHAPE_PEAK_BOUND: usize = 1;
+/// Measured 22.50 MiB (23,596,489 bytes); one rule of names alone peaks at
+/// 18.46 MiB.
+const APP_SHAPE_PEAK_BOUND: usize = 28 << 20;
 
 struct CountingAllocator;
 
