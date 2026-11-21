@@ -148,6 +148,24 @@ pub(crate) fn off_worker<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
+/// The signalling's TLS, before anything dials a carrier: the host's own
+/// when it installed one (the carriers' tests do), else the shaped connector
+/// the CLI installs. A start needs it, and so does a check or a ping made
+/// before any start (the desktop's one-shots, a phone's check of a room it
+/// has not joined yet): without it their first `https://` dial ended in `no
+/// TLS connector installed for a TLS URL`. Whoever comes first installs it;
+/// the next finds it there and leaves it alone.
+///
+/// # Errors
+/// The connector could not be built.
+pub(crate) fn ensure_signalling_tls() -> Result<(), String> {
+    if !olc_net::stream::tls_connector_installed() {
+        olc_net::shaped_tls::install(olc_net::shaped_tls::FINGERPRINT)
+            .map_err(|e| format!("olcRTC runtime: tls: {e}"))?;
+    }
+    Ok(())
+}
+
 struct State {
     defaults: RuntimeConfig,
     phase: Phase,
@@ -666,12 +684,7 @@ impl OlcrtcRuntime {
             return Err(OlcrtcError::AlreadyRunning);
         }
         st.defaults.validate()?;
-        // The signalling's TLS: the host's own when it installed one (the
-        // carriers' tests do), else the shaped connector the CLI installs.
-        if !olc_net::stream::tls_connector_installed() {
-            olc_net::shaped_tls::install(olc_net::shaped_tls::FINGERPRINT)
-                .map_err(|e| OlcrtcError::Run(format!("olcRTC runtime: tls: {e}")))?;
-        }
+        ensure_signalling_tls().map_err(OlcrtcError::Run)?;
         let rt = ghostlane_runtime::handle()
             .map_err(|e| OlcrtcError::Run(format!("olcRTC runtime: no threads: {e}")))?;
         let cfg = st
