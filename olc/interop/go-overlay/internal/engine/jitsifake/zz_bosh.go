@@ -515,14 +515,33 @@ func boshRoom(stanza string) string {
 	return room
 }
 
-// BOSHLogin is what a client said over BOSH from its first stanza to its room
-// disco (seven: no stream open and no stream management there), normalised as
-// Login does.
-func BOSHLogin(said []string, room string) string {
-	if len(said) > 7 {
-		said = said[:7]
+// JoinStanzas is Login for either transport: what a client said from its
+// SASL request to its room disco (seven stanzas), with the stream's own
+// frames left out (a WebSocket's two <open/> and its <enable/>; BOSH has
+// none) and the client's own answers too, whose place among the rest is not
+// fixed. A client over BOSH and one over a WebSocket that join the same way
+// say the same JoinStanzas.
+func JoinStanzas(said []string, room string) string {
+	var kept []string
+	for _, t := range said {
+		if strings.HasPrefix(t, "<open ") || strings.HasPrefix(t, "<enable ") {
+			continue
+		}
+		if strings.HasPrefix(t, "<iq ") && attr(head(t), "type") == "result" {
+			continue
+		}
+		kept = append(kept, t)
+		if len(kept) == 7 {
+			break
+		}
 	}
-	return Login(said, room)
+	return Login(kept, room)
+}
+
+// OverBOSH says a transcript is a BOSH client's: it starts at the SASL
+// request, with no stream open before it.
+func OverBOSH(said []string) bool {
+	return len(said) > 0 && strings.HasPrefix(said[0], "<auth ")
 }
 
 // BOSHBodies is the session's request bodies with what differs from one run
@@ -543,4 +562,34 @@ func BOSHBodies(st BOSHState) (bodies []string, consecutive bool) {
 		bodies = append(bodies, b)
 	}
 	return bodies, consecutive
+}
+
+// boshPoll is a poll with its ids replaced as BOSHBodies does.
+const boshPoll = `<body rid="RID" sid="SID" xmlns="` + boshNS + `"/>`
+
+// BOSHJoin is a session's requests from the session request to the room
+// disco, in the order of their ids: nine, the polls and the client's own
+// answers left out, with what differs from one client to the next replaced
+// as Login does. A Go client and a Rust one that join over BOSH the same way
+// give the same BOSHJoin.
+func BOSHJoin(st BOSHState, room string) string {
+	bodies, _ := BOSHBodies(st)
+	var kept, inner []string
+	for _, b := range bodies {
+		if b == boshPoll || strings.Contains(b, `type="result"`) {
+			continue
+		}
+		kept = append(kept, b)
+		inner = append(inner, boshInner(b))
+		if len(kept) == 9 {
+			break
+		}
+	}
+	same := loginSame(inner, room)
+	for i := range kept {
+		if inner[i] != "" {
+			kept[i] = strings.Replace(kept[i], inner[i], same[i], 1)
+		}
+	}
+	return strings.Join(kept, "\n")
 }

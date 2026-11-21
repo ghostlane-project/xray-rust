@@ -740,6 +740,11 @@ func Login(said []string, room string) string {
 	if len(said) > 10 {
 		said = said[:10]
 	}
+	return strings.Join(loginSame(said, room), "\n")
+}
+
+// loginSame is Login's replacements over every text of said, one for one.
+func loginSame(said []string, room string) []string {
 	var nick, user, name string
 	for _, t := range said {
 		if strings.HasPrefix(t, "<presence ") {
@@ -763,5 +768,5 @@ func Login(said []string, room string) string {
 		}
 		out = append(out, strings.ReplaceAll(t, room, "<ROOM>"))
 	}
-	return strings.Join(out, "\n")
+	return out
 }

@@ -13,6 +13,10 @@
 //	    -olcrtc.gate-target=jitsifake -olcrtc.gate-rust-bin=<olc-client> \
 //	    [-olcrtc.gate-flavours=rust,cli]
 //
+// With -olcrtc.gate-jitsi-bosh the rust client's WebSocket is refused and
+// config.js names the fake's /http-bind: the same cells with its XMPP over
+// BOSH (plan J19), the Go server beside it on its WebSocket.
+//
 // The rust flavour is the Rust client with provider jitsi, its plain HTTP
 // origin and WebSocket the fake's (engine_extra config_base and ws_url); the
 // cli flavour is the Go client, a process of its own (zz_go_child_test.go),
@@ -37,6 +41,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -54,13 +59,21 @@ import (
 var gateJitsiStall = flag.Bool("olcrtc.gate-jitsi-stall", false,
 	"TestGateRustJitsiFake with a stopped reader: the fake's bridge stops handing frames to every client for 1.5 s in every 7")
 
+var gateJitsiBOSH = flag.Bool("olcrtc.gate-jitsi-bosh", false,
+	"TestGateRustJitsiFake with the rust client over BOSH: the fake refuses the WebSocket on the rust client's plain listener and its config.js names /http-bind; the Go server and the cli flavour stay on the WebSocket over TLS")
+
 // targetJitsiFake is the gate target of the Go fake of a Jitsi room
 // (jitsi.sh gate).
 const targetJitsiFake = "jitsifake"
 
+// gateGoPollLimit is how long the Go engine waits for a BOSH poll's answer
+// (internal/protect/protect.go, the response header timeout).
+const gateGoPollLimit = 10 * time.Second
+
 // stanzaPattern is what an XMPP stanza of the join looks like in a log line:
-// an element the client sends or hears, or a JID of the fake's domain.
-var stanzaPattern = regexp.MustCompile(`<(iq|presence|message|open|auth|stream:|jingle|success|enabled|bind)[ >/:]|@meet\.jitsi|muc\.meet\.jitsi`)
+// an element the client sends or hears (a BOSH body among them), or a JID of
+// the fake's domain.
+var stanzaPattern = regexp.MustCompile(`<(iq|presence|message|open|auth|stream:|jingle|success|enabled|bind|body)[ >/:]|@meet\.jitsi|muc\.meet\.jitsi`)
 
 // jitsiWatch reads every line of the process log as it is written, in front
 // of the MTS watch (which holds the secrets and the heap gauge): the stanzas a
@@ -146,6 +159,11 @@ func TestJitsiLogWatchReadsSecrets(t *testing.T) {
 	if strings.Count(out.String(), "\n") != 7 {
 		t.Errorf("the watch did not pass every line on: %q", out.String())
 	}
+	// The BOSH pass: a request's body in a line is a stanza in a line.
+	write(rustFlavour, "posted <body rid=\"7\" sid=\"s\"/>\n")
+	if n, _ := w.stanzas(rustFlavour); n != 3 {
+		t.Errorf("a BOSH body in a line was not read as a stanza: %d stanza lines, want 3", n)
+	}
 }
 
 // jitsiScenarios is the interop registry with S7 for the rust flavour alone.
@@ -192,7 +210,8 @@ func TestGateRustJitsiFake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir = filepath.Join(dir, targetJitsiFake+map[bool]string{true: "-stalled", false: ""}[*gateJitsiStall])
+	dir = filepath.Join(dir, targetJitsiFake+map[bool]string{true: "-stalled", false: ""}[*gateJitsiStall]+
+		map[bool]string{true: "-bosh", false: ""}[*gateJitsiBOSH])
 	if err := os.MkdirAll(dir, artifactsPerm); err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +220,12 @@ func TestGateRustJitsiFake(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(hub.Close)
+	if *gateJitsiBOSH {
+		// Only the plain listener refuses: the rust client's. A request is
+		// held for the wait its client asked for, as Prosody holds it.
+		hub.BOSH(true)
+		hub.RefusePlainWebSocket(true)
+	}
 	if *gateJitsiStall {
 		stop := make(chan struct{})
 		t.Cleanup(func() { close(stop) })
@@ -302,8 +327,18 @@ func TestGateRustJitsiFake(t *testing.T) {
 
 	// The room, from the fake's side: every room the run opened.
 	logins := map[string]int{}
+	overBOSH := 0
 	hub.EachRoom(func(name string, st jitsifake.State) {
 		for _, said := range st.Transcripts {
+			if *gateJitsiBOSH {
+				// A client over BOSH opens no stream and enables no stream
+				// management: the rest is compared.
+				logins[jitsifake.JoinStanzas(said, name)]++
+				if jitsifake.OverBOSH(said) {
+					overBOSH++
+				}
+				continue
+			}
 			logins[jitsifake.Login(said, name)]++
 		}
 		t.Logf("room %d joins, %d initiates, %d accepts, %d hellos, %d relayed, %d dropped, video %v, classes %v",
@@ -328,6 +363,47 @@ func TestGateRustJitsiFake(t *testing.T) {
 		for l, n := range logins {
 			t.Errorf("%d clients logged in as:\n%s", n, l)
 		}
+	}
+
+	// The BOSH pass: the rust client came over BOSH, and kept to it.
+	if sessions := hub.BOSHSessions(); *gateJitsiBOSH {
+		if overBOSH == 0 || len(sessions) == 0 {
+			t.Errorf("%d clients joined over BOSH in %d sessions: the pass proved nothing", overBOSH, len(sessions))
+		}
+		var requests, ahead int
+		var longest time.Duration
+		for _, s := range sessions {
+			requests += len(s.Requests)
+			ahead += s.OutOfOrder
+			for _, d := range s.Held {
+				longest = max(longest, d)
+			}
+			if _, consecutive := jitsifake.BOSHBodies(s); !consecutive {
+				t.Errorf("a BOSH session's request ids do not go up by one (%d requests)", len(s.Requests))
+			}
+			if s.Refused != 0 || s.MaxInFlight > 2 {
+				t.Errorf("a BOSH session: %d requests refused for their id, %d open at once (want 0 and at most 2)", s.Refused, s.MaxInFlight)
+			}
+			for _, r := range s.Requests {
+				if ct := r.Header.Get("Content-Type"); ct != "text/xml; charset=utf-8" || r.Path != "/http-bind" {
+					t.Errorf("a BOSH request to %q with Content-Type %q", r.Path, ct)
+					break
+				}
+			}
+		}
+		t.Logf("bosh: %d clients over BOSH, %d sessions, %d requests, %d one ahead of their turn, the longest a request was held %s",
+			overBOSH, len(sessions), requests, ahead, longest.Round(100*time.Millisecond))
+		// S4 keeps the tunnel up for a minute with nothing to say over XMPP
+		// but the client's ping: a poll is held far past the 10 s the Go
+		// client waits for one (jitsifake's TestGoJitsiFakeBOSHHeldPoll).
+		for _, c := range rep.Cells {
+			if strings.HasSuffix(c.ID, "/"+rustFlavour+"/S4") && fmt.Sprint(c.Status) == "pass" && longest <= gateGoPollLimit {
+				t.Errorf("S4 passed and no BOSH request was held longer than %s (the longest: %s): the fake did not hold a poll as a server does",
+					gateGoPollLimit, longest.Round(100*time.Millisecond))
+			}
+		}
+	} else if len(sessions) != 0 {
+		t.Errorf("%d BOSH sessions in a run that is not the BOSH pass", len(sessions))
 	}
 
 	// The logs and the memory.
