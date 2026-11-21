@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # deploy.sh up <dir>            start the lab's Jitsi Meet deployment
 # deploy.sh bosh-only <dir>     close its XMPP WebSocket: only BOSH is left
+# deploy.sh first <dir>         what Jicofo made of the Rust client's answer
+#                               about itself (first.sh on the logs so far)
 # deploy.sh collect <dir> <out> the containers' logs and settings into <out>
 # deploy.sh down <dir>          stop it
 #
@@ -43,7 +45,7 @@ die() {
 	exit 1
 }
 
-usage="usage: deploy.sh up <dir> | bosh-only <dir> | collect <dir> <out> | down <dir>"
+usage="usage: deploy.sh up <dir> | bosh-only <dir> | first <dir> | collect <dir> <out> | down <dir>"
 what=${1:?$usage}
 dir=${2:?$usage}
 
@@ -201,14 +203,39 @@ up() {
 	echo "jitsi-live: up: https://$LAB_HOST at $ip, docker-jitsi-meet $DJM_TAG ($DJM_COMMIT)"
 }
 
+# started <service>...: each service's container and the moment it started,
+# one a line: the same text before and after means none was made again or
+# restarted.
+started() {
+	local s id
+	for s in "$@"; do
+		id=$(compose ps -q "$s")
+		[ -n "$id" ] || die "no container of $s"
+		printf '%s %s\n' "$s" "$(docker inspect -f '{{.Id}} {{.State.StartedAt}}' "$id")"
+	done
+}
+
 # bosh_only: the release's own switch (ENABLE_XMPP_WEBSOCKET=0) on the front:
 # its nginx has no /xmpp-websocket location any more (the path is answered
 # as a room's page, with no upgrade) and config.js names no websocket, so a
 # client's WebSocket dial fails and BOSH (/http-bind) is all that is left.
+#
+# The front alone is made again (--no-deps). Prosody's environment names the
+# same setting, so without it the release's compose file makes Prosody again
+# too: Jicofo then drops its bridge, the bridge does not come back to the
+# brewery room within a minute, and no room gets an offer, the Go client's
+# included (run 44929668208: "There are no operational bridges"). The check
+# after the switch holds that: the three other containers are the ones that
+# were running before it.
 bosh_only() {
+	local n before
+	before=$(started prosody jicofo jvb)
 	setting ENABLE_XMPP_WEBSOCKET 0
-	compose up -d --force-recreate web
-	local n
+	compose up -d --no-deps --force-recreate web
+	[ "$(started prosody jicofo jvb)" = "$before" ] || {
+		compose ps -a
+		die "the switch restarted more than the front: a room would get no offer"
+	}
 	for n in $(seq 1 30); do
 		if front /config.js 2>/dev/null | grep -q 'config.hosts.domain'; then
 			break
@@ -220,6 +247,17 @@ bosh_only() {
 	fi
 	front /config.js | grep -E '^config\.(hosts\.|bosh|websocket)' || true
 	echo "jitsi-live: the WebSocket upgrade now: $(upgrade_code)"
+}
+
+# first: Jicofo's and Prosody's logs so far, read by first.sh (which says
+# what it holds): the run before it had the Rust client join a room of its
+# own ahead of everyone (run.sh with -olcrtc.gate-jitsi-live-first).
+first() {
+	local tmp
+	tmp=$(mktemp -d)
+	compose logs --no-color jicofo >"$tmp/jicofo.log" 2>&1
+	compose logs --no-color prosody >"$tmp/prosody.log" 2>&1
+	bash "$(dirname "$0")/first.sh" "$tmp/jicofo.log" "$tmp/prosody.log"
 }
 
 # collect: the four containers' logs, what the front serves and the settings
@@ -251,6 +289,7 @@ collect() {
 case "$what" in
 up) up ;;
 bosh-only) bosh_only ;;
+first) first ;;
 collect) collect "${3:?$usage}" ;;
 down) compose down -v --remove-orphans ;;
 *) die "$usage" ;;

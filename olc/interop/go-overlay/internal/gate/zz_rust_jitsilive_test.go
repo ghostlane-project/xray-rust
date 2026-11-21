@@ -34,6 +34,11 @@
 //     runs them (-olcrtc.gate-jitsi-live-plan=false leaves them out). S7,
 //     the memory cell, is the plain jitsifake run's: see tlsScenarios.
 //
+// -olcrtc.gate-jitsi-live-first puts one step before both: the Rust client
+// alone in a room of its own, on a deployment nobody has joined yet (see
+// liveFirst: it is how a real Jicofo comes to ask the Rust client, and not
+// the Go server, what it can do).
+//
 // -olcrtc.gate-jitsi-live-host=selftest runs the same code against the Go
 // fake (jitsifake) over its TLS listener: the harness's own check on the
 // build box, and the Rust client's https and wss path against the fake.
@@ -74,6 +79,9 @@ var (
 		"TestGateRustJitsiLive: the host of the lab's own Jitsi deployment on this machine; selftest is the Go fake")
 	gateJitsiLivePlan = flag.Bool("olcrtc.gate-jitsi-live-plan", true,
 		"TestGateRustJitsiLive: after the rows, the gate's cells S0-S7")
+	gateJitsiLiveFirst = flag.Bool("olcrtc.gate-jitsi-live-first", false,
+		"TestGateRustJitsiLive: before the rows, the Rust client joins a room of its own with no server in it; "+
+			"on a deployment nobody has joined, Jicofo asks it for its features (deploy.sh first reads what came of it)")
 )
 
 const (
@@ -96,6 +104,12 @@ const (
 	// liveNoPinBudget is how long a Rust client without the pin gets to
 	// show it has no session: several times what a join with it takes.
 	liveNoPinBudget = 20 * time.Second
+	// liveFirstPrefix starts the name of the room the Rust client is alone
+	// in; deploy.sh first finds the room in the deployment's logs by it.
+	liveFirstPrefix = "first-"
+	// liveFirstBudget is how long the Rust client stays there: Jicofo's
+	// question comes with the join, within a second.
+	liveFirstBudget = 12 * time.Second
 )
 
 var (
@@ -542,6 +556,51 @@ func liveRows(t *testing.T, target Target, client Client, origin *liveOrigin, ca
 	}
 }
 
+// liveFirst is the Rust client alone in a room of its own, before any Go
+// engine has joined the deployment. Jicofo reads what a client can do from
+// its answer to a disco#info query, and asks only the first participant that
+// shows a caps hash it has not seen; every later one gets the remembered
+// answer. In the rows that first participant is always the Go server: it
+// joins before the client and shows the same hash. Here it is the Rust
+// client. Nothing serves the room and a lone participant gets no offer, so
+// there is no session to wait for: the step is the join and the stay. What
+// Jicofo made of the answer is in the deployment's logs, and deploy.sh first
+// is the check: who was asked, and which features every participant of the
+// rows was then given.
+func liveFirst(t *testing.T, rc rustClient, host string, capture *Capture, dir string, secrets *[]string) {
+	t.Helper()
+	var name [6]byte
+	var key [32]byte
+	for _, b := range [][]byte{name[:], key[:]} {
+		if _, err := rand.Read(b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	room := liveFirstPrefix + hex.EncodeToString(name[:])
+	ep := Endpoint{Provider: providerJitsi, Transport: transportData, Room: "https://" + host + "/" + room,
+		Key: hex.EncodeToString(key[:]), DNS: defaultDNS}
+	*secrets = append(*secrets, ep.Key)
+	stepDir := filepath.Join(dir, "first-"+rc.Name())
+	if err := os.MkdirAll(stepDir, artifactsPerm); err != nil {
+		t.Fatal(err)
+	}
+	cell := capture.Begin()
+	defer func() {
+		if err := cell.WriteScrubbed(filepath.Join(stepDir, "client.log"), *secrets...); err != nil {
+			t.Logf("first/%s: the client's log was not kept: %v", rc.Name(), err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(runContext(t), 3*liveFirstBudget)
+	defer cancel()
+	rc.start = liveFirstBudget
+	tun, err := rc.Start(ctx, ep)
+	if err == nil {
+		tun.Stop()
+		t.Fatalf("alone in %s the client said its session was up: nothing serves that room", room)
+	}
+	t.Logf("first/%s: alone in %s for %s, no session as nothing serves it (%v)", rc.Name(), room, liveFirstBudget, err)
+}
+
 // TestGateRustJitsiLive is the gate on the jitsilive target.
 func TestGateRustJitsiLive(t *testing.T) {
 	if *gateTargetName != targetJitsiLive {
@@ -611,6 +670,15 @@ func TestGateRustJitsiLive(t *testing.T) {
 		}
 	}
 	secrets := []string{}
+
+	if *gateJitsiLiveFirst {
+		if hub != nil {
+			t.Fatal("-olcrtc.gate-jitsi-live-first is for a deployment: the Go fake asks no client for its features")
+		}
+		t.Run("first/"+rust.Name(), func(t *testing.T) {
+			liveFirst(t, rust, host, capture, dir, &secrets)
+		})
+	}
 
 	// The rows, a flavour at a time.
 	origin := startLiveOrigin(t)

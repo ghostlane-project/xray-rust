@@ -16,6 +16,10 @@
 # -olcrtc.gate-flavours=cli,rust runs the Go client first: it is the control
 # row. If it fails, the deployment is wrong, not the port.
 #
+# -olcrtc.gate-jitsi-live-first puts the Rust client alone in a room of its
+# own before all of it, so that a real Jicofo asks it what it can do;
+# deploy.sh first (first.sh) then reads what Jicofo made of the answer.
+#
 # What the run needs, all written by deploy.sh up into <dir>/lab.env:
 #   OLCRTC_GATE_JITSI_LIVE_HOST  the deployment's host; it must resolve to
 #                                this machine, the test refuses any other;
