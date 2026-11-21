@@ -495,4 +495,5 @@ func TestZZVectors(t *testing.T) {
 	zzEpochs(t)
 	zzJingle(t)
 	zzRelay(t)
+	zzLiveVectors(t)
 }

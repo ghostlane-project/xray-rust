@@ -74,6 +74,10 @@ expected=(
 	jitsi/room.json jitsi/nick.json jitsi/configjs.json jitsi/frames.json jitsi/epoch.json
 	# The fake's half (internal/engine/jitsifake): what the engine says to a room.
 	jitsi/transcript.json jitsi/handshake.json jitsi/offer.json jitsi/accept.json jitsi/relaywin.json
+	# A real deployment's session-initiate, kept as it arrived, through the
+	# engine's own negotiation, and the engine's whole connection to that
+	# deployment, both ways (internal/engine/jitsi, zz_vectors_live_test.go).
+	jitsi/live.json
 	# The rejoin supervisor's (internal/engine: olc-net's reconnect.rs).
 	reconnect/backoff.json
 )
