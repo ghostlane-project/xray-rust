@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::bosh::Post;
 use super::conn::{BoxFut, ConnError, Framing, Rx, Tx};
@@ -179,11 +179,14 @@ pub const BOSH_SPIN: usize = 2_000;
 
 const BOSH_NS: &str = "http://jabber.org/protocol/httpbind";
 const BOSH_TERMINATE: &str = "<body type='terminate' xmlns='http://jabber.org/protocol/httpbind'/>";
+const BOSH_FEATURES: &str = "<stream:features xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></stream:features>";
 
 /// A BOSH connection manager as Prosody's is (XEP-0124), with the fake
-/// room's Prosody and Jicofo behind it: one request is held, a second
-/// releases the older, what the server says goes out on the oldest held
-/// request, and a held request is answered empty after `hold`.
+/// room's Prosody and Jicofo behind it: requests are taken in the order of
+/// their ids (one that comes a step ahead waits for the missing one, any
+/// other ends the session), one request is held, a second releases the
+/// older, what the server says goes out on the oldest held request, and a
+/// held request is answered empty after `hold`.
 #[derive(Clone)]
 pub struct BoshServer(Arc<Mutex<BoshState>>);
 
@@ -218,6 +221,20 @@ pub struct BoshState {
     pub late: Option<String>,
     /// A request that carries a stanza is never answered.
     pub stall: bool,
+    /// The stream's features after the SASL exchange are the restart's
+    /// answer, as XEP-0206 has it and as the Go fake says them by default.
+    /// Off, they are said as Prosody says them (13.0.7, the Prosody log of
+    /// run 44935236619): after `<success/>` the stream is not open, the
+    /// session's next request opens it, whichever that is, and its answer
+    /// carries the features; the restart is then held like any request.
+    pub features_at_restart: bool,
+    /// An answer that holds these words reaches the client this much later
+    /// than the manager wrote it: the answer of a later request overtakes
+    /// it on the way.
+    pub slow: Option<(&'static str, Duration)>,
+    not_open: bool,
+    /// The id of the last request taken.
+    rid: watch::Sender<Option<u64>>,
     open: usize,
     seq: u64,
     held: VecDeque<(u64, oneshot::Sender<String>)>,
@@ -241,6 +258,20 @@ fn bosh_wrap(stanzas: &str) -> String {
 }
 
 impl BoshState {
+    /// Takes the request with this id in its turn: the session request, or
+    /// the one after the last. False for any other: the session is over.
+    fn in_turn(&mut self, rid: Option<(u64, bool)>) -> bool {
+        let Some((rid, in_session)) = rid else {
+            return true;
+        };
+        let last = *self.rid.borrow();
+        if in_session && last.is_some_and(|last| rid != last + 1) {
+            return false;
+        }
+        self.rid.send_replace(Some(rid));
+        true
+    }
+
     /// Answers the oldest held request while there is something to say or
     /// more than one is held.
     fn flush(&mut self) {
@@ -269,6 +300,7 @@ impl BoshState {
         let mut say = |s: String| self.out.push_back((s, false));
         if t.starts_with("<auth ") {
             say("<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>".into());
+            self.not_open = true;
         } else if t.contains("bind_1") {
             say(format!("<iq type='result' id='bind_1' xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>{}</jid></bind></iq>", self.jid));
         } else if t.contains("sess_1") {
@@ -318,6 +350,10 @@ impl BoshServer {
             terminated: false,
             late: None,
             stall: false,
+            features_at_restart: false,
+            slow: None,
+            not_open: false,
+            rid: watch::channel(None).0,
             open: 0,
             seq: 0,
             held: VecDeque::new(),
@@ -374,12 +410,31 @@ impl BoshServer {
     }
 
     async fn serve(&self, body: String) -> Result<String, String> {
+        // The request's id, and whether it is of a session (it names one).
+        let rid = xml::root(&body).ok().and_then(|r| {
+            let rid = r.attr("rid").ok().flatten()?.parse::<u64>().ok()?;
+            let sid = r.attr("sid").ok().flatten();
+            Some((rid, sid.is_some_and(|s| !s.is_empty())))
+        });
+        // One that comes a step ahead of its turn waits for the missing one:
+        // it is on its way on another connection (XEP-0124, section 14.2;
+        // Prosody's "rid skipped, deferring this request").
+        if let Some((rid, true)) = rid {
+            let mut taken = self.state().rid.subscribe();
+            let _ = taken
+                .wait_for(|last| last.is_none_or(|last| rid != last + 2))
+                .await;
+        }
         let stalled = {
             let st = self.state();
             st.stall && !body.ends_with("/>")
         };
         if stalled {
-            self.state().bodies.push(body);
+            {
+                let mut st = self.state();
+                st.bodies.push(body);
+                st.in_turn(rid);
+            }
             return std::future::pending().await;
         }
         let (id, mut rx, hold, mute) = {
@@ -387,6 +442,9 @@ impl BoshServer {
             st.bodies.push(body.clone());
             if st.bodies.len() > BOSH_SPIN {
                 return Err("the client spins".into());
+            }
+            if !st.in_turn(rid) {
+                return Ok(BOSH_TERMINATE.into());
             }
             if st.fail_when.is_none_or(|w| body.contains(w)) {
                 if let Some(e) = st.fail.take() {
@@ -411,9 +469,14 @@ impl BoshServer {
                 return Ok(BOSH_TERMINATE.into());
             }
             let mut carried = false;
-            if attr("xmpp:restart") == "true" {
-                st.out.push_back(("<stream:features xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></stream:features>".into(), false));
-            } else {
+            let restart = attr("xmpp:restart") == "true";
+            // The request that opens the stream again: the restart, or, as
+            // Prosody has it, whichever comes first after the SASL exchange.
+            if st.not_open && (restart || !st.features_at_restart) {
+                st.not_open = false;
+                st.out.push_back((BOSH_FEATURES.into(), false));
+            }
+            if !restart {
                 let stanzas: Vec<String> = xml::children(&body)
                     .map_err(|e| format!("a request that is not XML: {e}"))?
                     .into_iter()
@@ -468,7 +531,18 @@ impl Post for BoshServer {
                 st.max_open = st.max_open.max(st.open);
                 BoshOpen(self.0.clone())
             };
-            match tokio::time::timeout(timeout, self.serve(body)).await {
+            let served = async {
+                let answer = self.serve(body).await;
+                // Written, and slow on the way to the client.
+                let slow = self.state().slow;
+                if let (Ok(text), Some((words, by))) = (&answer, slow) {
+                    if text.contains(words) {
+                        tokio::time::sleep(by).await;
+                    }
+                }
+                answer
+            };
+            match tokio::time::timeout(timeout, served).await {
                 Ok(r) => r,
                 Err(_) => Err("timed out".into()),
             }

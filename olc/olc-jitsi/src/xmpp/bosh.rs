@@ -29,6 +29,16 @@
 //!   transport: what it held is lost, and nothing here can ask for it again.
 //! - A request that fails ends the transport at once. The library leaves it
 //!   open, and the hole in the request ids ends the session at the manager.
+//! - What the answers held is handed on in the order of their requests
+//!   (XEP-0124, section 14.2), not in the order the answers came. Two
+//!   requests are out at once, each on a connection of its own, and the
+//!   answer of the later one can be read first. Prosody answers the first
+//!   request after `<success/>` with the stream's features, whichever it
+//!   is; the library, which hands on answers as they arrive, then reads the
+//!   features before `<success/>`, drops them, and loses the login waiting
+//!   for them (about one login in four through a real Prosody). Stanzas that
+//!   wait for an earlier answer count as unread, and no more than
+//!   [`EARLY_MAX`] answers wait.
 //! - Bounds the library does not have: an answer of [`REPLY_LIMIT`] at most;
 //!   stanzas not yet read of [`INBOX_BYTES`] at most, past which the
 //!   transport ends (the library stops its poll at 64 unread stanzas, and a
@@ -40,7 +50,7 @@
 //!   `Accept-Encoding`, because `olc-net` reads no coded answer.
 
 use std::borrow::Cow;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -71,6 +81,13 @@ pub const TERMINATE_TIMEOUT: Duration = Duration::from_secs(5);
 /// The least time between two polls when the first came back empty and no
 /// other request went out since.
 pub const POLL_FLOOR: Duration = Duration::from_secs(1);
+/// The most answers that wait for an earlier request's: past it the
+/// transport ends. A manager answers its requests in their order, so an
+/// answer waits only for as long as the earlier one is on its way; the
+/// bound is for a manager that does not (polls that come back at once
+/// while a request stays out wait one a second, [`POLL_FLOOR`], for that
+/// request's [`REQUEST_TIMEOUT`]).
+pub const EARLY_MAX: usize = 64;
 /// The most of a server's answer that an error text quotes.
 pub const QUOTE_MAX: usize = 512;
 /// What a closed transport says (`conn.go:1298,1320`).
@@ -225,8 +242,15 @@ impl Post for Http {
 
 #[derive(Default)]
 struct Inbox {
+    /// What is handed on, in the order of the requests it answered.
     stanzas: VecDeque<String>,
+    /// The bytes of `stanzas` and of `early`.
     bytes: usize,
+    /// The request whose answer is handed on next.
+    turn: u64,
+    /// What the answers held that came before an earlier request's, by
+    /// request id.
+    early: BTreeMap<u64, Vec<String>>,
 }
 
 struct Inner {
@@ -276,10 +300,10 @@ impl Inner {
         self.kick.notify_one();
     }
 
-    /// Takes an answer: its stanzas go to the inbox, and their number is the
-    /// result. `None` when the answer ended the transport, or came after its
-    /// end.
-    fn take(&self, text: &str) -> Option<usize> {
+    /// Takes the answer to request `rid`: its stanzas go to the inbox when
+    /// every earlier request's have, and their number is the result. `None`
+    /// when the answer ended the transport, or came after its end.
+    fn take(&self, rid: u64, text: &str) -> Option<usize> {
         if self.is_closed() {
             return None;
         }
@@ -298,7 +322,7 @@ impl Inner {
             return None;
         }
         let bytes: usize = reply.stanzas.iter().map(|s| s.len()).sum();
-        {
+        let handed_on = {
             let mut inbox = self.inbox();
             if inbox.bytes + bytes > INBOX_BYTES {
                 drop(inbox);
@@ -306,12 +330,33 @@ impl Inner {
                 self.shut();
                 return None;
             }
-            inbox.bytes += bytes;
-            inbox
-                .stanzas
-                .extend(reply.stanzas.iter().map(|s| (*s).to_owned()));
-        }
-        if !reply.stanzas.is_empty() {
+            let stanzas = reply.stanzas.iter().map(|s| (*s).to_owned());
+            if rid == inbox.turn {
+                inbox.bytes += bytes;
+                inbox.stanzas.extend(stanzas);
+                inbox.turn += 1;
+                // And the answers that waited for this one.
+                loop {
+                    let turn = inbox.turn;
+                    let Some(waited) = inbox.early.remove(&turn) else {
+                        break;
+                    };
+                    inbox.stanzas.extend(waited);
+                    inbox.turn += 1;
+                }
+                true
+            } else if inbox.early.len() < EARLY_MAX {
+                inbox.bytes += bytes;
+                inbox.early.insert(rid, stanzas.collect());
+                false
+            } else {
+                drop(inbox);
+                olc_net::debug!("jitsi: bosh: {EARLY_MAX} answers wait for an earlier one");
+                self.shut();
+                return None;
+            }
+        };
+        if handed_on {
             self.arrived.notify_one();
         }
         Some(reply.stanzas.len())
@@ -332,9 +377,9 @@ impl Inner {
             if self.is_closed() {
                 return Err(closed_error());
             }
-            let body = body(self.next_rid());
-            match self.post.post(body, REQUEST_TIMEOUT).await {
-                Ok(text) => self.take(&text).map(|_| ()).ok_or_else(closed_error),
+            let rid = self.next_rid();
+            match self.post.post(body(rid), REQUEST_TIMEOUT).await {
+                Ok(text) => self.take(rid, &text).map(|_| ()).ok_or_else(closed_error),
                 Err(e) => {
                     self.shut();
                     Err(ConnError::Transport(e))
@@ -377,14 +422,15 @@ async fn poll_loop(inner: Arc<Inner>) {
             return;
         }
         let started = Instant::now();
-        let body = poll_body(inner.next_rid(), &inner.sid);
+        let rid = inner.next_rid();
+        let body = poll_body(rid, &inner.sid);
         let answer = tokio::select! {
             biased;
             () = wait_closed(&mut closed) => return,
             a = inner.post.post(body, inner.poll_wait) => a,
         };
         let taken = match answer {
-            Ok(text) => match inner.take(&text) {
+            Ok(text) => match inner.take(rid, &text) {
                 Some(n) => n,
                 None => return,
             },
@@ -486,13 +532,16 @@ pub async fn open(post: Arc<dyn Post>, xmpp_domain: &str) -> Result<(BoshTx, Bos
         turn: tokio::sync::Mutex::new(()),
         started: AtomicU64::new(0),
         kick: Notify::new(),
-        inbox: Mutex::new(Inbox::default()),
+        inbox: Mutex::new(Inbox {
+            turn: rid,
+            ..Inbox::default()
+        }),
         arrived: Notify::new(),
         closed: watch::channel(false).0,
         ended: AtomicBool::new(false),
         terminated: AtomicBool::new(false),
     });
-    inner.take(&text);
+    inner.take(rid, &text);
     tokio::spawn(poll_loop(inner.clone()));
     Ok((BoshTx(inner.clone()), BoshRx(inner)))
 }
@@ -1131,6 +1180,164 @@ mod tests {
         assert_eq!(
             e.unwrap().to_string(),
             "bosh init: no sid in response: busy"
+        );
+    }
+
+    /// Prosody says the stream's features after the SASL exchange on the
+    /// answer to the session's next request, whichever it is: here the poll
+    /// that goes out beside the `<auth/>`. The two answers leave it on two
+    /// connections half a millisecond apart (the Prosody log of run
+    /// 44935236619), and the later one can reach the client first. Handed
+    /// on as they arrive, the features come before `<success/>`: the login
+    /// drops them while it waits for it, and then waits for features that
+    /// have already come (the Go library's login fails so about one time in
+    /// four there). Answers are handed on in the order of their requests
+    /// (XEP-0124, section 14.2), so the login passes, and waits only for
+    /// the slow answer.
+    #[tokio::test(start_paused = true)]
+    async fn a_login_whose_answers_cross_on_the_way_is_read_in_the_order_of_its_requests() {
+        let server = BoshServer::new();
+        server.state().slow = Some(("<success", Duration::from_millis(300)));
+        let started = Instant::now();
+        let (tx, rx) = open(Arc::new(server.clone()), "meet.jitsi").await.unwrap();
+        let tx = Arc::new(tx);
+        let login = Conn::login(tx.clone(), rx, cfg(), S(30)).await;
+        let took = started.elapsed();
+        let (conn, _incoming) = login.unwrap_or_else(|e| panic!("the login, {took:?} in: {e}"));
+        assert_eq!(conn.jid(), "fedcba9876543210@meet.jitsi/res");
+        assert!(took < S(1), "{took:?}");
+        // The answers did cross: the manager heard the `<auth/>` and then a
+        // poll, which it answered with the features at once, while its
+        // answer to the `<auth/>` was still on the way.
+        let st = server.state();
+        assert!(st.bodies[1].contains("<auth "), "{}", st.bodies[1]);
+        assert!(
+            st.bodies[2].ends_with("/>") && !st.bodies[2].contains("restart"),
+            "{}",
+            st.bodies[2]
+        );
+    }
+
+    /// A manager that says the features on the restart's answer, as
+    /// XEP-0206 has it (the Go fake does, for the Go client's sake), is
+    /// logged in to as before.
+    #[tokio::test(start_paused = true)]
+    async fn features_said_on_the_restart_s_answer_are_read_as_well() {
+        let server = BoshServer::new();
+        server.state().features_at_restart = true;
+        let started = Instant::now();
+        let (conn, _incoming, _tx) = up(&server).await;
+        assert!(started.elapsed() < POLL_FLOOR, "{:?}", started.elapsed());
+        assert_eq!(conn.jid(), "fedcba9876543210@meet.jitsi/res");
+    }
+
+    /// Past the login as well: what the manager said on an earlier request
+    /// is read before what it said on a later one, whichever answer came
+    /// first.
+    #[tokio::test(start_paused = true)]
+    async fn stanzas_are_read_in_the_order_of_the_requests_they_answer() {
+        let server = BoshServer::new();
+        let (tx, mut rx) = open(Arc::new(server.clone()), "meet.jitsi").await.unwrap();
+        let tx = Arc::new(tx);
+        assert!(rx.recv().await.unwrap().contains("mechanisms"));
+        settle().await; // the first poll is out, and held
+        server.state().slow = Some(("id='first'", Duration::from_millis(300)));
+        server.say("<message id='first'/>"); // on the poll, slow on the way
+        settle().await;
+        let send = {
+            let tx = tx.clone();
+            tokio::spawn(async move { tx.send("<message/>").await })
+        };
+        settle().await; // the stanza's request is out, and held
+        server.say("<message id='second'/>"); // on that request, at once
+        let started = Instant::now();
+        let got = [rx.recv().await.unwrap(), rx.recv().await.unwrap()];
+        assert_eq!(got, ["<message id='first'/>", "<message id='second'/>"]);
+        assert_eq!(started.elapsed(), Duration::from_millis(300));
+        assert_eq!(send.await.unwrap(), Ok(()));
+        assert_eq!(server.state().bodies.len(), 4, "create, poll, stanza, poll");
+    }
+
+    /// What waits for an earlier answer is unread like the rest: it counts
+    /// in the megabyte, and past it the transport ends.
+    #[tokio::test(start_paused = true)]
+    async fn stanzas_that_wait_for_an_earlier_answer_count_as_unread() {
+        let server = BoshServer::new();
+        let (tx, mut rx) = open(Arc::new(server.clone()), "meet.jitsi").await.unwrap();
+        let tx = Arc::new(tx);
+        assert!(rx.recv().await.unwrap().contains("mechanisms"));
+        settle().await;
+        server.state().slow = Some(("id='first'", S(20)));
+        server.say("<message id='first'/>");
+        settle().await;
+        let big = format!("<message><b>{}</b></message>", "x".repeat(600 << 10));
+        let mut sends = Vec::new();
+        for _ in 0..2 {
+            let tx = tx.clone();
+            let send = tokio::spawn(async move { tx.send("<message/>").await });
+            settle().await;
+            server.say(&big);
+            sends.push(send.await.unwrap());
+        }
+        assert_eq!(
+            sends,
+            [Ok(()), Err(ConnError::Transport(CLOSED.into()))],
+            "the second answer is past the megabyte"
+        );
+        // Nothing was handed on out of its turn, and nothing is after the end.
+        assert_eq!(rx.recv().await, Err(ConnError::Transport(CLOSED.into())));
+    }
+
+    /// No more than [`EARLY_MAX`] answers wait for an earlier one: a manager
+    /// that answers that far out of its requests' order ends the transport.
+    #[tokio::test(start_paused = true)]
+    async fn answers_that_wait_for_an_earlier_one_are_few() {
+        let server = BoshServer::new();
+        let (tx, mut rx) = open(Arc::new(server.clone()), "meet.jitsi").await.unwrap();
+        let tx = Arc::new(tx);
+        assert!(rx.recv().await.unwrap().contains("mechanisms"));
+        settle().await;
+        server.state().slow = Some(("id='first'", S(20)));
+        server.say("<message id='first'/>");
+        settle().await;
+        let mut sends = Vec::new();
+        for _ in 0..=EARLY_MAX {
+            let tx = tx.clone();
+            let send = tokio::spawn(async move { tx.send("<message/>").await });
+            settle().await;
+            server.say("<message id='later'/>");
+            sends.push(send.await.unwrap());
+        }
+        let closed = ConnError::Transport(CLOSED.into());
+        assert!(sends[..EARLY_MAX].iter().all(|r| *r == Ok(())), "{sends:?}");
+        assert_eq!(sends[EARLY_MAX], Err(closed.clone()));
+        assert_eq!(rx.recv().await, Err(closed));
+    }
+
+    /// An answer that names the end of the session ends it at once, though
+    /// an earlier request is still out.
+    #[tokio::test(start_paused = true)]
+    async fn a_terminate_ends_the_session_whatever_is_still_out() {
+        let server = BoshServer::new();
+        let (tx, mut rx) = open(Arc::new(server.clone()), "meet.jitsi").await.unwrap();
+        let tx = Arc::new(tx);
+        assert!(rx.recv().await.unwrap().contains("mechanisms"));
+        settle().await;
+        server.state().slow = Some(("id='first'", S(20)));
+        server.say("<message id='first'/>");
+        settle().await;
+        let send = {
+            let tx = tx.clone();
+            tokio::spawn(async move { tx.send("<message/>").await })
+        };
+        settle().await;
+        server.say_whole(&format!("<body type='terminate' xmlns='{NS}'/>"));
+        let started = Instant::now();
+        assert_eq!(rx.recv().await, Err(ConnError::Transport(CLOSED.into())));
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(
+            send.await.unwrap(),
+            Err(ConnError::Transport(CLOSED.into()))
         );
     }
 }
