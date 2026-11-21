@@ -31,6 +31,11 @@ foreign-types = { version = "0.5", optional = true }
 # The host TLS the signalling's wss:// and https:// go over: the fork's
 # shaped-rustls with a uTLS ClientHello profile (shaped_tls::install).
 shaped-tls = ["dep:xray-transport", "dep:xray-utls"]
+# A test build only: every TLS dial trusts the one certificate whose SHA-256
+# the environment variable OLC_TLS_TEST_PIN names (a lab's own CA), in place
+# of the webpki roots. No app build has it: olc-ffi and ghostlane-core name
+# no feature that reaches it (shaped_tls.rs holds them to that).
+tls-test-pin = ["shaped-tls"]
 # tests/alps_fetch.rs: the shaped TLS against a BoringSSL server on loopback
 # that accepts ALPS. Building BoringSSL needs cmake and libclang, which the
 # build box does not have; it runs on a GitHub runner.
@@ -44,3 +49,9 @@ tokio = { workspace = true, features = ["test-util"] }
 [[test]]
 name = "alps_fetch"
 required-features = ["alps-test-server"]
+
+# The test pin against a BoringSSL server on loopback: a chain under the
+# pinned CA, and what stays refused.
+[[test]]
+name = "test_pin"
+required-features = ["alps-test-server", "tls-test-pin"]

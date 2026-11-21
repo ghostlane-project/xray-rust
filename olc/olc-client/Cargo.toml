@@ -41,6 +41,10 @@ shaped-tls = ["olc-net/shaped-tls"]
 # censored network needs it. Built on a GitHub runner: it needs cmake and
 # libclang.
 boring = ["olc-salutejazz/boring"]
+# A test build only: the signalling's TLS (wss:// and https://) trusts the
+# one certificate OLC_TLS_TEST_PIN names (olc-net's `tls-test-pin`): a lab's
+# deployment under the lab's own CA. The shipped client is built without it.
+tls-test-pin = ["shaped-tls", "olc-net/tls-test-pin"]
 # A test build only: TURN over TLS trusts the root OLC_TURNS_TEST_ROOT names
 # (the lab's end-to-end test). The shipped client is built without it.
 turns-test-roots = ["olc-salutejazz/turns-test-roots"]
