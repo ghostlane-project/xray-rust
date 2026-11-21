@@ -975,13 +975,22 @@ impl Core {
         // A socket option that fails without failing its dial is logged at
         // info, as Xray-core logs it.
         let logger = runtime_logger.clone();
+        // A REALITY dial that fell back to the short hello, and what it
+        // remembered of the server, at debug with the other dial events.
+        let hello_logger = runtime_logger.clone();
         self.transport_dialer = Arc::new(
             self.transport_dialer
                 .as_ref()
                 .clone()
                 .with_socket_options_report(Arc::new(move |error: &std::io::Error| {
                     logger.info(|| format!("failed to apply socket options: {error}"));
-                })),
+                }))
+                .with_reality_hello_report(Arc::new(
+                    move |server: &xray_routing::Target,
+                          event: xray_transport::RealityHelloEvent| {
+                        hello_logger.debug(|| debug_log::reality_hello_message(server, event));
+                    },
+                )),
         );
         self.runtime_logger = runtime_logger;
     }
@@ -1085,6 +1094,9 @@ impl Core {
     ///   connection, Mux.Cool parents and VLESS `testpre` connections;
     /// - the core's own DNS caches forget their answers, so the next lookup
     ///   asks on the new network; FakeDNS mappings are kept;
+    /// - what REALITY dials remembered of each server's answer to the short
+    ///   ClientHello (`xray_transport::reality_hello_fallback`) is forgotten,
+    ///   so the next dial starts with the configured hello;
     /// - QUIC carriers and WireGuard take a fresh socket, as
     ///   [`Self::rebind_hysteria`], [`Self::rebind_quic`] and
     ///   [`Self::rebind_wireguard`] do: XHTTP over HTTP/3 is moved, not let go;

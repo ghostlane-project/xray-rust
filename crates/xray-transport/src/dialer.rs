@@ -1,18 +1,23 @@
-use std::{fmt, io, net::SocketAddr, sync::Arc};
+use std::{fmt, io, net::SocketAddr, sync::Arc, time::Duration};
 
 use tokio::io::AsyncWriteExt;
 
 use crate::happy_eyeballs::{
     connect_tcp_dual_stack_with_peer, connect_tcp_happy_eyeballs_with_peer,
 };
+use crate::reality_hello_fallback::{
+    self, HelloPlan, RealityHelloEvent, RealityHelloReport, ShortHelloVerdict,
+    REALITY_HELLO_MEMORY_TTL, REALITY_HELLO_STALL_WINDOW,
+};
 use crate::stream::{connect_httpupgrade, connect_websocket, TransportLayer};
 use crate::utls_tls::TlsAlpnPolicy;
 use crate::{
     canonicalize_socket_addr, connect_tcp_stream, connect_tcp_target, BoxedTransportStream,
-    ConnectorConfig, HappyEyeballsConfig, RealityRuntimeEngine, RealityTlsEngine, RecordResolver,
-    ResolvedTcpConnector, RouteProbe, RustlsRealityTlsSessionProvider, SocketOptions,
-    SocketOptionsProtector, SocketOptionsReport, SocketProtector, SystemRecordResolver,
-    SystemRouteProbe, TlsClientConfig, TlsConnector, TransportError,
+    ConnectorConfig, HappyEyeballsConfig, PreparedRealityTlsConnection, RealityClientConfig,
+    RealityRuntimeEngine, RealityTlsEngine, RecordResolver, ResolvedTcpConnector, RouteProbe,
+    RustlsRealityTlsSessionProvider, SocketOptions, SocketOptionsProtector, SocketOptionsReport,
+    SocketProtector, SystemRecordResolver, SystemRouteProbe, TlsClientConfig, TlsConnector,
+    TransportError,
 };
 use xray_routing::{Target, TargetAddr};
 
@@ -49,8 +54,9 @@ struct NetworkSignals {
 /// What [`TransportDialer::with_route_probe`],
 /// [`TransportDialer::with_record_resolver`],
 /// [`TransportDialer::with_tcp_header_custom`],
-/// [`TransportDialer::with_tcp_sudoku`] and [`TransportDialer::with_tcp_xmc`]
-/// set.
+/// [`TransportDialer::with_tcp_sudoku`], [`TransportDialer::with_tcp_xmc`],
+/// [`TransportDialer::with_reality_hello_report`] and
+/// [`TransportDialer::with_reality_hello_stall_window`] set.
 #[derive(Clone, Default)]
 struct Replaced {
     route_probe: Option<Arc<dyn RouteProbe>>,
@@ -59,6 +65,8 @@ struct Replaced {
     tcp_sudoku: Option<Arc<crate::sudoku::SudokuConfig>>,
     tcp_xmc: Option<Arc<crate::xmc::XmcConfig>>,
     realm_resolver: Option<Arc<dyn crate::DnsResolver>>,
+    reality_hello_report: Option<RealityHelloReport>,
+    reality_hello_stall_window: Option<Duration>,
 }
 
 #[derive(Clone)]
@@ -213,6 +221,42 @@ impl TransportDialer {
     pub fn with_reality_engine(mut self, reality: Arc<dyn RealityTlsEngine>) -> Self {
         self.reality = Some(reality);
         self
+    }
+
+    /// Receives what [`crate::reality_hello_fallback`] does on this dialer's
+    /// REALITY dials: the retry with the short hello, and each outcome it
+    /// remembers.
+    pub fn with_reality_hello_report(mut self, report: RealityHelloReport) -> Self {
+        Arc::make_mut(self.replaced.get_or_insert_with(Default::default)).reality_hello_report =
+            Some(report);
+        self
+    }
+
+    /// Watches a REALITY hello for `window` instead of
+    /// [`REALITY_HELLO_STALL_WINDOW`]. For tests, which cannot wait that
+    /// long: sockets are real, so their clock cannot be paused.
+    #[doc(hidden)]
+    pub fn with_reality_hello_stall_window(mut self, window: Duration) -> Self {
+        Arc::make_mut(self.replaced.get_or_insert_with(Default::default))
+            .reality_hello_stall_window = Some(window);
+        self
+    }
+
+    fn reality_hello_stall_window(&self) -> Duration {
+        self.replaced
+            .as_ref()
+            .and_then(|replaced| replaced.reality_hello_stall_window)
+            .unwrap_or(REALITY_HELLO_STALL_WINDOW)
+    }
+
+    fn report_reality_hello(&self, server: &Target, event: RealityHelloEvent) {
+        if let Some(report) = self
+            .replaced
+            .as_ref()
+            .and_then(|replaced| replaced.reality_hello_report.as_ref())
+        {
+            report(server, event);
+        }
     }
 
     pub fn with_socket_protector(mut self, protector: Arc<dyn SocketProtector>) -> Self {
@@ -758,6 +802,35 @@ impl TransportDialer {
                         .connect_socket_addr(reality_config, original_target, first)
                         .await;
                 };
+                // THE SEAM of `reality_hello_fallback`: a hello with the
+                // X25519MLKEM768 share, on a bare socket of this dialer, is
+                // watched, and when not one byte answers it one retry sends
+                // the short hello an older server accepts. That retry gives
+                // up the post-quantum half of the key exchange, for that
+                // connection only and only after a stall; whoever can drop
+                // packets on the path can force it; what remains is the
+                // X25519 exchange every client used before the hybrid share.
+                // A server that answers, with anything, is never downgraded.
+                //
+                // Boxed: the retry's state stays out of this future, which
+                // every flow's dial holds.
+                if !self.has_wire_mask() {
+                    if let Some(plan) =
+                        reality_hello_fallback::plan(reality_config, original_target)
+                    {
+                        return Box::pin(self.connect_reality_with_hello_plan(
+                            reality.as_ref(),
+                            reality_config,
+                            plan,
+                            prepared,
+                            original_target,
+                            candidates,
+                            first,
+                            race_config,
+                        ))
+                        .await;
+                    }
+                }
                 let (stream, peer) = self
                     .connect_candidates(candidates, first, race_config)
                     .await?;
@@ -772,6 +845,104 @@ impl TransportDialer {
                 prepared.complete(stream).await
             }
         }
+    }
+
+    /// A REALITY dial on a bare socket under [`reality_hello_fallback`].
+    ///
+    /// `Watched`: the configured hello goes out as it always did. Only when
+    /// the watch reports that nobody answered it is the attempt dropped,
+    /// which closes its socket, and one more made on a new connection with
+    /// the short hello. Any other end, an error included, is this dial's
+    /// end. If the retry completes, the server is remembered as one where
+    /// the short hello works; if its handshake stalls or fails, as one where
+    /// it does not help, and the dial fails with the first attempt's stall.
+    /// A retry that never reached its handshake says nothing about the
+    /// hello and is not remembered.
+    ///
+    /// `ShortFirst`: the memory says the short hello works here, so it goes
+    /// out at once, unwatched. A handshake that fails takes the server out
+    /// of the memory, and the next dial starts with the configured hello.
+    #[allow(clippy::too_many_arguments)]
+    async fn connect_reality_with_hello_plan(
+        &self,
+        reality: &dyn RealityTlsEngine,
+        config: &RealityClientConfig,
+        plan: HelloPlan,
+        mut prepared: Box<dyn PreparedRealityTlsConnection>,
+        original_target: &Target,
+        candidates: &[SocketAddr],
+        first: SocketAddr,
+        race_config: Option<&HappyEyeballsConfig>,
+    ) -> Result<BoxedTransportStream, TransportError> {
+        let server = match plan {
+            HelloPlan::ShortFirst(server) => {
+                let short = reality_hello_fallback::short_hello_config(config);
+                let prepared = reality
+                    .prepare_preconnected(&short, original_target)?
+                    .ok_or(TransportError::UnsupportedConnectorConfig("reality"))?;
+                let (mut stream, peer) = self
+                    .connect_candidates(candidates, first, race_config)
+                    .await?;
+                self.direct_header_custom_handshake(&mut stream, peer)
+                    .await?;
+                let completed = prepared.complete(stream).await;
+                if completed.is_err() {
+                    reality_hello_fallback::forget(&server);
+                }
+                return completed;
+            }
+            HelloPlan::Watched(server) => server,
+        };
+
+        let window = self.reality_hello_stall_window();
+        let (mut stream, peer) = self
+            .connect_candidates(candidates, first, race_config)
+            .await?;
+        self.direct_header_custom_handshake(&mut stream, peer)
+            .await?;
+        prepared.watch_first_answer(window);
+        let stall = match prepared.complete(stream).await {
+            Err(error) if reality_hello_fallback::is_unanswered(&error) => error,
+            ended => return ended,
+        };
+        self.report_reality_hello(
+            original_target,
+            RealityHelloEvent::FallbackUsed { waited: window },
+        );
+
+        let short = reality_hello_fallback::short_hello_config(config);
+        let Ok(Some(mut prepared)) = reality.prepare_preconnected(&short, original_target) else {
+            return Err(stall);
+        };
+        let Ok((mut stream, peer)) = self
+            .connect_candidates(candidates, first, race_config)
+            .await
+        else {
+            return Err(stall);
+        };
+        if self
+            .direct_header_custom_handshake(&mut stream, peer)
+            .await
+            .is_err()
+        {
+            return Err(stall);
+        }
+        prepared.watch_first_answer(window);
+        let completed = prepared.complete(stream).await;
+        let verdict = if completed.is_ok() {
+            ShortHelloVerdict::Works
+        } else {
+            ShortHelloVerdict::DoesNotHelp
+        };
+        reality_hello_fallback::remember(server, verdict);
+        self.report_reality_hello(
+            original_target,
+            RealityHelloEvent::Remembered {
+                verdict,
+                ttl: REALITY_HELLO_MEMORY_TTL,
+            },
+        );
+        completed.map_err(|_| stall)
     }
 
     /// A connection to an HTTP service, such as an XDRIVE storage: TCP to

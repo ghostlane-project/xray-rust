@@ -262,6 +262,10 @@ pub enum RealityError {
         "received real certificate (potential MITM or redirection); processed invalid connection"
     )]
     RealCertificate,
+    /// A watched handshake (`crate::reality_hello_fallback`) got not one byte
+    /// from the server within the stall window of its ClientHello.
+    #[error("the server sent no answer to the ClientHello within {waited_ms} ms")]
+    ClientHelloUnanswered { waited_ms: u64 },
 }
 
 pub fn validate_reality_fingerprint(fingerprint: &str) -> Result<&'static str, RealityError> {

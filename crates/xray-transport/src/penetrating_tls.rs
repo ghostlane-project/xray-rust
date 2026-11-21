@@ -70,6 +70,13 @@ impl<S> CapturedStream<S> {
         }
     }
 
+    /// Whether the peer has sent a byte: what the REALITY first-answer watch
+    /// asks while the handshake is still on its way. Counted only until
+    /// [`Self::release_record_alignment`], which a handshake never reaches.
+    pub(crate) fn answered(&self) -> bool {
+        self.tls_read_limiter.seen
+    }
+
     /// Stop aligning socket reads to TLS record boundaries.
     ///
     /// The limiter exists so that rustls's deframer never buffers bytes past
@@ -85,6 +92,9 @@ impl<S> CapturedStream<S> {
 
 struct TlsRecordReadLimiter {
     header: [u8; 5],
+    /// Whether any byte has been observed. It sits in the padding after
+    /// `header`, so the stream is no larger for it.
+    seen: bool,
     header_len: usize,
     payload_remaining: usize,
 }
@@ -93,6 +103,7 @@ impl TlsRecordReadLimiter {
     fn new() -> Self {
         Self {
             header: [0; 5],
+            seen: false,
             header_len: 0,
             payload_remaining: 0,
         }
@@ -110,6 +121,7 @@ impl TlsRecordReadLimiter {
         if bytes.is_empty() {
             return;
         }
+        self.seen = true;
 
         if self.header_len < self.header.len() {
             let len = (self.header.len() - self.header_len).min(bytes.len());
