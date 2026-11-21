@@ -39,6 +39,27 @@
 // liveFirst: it is how a real Jicofo comes to ask the Rust client, and not
 // the Go server, what it can do).
 //
+// -olcrtc.gate-jitsi-live-bosh puts the Rust client's XMPP over BOSH, through
+// the deployment's own front and Prosody's mod_bosh, in one of two ways:
+//
+//   - client: the deployment is as it started. The Rust client is told to
+//     dial its WebSocket at a path the front does not upgrade
+//     (liveClosedWebSocket), so it goes on to the BOSH URL config.js names,
+//     as it would on a deployment with no WebSocket. The Go server keeps its
+//     WebSocket, so the rows and the cells have a steady exit: this is the
+//     mode the cells run in;
+//   - deployment: deploy.sh bosh-only has closed the deployment's WebSocket
+//     and nobody has one, the Go server and the Go client included. The Go
+//     library's BOSH is not steady against a real Prosody: a login whose two
+//     answers reach it out of their order fails (one in four in the lab run
+//     44935236619, see goBOSHRace), and it hangs up on a poll held 10 s. So a
+//     Go engine's start is tried again when it failed that way, and the mode
+//     is for the rows alone. The Rust client's start is never tried again.
+//
+// In both a start of the Rust client whose log does not say it went over
+// BOSH is a failed start (rustClient.overBOSH), and deploy.sh bosh reads the
+// same from the deployment's own logs afterwards.
+//
 // -olcrtc.gate-jitsi-live-host=selftest runs the same code against the Go
 // fake (jitsifake) over its TLS listener: the harness's own check on the
 // build box, and the Rust client's https and wss path against the fake.
@@ -64,6 +85,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -79,6 +101,11 @@ var (
 		"TestGateRustJitsiLive: the host of the lab's own Jitsi deployment on this machine; selftest is the Go fake")
 	gateJitsiLivePlan = flag.Bool("olcrtc.gate-jitsi-live-plan", true,
 		"TestGateRustJitsiLive: after the rows, the gate's cells S0-S7")
+	gateJitsiLiveBOSH = flag.String("olcrtc.gate-jitsi-live-bosh", "",
+		"TestGateRustJitsiLive with the Rust client's XMPP over BOSH: client (the deployment as it started; the Rust "+
+			"client's WebSocket dial goes to a path the front does not upgrade, the exit keeps its WebSocket) or "+
+			"deployment (deploy.sh bosh-only has closed the WebSocket for everyone; a Go engine's start is tried "+
+			"again when its login failed the way the Go library's does, the Rust client's never)")
 	gateJitsiLiveFirst = flag.Bool("olcrtc.gate-jitsi-live-first", false,
 		"TestGateRustJitsiLive: before the rows, the Rust client joins a room of its own with no server in it; "+
 			"on a deployment nobody has joined, Jicofo asks it for its features (deploy.sh first reads what came of it)")
@@ -110,6 +137,25 @@ const (
 	// liveFirstBudget is how long the Rust client stays there: Jicofo's
 	// question comes with the join, within a second.
 	liveFirstBudget = 12 * time.Second
+	// liveBOSHClient and liveBOSHDeployment are -olcrtc.gate-jitsi-live-bosh.
+	liveBOSHClient     = "client"
+	liveBOSHDeployment = "deployment"
+	// liveClosedWebSocket is where the Rust client dials its WebSocket in
+	// the client mode: a path no front upgrades (docker-jitsi-meet's answers
+	// it as a room's page, the Go fake with 404).
+	liveClosedWebSocket = "/xmpp-websocket-closed"
+	// liveGoBOSHTries is how many starts a Go engine gets in the deployment
+	// mode. One login in four failed in the lab run, so five in a row fail
+	// once in a thousand.
+	liveGoBOSHTries = 5
+	// liveSelfTestGoHold caps how long the Go fake holds a request in the
+	// deployment mode's selftest: under the 10 s after which a Go engine
+	// hangs up on a poll (gateGoPollLimit).
+	liveSelfTestGoHold = 5 * time.Second
+	// goBOSHRaceWords is in what a Go engine says when its BOSH login read
+	// the stream's features before <success/> and then waited for them (the
+	// library's own words; internal/xmpp/conn.go, authBOSH).
+	goBOSHRaceWords = "post-auth features"
 )
 
 var (
@@ -497,9 +543,115 @@ func tlsScenarios(all []Scenario, withhold func(...string)) []Scenario {
 	return out
 }
 
+// goBOSHRace says whether a failed start is the Go library's own: its BOSH
+// login against a real Prosody, the two answers after the SASL request read
+// out of their order.
+func goBOSHRace(err error) bool {
+	return err != nil && strings.Contains(err.Error(), goBOSHRaceWords)
+}
+
+// tryAgain runs start until it passes, at most tries times. A failed start
+// is tried again only when known says its failure is the one being allowed
+// for; any other failure is the run's, at once.
+func tryAgain(tries int, known func(error) bool, logf func(string, ...any), what string, start func() error) error {
+	for n := 1; ; n++ {
+		err := start()
+		if err == nil || n >= tries || !known(err) {
+			return err
+		}
+		logf("%s: start %d of %d failed the way the Go library's BOSH login does (%v): again", what, n, tries, err)
+	}
+}
+
+// TestTryAgainIsForTheKnownFailureAlone holds the deployment mode's second
+// tries to what they name; it needs no network and no client binary.
+func TestTryAgainIsForTheKnownFailureAlone(t *testing.T) {
+	race := errors.New("server exited before the link connected; last server line: server: failed to connect link: " +
+		"session connect: jitsi join muc: xmpp dial: post-auth features: bosh connection closed")
+	other := errors.New("server exited before the link connected; last server line: server: failed to connect link: " +
+		"session connect: jitsi join muc: allocate focus: context deadline exceeded")
+	if !goBOSHRace(race) || goBOSHRace(other) || goBOSHRace(nil) {
+		t.Fatalf("goBOSHRace: the library's failure %v, another %v, none %v; want true, false, false",
+			goBOSHRace(race), goBOSHRace(other), goBOSHRace(nil))
+	}
+	for _, c := range []struct {
+		name  string
+		tries int
+		fails []error // what each start returns, in order; nil after them
+		calls int
+		want  error
+	}{
+		{"a start that passes is run once", 5, nil, 1, nil},
+		{"another failure is not tried again", 5, []error{other}, 1, other},
+		{"the known failure is tried again until a start passes", 5, []error{race, race}, 3, nil},
+		{"the known failure and then another: the other ends it", 5, []error{race, other}, 2, other},
+		{"the known failure every time ends at the last try", 3, []error{race, race, race, race}, 3, race},
+		{"one try is one start", 1, []error{race}, 1, race},
+	} {
+		calls, said := 0, 0
+		err := tryAgain(c.tries, goBOSHRace, func(string, ...any) { said++ }, c.name, func() error {
+			calls++
+			if calls <= len(c.fails) {
+				return c.fails[calls-1]
+			}
+			return nil
+		})
+		if calls != c.calls || !errors.Is(err, c.want) || (c.want == nil && err != nil) {
+			t.Errorf("%s: %d starts and %v, want %d and %v", c.name, calls, err, c.calls, c.want)
+		}
+		if said != calls-1 {
+			t.Errorf("%s: %d starts and %d of them said why they came again", c.name, calls, said)
+		}
+	}
+}
+
+// TestRustStartOverBOSHNeedsTheClientsWord holds rustClient.overBOSH to what
+// it names, with a script in the client's place: a client that says its
+// session is up without having said its XMPP went over BOSH has not started,
+// and one that said so has. It needs no network and no client binary.
+func TestRustStartOverBOSHNeedsTheClientsWord(t *testing.T) {
+	said := "echo 'jitsi: the WebSocket did not dial (handshake failed); " + rustBOSHMarker + "' >&2\n"
+	for _, c := range []struct {
+		name, lines string
+		over, ok    bool
+	}{
+		{"over BOSH asked, the client said so", said, true, true},
+		{"over BOSH asked, the client did not say so", "", true, false},
+		{"over BOSH not asked, the client did not say so", "", false, true},
+		{"over BOSH not asked, the client said so", said, false, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			bin := filepath.Join(t.TempDir(), "client.sh")
+			script := "#!/bin/sh\n" + c.lines + "echo '" + rustListenMarker + "127.0.0.1:9' >&2\nexec sleep 30\n"
+			if err := os.WriteFile(bin, []byte(script), 0o700); err != nil { //nolint:gosec // a test's own script
+				t.Fatal(err)
+			}
+			rc := rustClient{bin: bin, start: 10 * time.Second, stop: 2 * time.Second, overBOSH: c.over}
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			tun, err := rc.Start(ctx, Endpoint{Provider: providerJitsi, Transport: transportData,
+				Room: "https://meet.lab.test/room", Key: strings.Repeat("00", 32), DNS: defaultDNS})
+			if err == nil {
+				tun.Stop()
+			}
+			switch {
+			case c.ok && err != nil:
+				t.Errorf("the start failed: %v", err)
+			case !c.ok && err == nil:
+				t.Error("the start passed though the client never said its XMPP went over BOSH")
+			case !c.ok && !errors.Is(err, errNotOverBOSH):
+				t.Errorf("the start failed with %v, want errNotOverBOSH", err)
+			}
+		})
+	}
+}
+
 // liveRows runs one flavour's rows: the server in a fresh room of the
-// deployment, the client joining it twice.
-func liveRows(t *testing.T, target Target, client Client, origin *liveOrigin, capture *Capture, dir string, secrets *[]string) {
+// deployment, the client joining it twice. goTries is how many starts a Go
+// engine gets (the server, and the client of the cli flavour): one, or
+// liveGoBOSHTries in the deployment mode, where a start is tried again when
+// it failed by goBOSHRace. The Rust client always gets one.
+func liveRows(t *testing.T, target Target, client Client, origin *liveOrigin, capture *Capture, dir string, secrets *[]string, goTries int) {
 	t.Helper()
 	pair := Pair{providerJitsi, transportData}
 	ctx, cancel := context.WithTimeout(runContext(t), liveRowsBudget)
@@ -514,8 +666,20 @@ func liveRows(t *testing.T, target Target, client Client, origin *liveOrigin, ca
 			t.Logf("rows/%s: the client's log was not kept: %v", client.Name(), err)
 		}
 	}()
+	_, isRust := client.(rustClient)
+	clientTries := goTries
+	if isRust {
+		clientTries = 1
+	}
 	began := time.Now()
-	ep, stop, err := target.Open(ctx, pair, rowDir, OpenOptions{})
+	var ep Endpoint
+	var stop func()
+	err := tryAgain(goTries, goBOSHRace, t.Logf, "rows/"+client.Name()+": the server's join", func() error {
+		began = time.Now()
+		var err error
+		ep, stop, err = target.Open(ctx, pair, rowDir, OpenOptions{})
+		return err
+	})
 	if err != nil {
 		t.Fatalf("the server did not join its room: %v", err)
 	}
@@ -523,8 +687,21 @@ func liveRows(t *testing.T, target Target, client Client, origin *liveOrigin, ca
 	*secrets = append(*secrets, ep.Secrets()...)
 	t.Logf("rows/%s: the server joined its room in %s", client.Name(), time.Since(began).Round(time.Millisecond))
 	for join := 1; join <= 2; join++ {
-		began = time.Now()
-		tun, err := client.Start(ctx, ep)
+		var tun *Tunnel
+		// The Go client's reason is in its log, not in its start's error:
+		// the failure is the known one when a new line of the log says so.
+		seen := cell.Count(goBOSHRaceWords)
+		err := tryAgain(clientTries, func(error) bool {
+			n := cell.Count(goBOSHRaceWords)
+			known := n > seen
+			seen = n
+			return known
+		}, t.Logf, fmt.Sprintf("rows/%s: join %d", client.Name(), join), func() error {
+			began = time.Now()
+			var err error
+			tun, err = client.Start(ctx, ep)
+			return err
+		})
 		if err != nil {
 			t.Fatalf("join %d: the session did not come up: %v", join, err)
 		}
@@ -615,6 +792,26 @@ func TestGateRustJitsiLive(t *testing.T) {
 	if err := os.MkdirAll(dir, artifactsPerm); err != nil {
 		t.Fatal(err)
 	}
+	bosh := strings.TrimSpace(*gateJitsiLiveBOSH)
+	goTries := 1
+	switch bosh {
+	case "", liveBOSHClient:
+	case liveBOSHDeployment:
+		goTries = liveGoBOSHTries
+		if *gateJitsiLivePlan {
+			t.Fatal("-olcrtc.gate-jitsi-live-bosh=deployment is for the rows (-olcrtc.gate-jitsi-live-plan=false): " +
+				"a Go server over BOSH hangs up on a poll held 10 s, and no cell would say anything of the Rust client")
+		}
+	default:
+		t.Fatalf("-olcrtc.gate-jitsi-live-bosh=%q: %s or %s", bosh, liveBOSHClient, liveBOSHDeployment)
+	}
+	if bosh != "" {
+		// Each mode's artifacts in a directory of its own: a job runs both.
+		dir += "-bosh-" + bosh
+		if err := os.MkdirAll(dir, artifactsPerm); err != nil {
+			t.Fatal(err)
+		}
+	}
 	host := strings.TrimSpace(*gateJitsiLiveHost)
 	iceLocal := ""
 	var hub *jitsifake.Hub
@@ -628,6 +825,20 @@ func TestGateRustJitsiLive(t *testing.T) {
 		t.Cleanup(hub.Close)
 		host, iceLocal = hub.Host(), "127.0.0.1"
 		t.Setenv(rustTLSPinEnv, hub.Pin())
+		switch bosh {
+		case liveBOSHClient:
+			// The fake's WebSocket stays, for the Go server; the stream's
+			// features and a login's answers as a real Prosody's.
+			hub.BOSH(true)
+			hub.BOSHAsProsody(true, gateBOSHSuccessLag)
+		case liveBOSHDeployment:
+			// Nobody has a WebSocket. The Go engines log in over BOSH too,
+			// so the features come the way the Go library survives, and no
+			// request is held as long as it would hang up on.
+			hub.BOSH(true)
+			hub.RefuseWebSocket(true)
+			hub.BOSHHold(liveSelfTestGoHold, liveSelfTestGoHold)
+		}
 	default:
 		if err := onThisMachine(host, net.LookupIP); err != nil {
 			t.Fatal(err)
@@ -648,10 +859,13 @@ func TestGateRustJitsiLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rust := rustClient{bin: *gateRustBin, start: startBudget, stop: stopBudget, logf: t.Logf,
+	rust := rustClient{bin: *gateRustBin, start: startBudget, stop: stopBudget, logf: t.Logf, overBOSH: bosh != "",
 		extra: func(cfg *rustConfig) {
 			cfg.Provider = providerJitsi
 			cfg.IceLocalIP, cfg.Debug = iceLocal, true
+			if bosh == liveBOSHClient {
+				cfg.EngineExtra = map[string]string{"ws_url": "wss://" + host + liveClosedWebSocket}
+			}
 		}}
 	var clients []Client
 	flavours := splitList(*gateFlavours)
@@ -684,8 +898,11 @@ func TestGateRustJitsiLive(t *testing.T) {
 	origin := startLiveOrigin(t)
 	for _, c := range clients {
 		t.Run("rows/"+c.Name(), func(t *testing.T) {
-			liveRows(t, local, c, origin, capture, dir, &secrets)
+			liveRows(t, local, c, origin, capture, dir, &secrets, goTries)
 		})
+	}
+	if hub != nil && bosh != "" {
+		liveSelfTestBOSH(t, hub, bosh)
 	}
 	if !*gateJitsiLivePlan {
 		return
@@ -722,6 +939,34 @@ func TestGateRustJitsiLive(t *testing.T) {
 	}
 	if why := gateFailure(rep); why != "" {
 		t.Errorf("gate: %s; the report goes to %s", why, opt.ReportPath)
+	}
+}
+
+// liveSelfTestBOSH reads from the Go fake what the rows did over BOSH: the
+// selftest's stand-in for deploy.sh bosh on a deployment's logs.
+func liveSelfTestBOSH(t *testing.T, hub *jitsifake.Hub, mode string) {
+	t.Helper()
+	sessions := hub.BOSHSessions()
+	var rust, crossed int
+	for _, s := range sessions {
+		if len(s.Requests) != 0 && !strings.HasPrefix(s.Requests[0].Header.Get("User-Agent"), "Go-http-client/") {
+			rust++
+		}
+		if s.Crossed {
+			crossed++
+		}
+	}
+	t.Logf("selftest, bosh=%s: %d BOSH sessions on the fake, %d of them the Rust client's; in %d logins the features came ahead of <success/>",
+		mode, len(sessions), rust, crossed)
+	if slices.Contains(splitList(*gateFlavours), rustFlavour) && rust < 2 {
+		t.Errorf("%d BOSH sessions of the Rust client on the fake, want its two joins' at least", rust)
+	}
+	if mode == liveBOSHClient && rust != len(sessions) {
+		t.Errorf("%d of %d BOSH sessions are not the Rust client's: the Go engines were to keep their WebSocket",
+			len(sessions)-rust, len(sessions))
+	}
+	if mode == liveBOSHClient && rust != 0 && crossed == 0 {
+		t.Errorf("no login's features came ahead of its <success/>: the fake was to cross them")
 	}
 }
 

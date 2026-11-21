@@ -30,10 +30,30 @@ name: olc-jitsi-live
 # test-only `tls-test-pin` feature and trusts the CA by OLC_TLS_TEST_PIN. No
 # app build has that feature (olc-net's shaped_tls tests hold that).
 #
-# bosh-only is the same run with the deployment's XMPP WebSocket closed, so
-# only BOSH (/http-bind) is left. The Rust client has no BOSH until the branch
-# that adds olc-jitsi's xmpp/bosh.rs is merged into this one: the job is
-# expected to fail at the rust rows until then, and may not fail the workflow.
+# The other two jobs put the Rust client's XMPP over BOSH (/http-bind),
+# through the same front and Prosody's own mod_bosh, each on a deployment of
+# its own:
+#
+#   bosh       the deployment as it starts. The Rust client is told to dial
+#              its WebSocket at a path the front does not upgrade, so it goes
+#              on to the BOSH URL config.js names, as on a deployment with no
+#              WebSocket; the Go server keeps its WebSocket. The rows and the
+#              cells S0-S6, the Rust client's alone (the Go client has no
+#              such switch: over an open WebSocket its rows are the live
+#              job's);
+#   bosh-only  the deployment's WebSocket closed (deploy.sh bosh-only), so
+#              BOSH is all anyone has: the Go server and the Go client too.
+#              The rows of both clients, the Go client's first as the
+#              control. The Go library's own BOSH is not steady against a
+#              real Prosody: about one login in four fails (it reads the two
+#              answers after its SASL request in the order they arrive) and
+#              it hangs up on a poll held 10 s. So a Go engine's start is
+#              tried again when it failed that way and no other (the Rust
+#              client's never is), and the cells are left to the bosh job.
+#
+# In both, a start of the Rust client whose log does not say it went over
+# BOSH is a failed start, and after the run deploy.sh bosh (bosh.sh) reads
+# from the front's and Prosody's logs whose requests /http-bind answered.
 
 on:
   push:
@@ -133,15 +153,66 @@ jobs:
         if: always()
         run: bash olc/interop/jitsi-live/deploy.sh down "$RUNNER_TEMP/jitsi-live" || true
 
+  bosh:
+    # The Rust client over BOSH, the exit on its WebSocket: the rows and the
+    # cells (see the head of this file).
+    needs: client
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.5'
+          cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: olc-client
+          path: ${{ runner.temp }}/bin
+      - name: the reader of the deployment's BOSH logs, its own test
+        run: bash olc/interop/jitsi-live/bosh.test.sh
+      - name: the deployment
+        run: bash olc/interop/jitsi-live/deploy.sh up "$RUNNER_TEMP/jitsi-live"
+      - name: through the deployment, the Rust client's XMPP over BOSH (the rows and the cells)
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/olc-client"
+          set -a
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/jitsi-live/lab.env"
+          set +a
+          set -o pipefail
+          bash olc/interop/jitsi-live/run.sh "$RUNNER_TEMP/bin/olc-client" -olcrtc.gate-flavours=rust \
+            -olcrtc.gate-jitsi-live-bosh=client 2>&1 | tee "$RUNNER_TEMP/run.log"
+      - name: whose XMPP went over BOSH, by the front's and Prosody's logs
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          bash olc/interop/jitsi-live/deploy.sh bosh "$RUNNER_TEMP/jitsi-live" rust 2>&1 | tee "$RUNNER_TEMP/bosh.log"
+      - name: the deployment's logs
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          bash olc/interop/jitsi-live/deploy.sh collect "$RUNNER_TEMP/jitsi-live" "$RUNNER_TEMP/out/deployment" || true
+          cp "$RUNNER_TEMP/run.log" "$RUNNER_TEMP/bosh.log" "$RUNNER_TEMP/out/" 2>/dev/null || true
+          cp -r olc/interop/.work/gate-artifacts "$RUNNER_TEMP/out/" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jitsi-live-bosh
+          path: ${{ runner.temp }}/out
+          retention-days: 7
+          if-no-files-found: warn
+      - name: stop the deployment
+        if: always()
+        run: bash olc/interop/jitsi-live/deploy.sh down "$RUNNER_TEMP/jitsi-live" || true
+
   bosh-only:
-    # Expected to fail at the rust rows until olc-jitsi has BOSH
-    # (xmpp/bosh.rs, a branch of its own, not merged here yet): with the
-    # WebSocket closed the Rust client has no way in. The cli rows are the
-    # control: they pass when the deployment's BOSH works.
+    # Everyone over BOSH, the deployment's WebSocket closed: the rows of the
+    # Go client (the control) and of the Rust client (see the head of this
+    # file).
     needs: client
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -156,7 +227,7 @@ jobs:
         run: |
           bash olc/interop/jitsi-live/deploy.sh up "$RUNNER_TEMP/jitsi-live"
           bash olc/interop/jitsi-live/deploy.sh bosh-only "$RUNNER_TEMP/jitsi-live"
-      - name: through the deployment over BOSH (the rows only)
+      - name: through the deployment, everyone's XMPP over BOSH (the rows; the Go client, the Rust client)
         run: |
           chmod +x "$RUNNER_TEMP/bin/olc-client"
           set -a
@@ -165,13 +236,18 @@ jobs:
           set +a
           set -o pipefail
           bash olc/interop/jitsi-live/run.sh "$RUNNER_TEMP/bin/olc-client" -olcrtc.gate-flavours=cli,rust \
-            -olcrtc.gate-jitsi-live-plan=false 2>&1 | tee "$RUNNER_TEMP/run.log"
+            -olcrtc.gate-jitsi-live-bosh=deployment -olcrtc.gate-jitsi-live-plan=false 2>&1 | tee "$RUNNER_TEMP/run.log"
+      - name: whose XMPP went over BOSH, by the front's and Prosody's logs
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          bash olc/interop/jitsi-live/deploy.sh bosh "$RUNNER_TEMP/jitsi-live" all 2>&1 | tee "$RUNNER_TEMP/bosh.log"
       - name: the deployment's logs
         if: always()
         run: |
           mkdir -p "$RUNNER_TEMP/out"
           bash olc/interop/jitsi-live/deploy.sh collect "$RUNNER_TEMP/jitsi-live" "$RUNNER_TEMP/out/deployment" || true
-          cp "$RUNNER_TEMP/run.log" "$RUNNER_TEMP/out/" 2>/dev/null || true
+          cp "$RUNNER_TEMP/run.log" "$RUNNER_TEMP/bosh.log" "$RUNNER_TEMP/out/" 2>/dev/null || true
           cp -r olc/interop/.work/gate-artifacts "$RUNNER_TEMP/out/" 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()

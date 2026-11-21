@@ -3,6 +3,8 @@
 # deploy.sh bosh-only <dir>     close its XMPP WebSocket: only BOSH is left
 # deploy.sh first <dir>         what Jicofo made of the Rust client's answer
 #                               about itself (first.sh on the logs so far)
+# deploy.sh bosh <dir> rust|all whose XMPP went over BOSH, by the front's and
+#                               Prosody's logs so far (bosh.sh)
 # deploy.sh collect <dir> <out> the containers' logs and settings into <out>
 # deploy.sh down <dir>          stop it
 #
@@ -45,7 +47,7 @@ die() {
 	exit 1
 }
 
-usage="usage: deploy.sh up <dir> | bosh-only <dir> | first <dir> | collect <dir> <out> | down <dir>"
+usage="usage: deploy.sh up <dir> | bosh-only <dir> | first <dir> | bosh <dir> rust|all | collect <dir> <out> | down <dir>"
 what=${1:?$usage}
 dir=${2:?$usage}
 
@@ -260,6 +262,19 @@ first() {
 	bash "$(dirname "$0")/first.sh" "$tmp/jicofo.log" "$tmp/prosody.log"
 }
 
+# bosh: the front's and Prosody's logs so far, read by bosh.sh (which says
+# what it holds): the run before it had the Rust client's XMPP go over BOSH
+# (run.sh with -olcrtc.gate-jitsi-live-bosh). The front's log is its
+# container's: bosh-only makes the front again, so after it the log holds
+# only what came since.
+bosh() {
+	local tmp
+	tmp=$(mktemp -d)
+	compose logs --no-color web >"$tmp/web.log" 2>&1
+	compose logs --no-color prosody >"$tmp/prosody.log" 2>&1
+	bash "$(dirname "$0")/bosh.sh" "$tmp/web.log" "$tmp/prosody.log" "$1"
+}
+
 # collect: the four containers' logs, what the front serves and the settings
 # the release wrote, with the run's generated passwords taken out.
 collect() {
@@ -290,6 +305,7 @@ case "$what" in
 up) up ;;
 bosh-only) bosh_only ;;
 first) first ;;
+bosh) bosh "${3:?$usage}" ;;
 collect) collect "${3:?$usage}" ;;
 down) compose down -v --remove-orphans ;;
 *) die "$usage" ;;

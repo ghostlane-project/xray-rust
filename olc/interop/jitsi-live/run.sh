@@ -20,6 +20,12 @@
 # own before all of it, so that a real Jicofo asks it what it can do;
 # deploy.sh first (first.sh) then reads what Jicofo made of the answer.
 #
+# -olcrtc.gate-jitsi-live-bosh=client|deployment puts the Rust client's XMPP
+# over BOSH (the test's head says how each mode does it, and why the second
+# is for the rows alone: it goes with -olcrtc.gate-jitsi-live-plan=false and
+# after deploy.sh bosh-only); deploy.sh bosh (bosh.sh) then reads from the
+# front's and Prosody's logs whose requests /http-bind answered.
+#
 # What the run needs, all written by deploy.sh up into <dir>/lab.env:
 #   OLCRTC_GATE_JITSI_LIVE_HOST  the deployment's host; it must resolve to
 #                                this machine, the test refuses any other;
@@ -36,6 +42,7 @@
 # the harness's own check runs, against the Go fake over its TLS listener:
 #   go-remote.sh <topic> <repo>/olc/interop bash jitsi-live/run.sh <bin> \
 #       -olcrtc.gate-jitsi-live-host=selftest -olcrtc.gate-flavours=cli,rust
+# (and the same with either BOSH mode: the fake then serves /http-bind).
 # Extra flags go to go test.
 set -euo pipefail
 # shellcheck source=../lib.sh

@@ -26,8 +26,10 @@
 #         tls-test-pin features) runs the rust flavour over https and wss as
 #         an app does, the fake's certificate trusted by its pin, and adds
 #         TestGateRustJitsiTLSPin: no pin or another's, no TLS. The set also
-#         holds the live target's own checks (jitsi-live/, the guard against
-#         a host elsewhere and the rows' origin), which need no client;
+#         holds the live target's own checks (jitsi-live/: the guard against
+#         a host elsewhere, the rows' origin, the second tries its BOSH runs
+#         give a Go engine and the hold of the Rust client to BOSH), which
+#         need no client;
 #   rust  the TestRustJitsi* tests (internal/engine/jitsifake): the Rust
 #         client's join against the fake, over the WebSocket and over BOSH,
 #         read against the Go engine's in the same fake;
@@ -43,7 +45,7 @@ set -euo pipefail
 
 OLC_CARRIER=jitsi
 OLC_GATE_TARGET=jitsifake
-OLC_GATE_RUN='^(TestGateRustJitsiFake|TestJitsiLogWatchReadsSecrets|TestGateRustJitsiTLSPin|TestOnThisMachineRefusesAHostElsewhere|TestLiveOriginRowIsWholeOrFails)$'
+OLC_GATE_RUN='^(TestGateRustJitsiFake|TestJitsiLogWatchReadsSecrets|TestGateRustJitsiTLSPin|TestOnThisMachineRefusesAHostElsewhere|TestLiveOriginRowIsWholeOrFails|TestTryAgainIsForTheKnownFailureAlone|TestRustStartOverBOSHNeedsTheClientsWord)$'
 OLC_RUST_PKG=./internal/engine/jitsifake
 OLC_RUST_RUN='^TestRustJitsi'
 OLC_GO_PKGS=(./internal/auth/jitsi ./internal/engine/jitsi ./internal/engine/jitsifake)
