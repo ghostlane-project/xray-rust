@@ -5,7 +5,7 @@
 //!
 //! The handshake mimics a browser's header order (an extension is offered only
 //! when the caller's headers name `Sec-WebSocket-Extensions`: permessage-deflate,
-//! [`crate::ws_deflate`]),
+//! the crate's own `ws_deflate`),
 //! client frames are always masked, and the reader assembles fragmented
 //! messages under a hard size limit. Every buffer is bounded; the bound is
 //! stated in a doc comment next to it.
