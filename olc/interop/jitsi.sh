@@ -17,7 +17,13 @@
 #         reads the client's log lines for the room name, the JID and
 #         stanzas, and logs the client's heap peak and VmHWM beside the Go
 #         client's. -olcrtc.gate-flavours=rust,cli adds the Go baseline (a
-#         process of its own; p2p.sh says how, and its three flags);
+#         process of its own; p2p.sh says how, and its three flags).
+#         -olcrtc.gate-jitsi-tls (a client built with the shaped-tls and
+#         tls-test-pin features) runs the rust flavour over https and wss as
+#         an app does, the fake's certificate trusted by its pin, and adds
+#         TestGateRustJitsiTLSPin: no pin or another's, no TLS. The set also
+#         holds the live target's own checks (jitsi-live/, the guard against
+#         a host elsewhere and the rows' origin), which need no client;
 #   rust  the TestRustJitsi* tests (internal/engine/jitsifake): the Rust
 #         client against the fake with one Go engine in the room;
 #   go    the engine's own tests of internal/auth/jitsi and
@@ -32,7 +38,7 @@ set -euo pipefail
 
 OLC_CARRIER=jitsi
 OLC_GATE_TARGET=jitsifake
-OLC_GATE_RUN='^(TestGateRustJitsiFake|TestJitsiLogWatchReadsSecrets)$'
+OLC_GATE_RUN='^(TestGateRustJitsiFake|TestJitsiLogWatchReadsSecrets|TestGateRustJitsiTLSPin|TestOnThisMachineRefusesAHostElsewhere|TestLiveOriginRowIsWholeOrFails)$'
 OLC_RUST_PKG=./internal/engine/jitsifake
 OLC_RUST_RUN='^TestRustJitsi'
 OLC_GO_PKGS=(./internal/auth/jitsi ./internal/engine/jitsi ./internal/engine/jitsifake)

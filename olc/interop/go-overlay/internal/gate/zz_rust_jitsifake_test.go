@@ -18,6 +18,9 @@
 // cli flavour is the Go client, a process of its own (zz_go_child_test.go),
 // over https and wss with the fake's certificate (SSL_CERT_FILE). S0-S7 run
 // for both, S6 with the server's late bridge (OLCRTC_TEST_BRIDGE_DELAY).
+// With -olcrtc.gate-jitsi-tls the rust flavour takes https and wss too, as
+// an app does, the certificate trusted by its pin (a client built with the
+// tls-test-pin feature); that run is S0-S6 (tlsScenarios says why).
 //
 // Beyond the cells the test holds:
 //
@@ -221,6 +224,11 @@ func TestGateRustJitsiFake(t *testing.T) {
 			}
 		}()
 	}
+	if *gateJitsiTLS {
+		// The rust flavour as the cli one: the room's link, https and wss,
+		// the fake's certificate trusted by its pin (zz_rust_jitsilive_test.go).
+		t.Setenv(rustTLSPinEnv, hub.Pin())
+	}
 	capture := StartCapture()
 	defer capture.Stop()
 	watch := newJitsiWatch(log.Writer())
@@ -247,6 +255,9 @@ func TestGateRustJitsiFake(t *testing.T) {
 	registryMu.Lock()
 	saved := registry
 	registry = jitsiScenarios(saved, rec.Withhold)
+	if *gateJitsiTLS {
+		registry = tlsScenarios(saved, rec.Withhold)
+	}
 	registryMu.Unlock()
 	t.Cleanup(func() {
 		registryMu.Lock()
@@ -264,7 +275,9 @@ func TestGateRustJitsiFake(t *testing.T) {
 				extra: func(cfg *rustConfig) {
 					cfg.Provider = providerJitsi
 					cfg.IceLocalIP, cfg.Debug = "127.0.0.1", true
-					cfg.EngineExtra = map[string]string{"config_base": hub.Base(), "ws_url": hub.WSURL()}
+					if !*gateJitsiTLS {
+						cfg.EngineExtra = map[string]string{"config_base": hub.Base(), "ws_url": hub.WSURL()}
+					}
 				}}})
 		case cliFlavour:
 			inproc := goJitsiClient{cli: cliClient{start: startBudget, stop: stopBudget}}

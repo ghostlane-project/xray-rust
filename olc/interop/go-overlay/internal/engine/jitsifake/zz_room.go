@@ -11,7 +11,9 @@
 // Two listeners serve the same handlers: TLS for the Go engine (it only dials
 // https and wss; the hub's certificate is in the file SSL_CERT_FILE names from
 // Start on) and plain HTTP for the Rust client (its test hooks config_base and
-// ws_url). Every client stanza and the headers of both requests are recorded.
+// ws_url). A Rust client built with the tls-test-pin feature takes the TLS
+// listener too, trusting the certificate by its pin (Pin). Every client stanza
+// and the headers of both requests are recorded.
 // No Jitsi deployment is contacted.
 
 package jitsifake
@@ -21,6 +23,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -211,6 +214,14 @@ func (h *Hub) Close() {
 
 // Host is what a Go client names as the Jitsi host: the TLS listener.
 func (h *Hub) Host() string { return h.tlsLn.Addr().String() }
+
+// Pin is the SHA-256 of the hub's certificate (its DER) in hex: what a Rust
+// client built with the tls-test-pin feature trusts the TLS listener by
+// (OLC_TLS_TEST_PIN), as the Go clients trust it by SSL_CERT_FILE.
+func (h *Hub) Pin() string {
+	sum := sha256.Sum256(h.cert.Certificate[0])
+	return hex.EncodeToString(sum[:])
+}
 
 // Base is the plain HTTP origin (the Rust client's config_base).
 func (h *Hub) Base() string { return "http://" + h.plain.Addr().String() }
