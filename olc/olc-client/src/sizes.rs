@@ -148,7 +148,7 @@ fn jitsi_rows() -> [Row; 9] {
     use olc_jitsi::join::{FETCH_MAX, WS_READ_LIMIT};
     use olc_jitsi::session::SCTP_BUFFERED;
     use olc_jitsi::xmpp::bosh::{INBOX_BYTES, REPLY_LIMIT};
-    use olc_jitsi::xmpp::conn::{MAX_IQ_WAITERS, MAX_OCCUPANTS};
+    use olc_jitsi::xmpp::conn::{MAX_IQ_WAITERS, MAX_NICK, MAX_OCCUPANTS};
     [
         Row {
             layer: "Jitsi inbound stanza (one at a time) and the kept session-initiate",
@@ -201,9 +201,10 @@ fn jitsi_rows() -> [Row; 9] {
         },
         Row {
             layer: "Jitsi occupants and IQ waiters",
-            cap: MAX_OCCUPANTS * 64 + MAX_IQ_WAITERS * 2048,
+            cap: MAX_OCCUPANTS * MAX_NICK + MAX_IQ_WAITERS * 2048,
             burst: 1 << 10,
-            formula: "MAX_OCCUPANTS (256) nicks of at most 64 bytes, MAX_IQ_WAITERS (16) replies",
+            formula: "MAX_OCCUPANTS (256) nicks of at most MAX_NICK (64) bytes, a longer nick \
+                      is not kept; MAX_IQ_WAITERS (16) replies",
         },
         Row {
             layer: "Jitsi permessage-deflate state",
@@ -690,6 +691,23 @@ mod tests {
         assert_eq!(INBOX_BYTES, 1 << 20);
         assert_eq!(bosh.cap, 2 * REPLY_LIMIT + INBOX_BYTES);
         assert!(bosh.burst <= 64 << 10, "{}", bosh.burst);
+    }
+
+    /// Plan section 8, the occupants: 256 nicks of at most 64 bytes, 16 KiB.
+    /// olc-jitsi holds a nick to that length (its test
+    /// `a_nick_longer_than_the_bound_is_not_kept`); the row is counted on
+    /// the same constant, not on a number of its own.
+    #[test]
+    fn the_jitsi_occupants_row_follows_the_constants() {
+        use olc_jitsi::xmpp::conn::{MAX_IQ_WAITERS, MAX_NICK, MAX_OCCUPANTS};
+        let rows = budget_with(phone());
+        let row = rows
+            .iter()
+            .find(|r| r.layer.starts_with("Jitsi occupants"))
+            .expect("a row for the occupants");
+        assert_eq!(MAX_OCCUPANTS * MAX_NICK, 16 << 10);
+        assert_eq!(row.cap, MAX_OCCUPANTS * MAX_NICK + MAX_IQ_WAITERS * 2048);
+        assert!(row.formula.contains("MAX_NICK (64)"), "{}", row.formula);
     }
 
     #[test]

@@ -148,6 +148,10 @@ pub const SM_INTERVAL: Duration = Duration::from_secs(30);
 pub const SM_ACK_WAIT: Duration = Duration::from_secs(10);
 /// The most nicks held as occupants; Go has no bound (decision D11).
 pub const MAX_OCCUPANTS: usize = 256;
+/// The longest nick held as an occupant, in bytes; Go has no bound. A nick
+/// of Jitsi's is eight (the head of the JID's local part, as this client's
+/// is), `focus` is five; a longer one is left out of the table.
+pub const MAX_NICK: usize = 64;
 /// The most IQs awaiting a reply at once; Go has no bound.
 pub const MAX_IQ_WAITERS: usize = 16;
 /// How many stanzas the session's channel holds.
@@ -744,11 +748,12 @@ impl Shared {
     }
 
     /// `trackPresence`: available adds, `unavailable` removes; self, `focus`
-    /// and anyone outside this room are left out.
+    /// and anyone outside this room are left out, and so is a nick longer
+    /// than [`MAX_NICK`], which the table's size is counted on.
     fn track_presence(&self, from: &str, unavailable: bool) {
         let Some(slash) = from.rfind('/') else { return };
         let nick = &from[slash + 1..];
-        if nick.is_empty() || nick == "focus" || nick == self.nick {
+        if nick.is_empty() || nick.len() > MAX_NICK || nick == "focus" || nick == self.nick {
             return;
         }
         if !from.starts_with(&format!("{}@", self.cfg.room)) {
@@ -1130,6 +1135,55 @@ mod tests {
         }
         settle().await;
         assert_eq!(conn.occupants().len(), MAX_OCCUPANTS);
+    }
+
+    /// The table is priced at `MAX_OCCUPANTS` nicks of `MAX_NICK` bytes
+    /// (olc-client's sizes table): a nick of that length is kept, a longer
+    /// one is left out, however many of them the server names and however
+    /// long they are.
+    #[tokio::test(start_paused = true)]
+    async fn a_nick_longer_than_the_bound_is_not_kept() {
+        let (conn, _inc, server) = up().await;
+        let room = "testroom@conference.test.example.com";
+        let longest = "n".repeat(MAX_NICK);
+        for nick in [longest.clone(), format!("{longest}x"), "short".to_owned()] {
+            server.say(&format!(
+                "<presence from='{room}/{nick}' xmlns='jabber:client'/>"
+            ));
+        }
+        for i in 0..400 {
+            server.say(&format!(
+                "<presence from='{room}/{}{i}' xmlns='jabber:client'/>",
+                "w".repeat(2000)
+            ));
+        }
+        settle().await;
+        let mut occ = conn.occupants();
+        let long = occ.iter().filter(|n| n.len() > MAX_NICK).count();
+        assert_eq!(long, 0, "nicks longer than MAX_NICK that are held");
+        occ.sort();
+        assert_eq!(occ, [longest.as_str(), "short"]);
+        // One that was never kept leaves as any does.
+        server.say(&format!(
+            "<presence from='{room}/{longest}x' type='unavailable' xmlns='jabber:client'/>"
+        ));
+        settle().await;
+        assert_eq!(conn.occupants().len(), 2);
+        // Filled with the longest nicks there are, the table holds what the
+        // sizes table says and no more.
+        for i in 0..400 {
+            server.say(&format!(
+                "<presence from='{room}/{i:0>width$}' xmlns='jabber:client'/>",
+                width = MAX_NICK
+            ));
+        }
+        settle().await;
+        let held = conn.occupants();
+        assert_eq!(held.len(), MAX_OCCUPANTS);
+        assert_eq!(
+            held.iter().map(String::len).sum::<usize>(),
+            MAX_OCCUPANTS * MAX_NICK - (MAX_NICK - "short".len())
+        );
     }
 
     /// `TestStress_IQWaiters`, `TestStress_IQWaiterTimeout` (`conn_test.go`).
