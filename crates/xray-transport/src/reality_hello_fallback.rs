@@ -198,10 +198,6 @@ fn memory() -> MutexGuard<'static, HelloMemory> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Off in this commit, so every dial runs as it did before: the tests that
-/// pin the fallback are seen failing first. The next commit removes it.
-const PLANS_DIALS: bool = false;
-
 /// How one dial opens.
 pub(crate) enum HelloPlan {
     /// The configured hello, watched; on a stall, the one retry.
@@ -214,9 +210,6 @@ pub(crate) enum HelloPlan {
 /// as it did before this module: the fingerprint has no hybrid share, or the
 /// short hello is known not to help here.
 pub(crate) fn plan(config: &RealityClientConfig, server: &Target) -> Option<HelloPlan> {
-    if !PLANS_DIALS {
-        return None;
-    }
     if !xray_utls::is_reality_fingerprint_hybrid(&config.fingerprint) {
         return None;
     }
