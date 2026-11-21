@@ -203,6 +203,13 @@ events! {
         diagnostics: Vec<Diagnostic>,
     }
 
+    /// The session's sockets leave by this interface from now on. Printed
+    /// before `ready`, and again whenever the way out moves.
+    Bound = "bound" {
+        /// The interface's name.
+        interface: String,
+    }
+
     /// The session is accepted with a remark: a finding of the config parser
     /// that is not an error.
     Warning = "warning" {
@@ -221,6 +228,15 @@ events! {
         inbounds: Vec<Inbound>,
     }
 
+    /// A room session opened: the first, and each one after a hop to
+    /// another room or a reconnect.
+    SessionOpened = "session_opened" {
+        /// The room, as the session file names it.
+        room: String,
+        /// The session's id.
+        session_id: String,
+    }
+
     /// One log line. The core half's `log` object decides which of its lines
     /// are printed.
     Log = "log" {
@@ -230,6 +246,38 @@ events! {
         level: Level,
         /// The line, with no newline in it.
         line: String,
+    }
+
+    /// `probe`: one request for a URL through the session's line.
+    Probe = "probe" {
+        /// The line answered.
+        ok: bool,
+        /// How long the answer took, milliseconds; `null` when none came.
+        millis: Option<u64>,
+        /// Why none came; `null` when one did.
+        error: Option<String>,
+    }
+
+    /// `olc-check`: one join of the session's room.
+    OlcCheck = "olc_check" {
+        /// The room was joined and its SOCKS port served.
+        ok: bool,
+        /// How long that took, milliseconds; `null` when it failed.
+        millis: Option<u64>,
+        /// Why it failed; `null` when it did not.
+        error: Option<String>,
+    }
+
+    /// `olc-ping`: a join of the session's room, then the best of three
+    /// requests through it.
+    OlcPing = "olc_ping" {
+        /// A request was answered.
+        ok: bool,
+        /// The best request's time, milliseconds; `null` when none was
+        /// answered.
+        millis: Option<u64>,
+        /// Why none was; `null` when one was.
+        error: Option<String>,
     }
 
     /// A command other than `run` failed, or no command was understood. The
