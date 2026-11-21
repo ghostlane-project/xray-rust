@@ -94,6 +94,9 @@ pub(crate) fn run(defaults: &RuntimeConfig, runner: &Runner, p: Probe) -> Result
         .ok()
         .filter(|&ms| ms > 0)
         .map_or(fallback, Duration::from_millis);
+    // A probe may be the first thing the process does: what a start puts
+    // in for the signalling, it puts in too.
+    crate::runtime::ensure_signalling_tls().map_err(OlcrtcError::Probe)?;
     let rt = ghostlane_runtime::handle()
         .map_err(|e| OlcrtcError::Probe(format!("olcRTC runtime: no threads: {e}")))?;
     let runner = runner.clone();
