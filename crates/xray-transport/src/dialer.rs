@@ -806,11 +806,15 @@ impl TransportDialer {
                 // X25519MLKEM768 share, on a bare socket of this dialer, is
                 // watched, and when not one byte answers it one retry sends
                 // the short hello an older server accepts. That retry gives
-                // up the post-quantum half of the key exchange, for that
-                // connection only and only after a stall; whoever can drop
-                // packets on the path can force it; what remains is the
-                // X25519 exchange every client used before the hybrid share.
-                // A server that answers, with anything, is never downgraded.
+                // up the post-quantum half of the key exchange for the
+                // connection it opens and, once it worked, for every later
+                // dial to the same server within REALITY_HELLO_MEMORY_TTL:
+                // those send the short hello at once, without a stall of
+                // their own. Whoever can drop packets on the path can force
+                // this, and renew it every TTL by dropping the hybrid hello
+                // again. What remains is the X25519 exchange every client
+                // used before the hybrid share. A server that answers this
+                // dial's hybrid hello, with anything, is never retried short.
                 //
                 // Boxed: the retry's state stays out of this future, which
                 // every flow's dial holds.
@@ -854,10 +858,14 @@ impl TransportDialer {
     /// which closes its socket, and one more made on a new connection with
     /// the short hello. Any other end, an error included, is this dial's
     /// end. If the retry completes, the server is remembered as one where
-    /// the short hello works; if its handshake stalls or fails, as one where
-    /// it does not help, and the dial fails with the first attempt's stall.
-    /// A retry that never reached its handshake says nothing about the
-    /// hello and is not remembered.
+    /// the short hello works; if its handshake stalls too or the answer
+    /// fails REALITY's verification, as one where it does not help. Either
+    /// failure fails the dial with the first attempt's stall. A retry that
+    /// ends any other way (it never reached its handshake, or the connection
+    /// was reset or closed) says nothing about the hello and is not
+    /// remembered. The memory itself keeps a proof that the short hello
+    /// works against a later failure, and takes nothing from a dial that
+    /// was under way at a network reset.
     ///
     /// `ShortFirst`: the memory says the short hello works here, so it goes
     /// out at once, unwatched. A handshake that fails takes the server out
@@ -929,19 +937,24 @@ impl TransportDialer {
         }
         prepared.watch_first_answer(window);
         let completed = prepared.complete(stream).await;
-        let verdict = if completed.is_ok() {
-            ShortHelloVerdict::Works
-        } else {
-            ShortHelloVerdict::DoesNotHelp
+        let verdict = match &completed {
+            Ok(_) => Some(ShortHelloVerdict::Works),
+            Err(error) if reality_hello_fallback::says_short_hello_does_not_help(error) => {
+                Some(ShortHelloVerdict::DoesNotHelp)
+            }
+            Err(_) => None,
         };
-        reality_hello_fallback::remember(server, verdict);
-        self.report_reality_hello(
-            original_target,
-            RealityHelloEvent::Remembered {
-                verdict,
-                ttl: REALITY_HELLO_MEMORY_TTL,
-            },
-        );
+        if let Some(verdict) = verdict {
+            if reality_hello_fallback::remember(server, verdict) {
+                self.report_reality_hello(
+                    original_target,
+                    RealityHelloEvent::Remembered {
+                        verdict,
+                        ttl: REALITY_HELLO_MEMORY_TTL,
+                    },
+                );
+            }
+        }
         completed.map_err(|_| stall)
     }
 

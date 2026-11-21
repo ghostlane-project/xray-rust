@@ -24,10 +24,16 @@
 //!    [`REALITY_HELLO_MEMORY_TTL`]. Where the short hello worked, later dials
 //!    start with it and do not pay the stall; when the time is up the
 //!    configured hello is tried again. Where it did not help (it stalled as
-//!    well, or the handshake failed: a server from Xray-core v26.10.21 on
-//!    refuses a hello without the hybrid share), the dial fails with the
-//!    stall as its error and later dials send only the configured hello,
-//!    unwatched, exactly as before.
+//!    well, or the server's answer failed REALITY's verification: a server
+//!    from Xray-core v26.10.21 on hands a hello without the hybrid share to
+//!    its camouflage target), the dial fails with the stall as its error and
+//!    later dials send only the configured hello, unwatched, exactly as
+//!    before. A retry that ends any other way (a reset, a close, a failed
+//!    connect) fails the dial with the stall and is not remembered: it says
+//!    nothing about the hello. Nor is a failure written over a proof that
+//!    the short hello works at that server, since a burst of dials that
+//!    stall together retry together, and the one retry that meets a loss
+//!    would otherwise turn the fallback off for all of them.
 //!
 //! What the retry gives up, and to whom. The short hello has no ML-KEM-768
 //! share, so the connection it opens is keyed by X25519 alone: the key
@@ -48,7 +54,8 @@
 //! The memory is process-wide, holds at most
 //! [`REALITY_HELLO_MEMORY_CAPACITY`] servers (the oldest goes first), keeps
 //! no task or timer, and is emptied by `NetworkResets::reset`, which a host
-//! calls when the device moved to another network.
+//! calls when the device moved to another network. A dial under way at the
+//! reset learnt its outcome on the old network, so it writes nothing.
 
 use std::{
     collections::VecDeque,
@@ -136,6 +143,14 @@ impl ServerKey {
     }
 }
 
+/// A server as [`plan`] found it: its key, and the memory's epoch at that
+/// moment. A network reset moves the epoch on, and an outcome a dial brings
+/// back from an earlier epoch is not written.
+pub(crate) struct PlannedServer {
+    server: ServerKey,
+    epoch: u64,
+}
+
 struct Entry {
     server: ServerKey,
     verdict: ShortHelloVerdict,
@@ -146,12 +161,22 @@ struct Entry {
 /// owns a clock.
 struct HelloMemory {
     entries: VecDeque<Entry>,
+    /// How many times the memory was emptied.
+    epoch: u64,
 }
 
 impl HelloMemory {
     const fn new() -> Self {
         Self {
             entries: VecDeque::new(),
+            epoch: 0,
+        }
+    }
+
+    fn planned(&self, server: ServerKey) -> PlannedServer {
+        PlannedServer {
+            server,
+            epoch: self.epoch,
         }
     }
 
@@ -167,7 +192,25 @@ impl HelloMemory {
         Some(self.entries[index].verdict)
     }
 
-    fn remember(&mut self, server: ServerKey, verdict: ShortHelloVerdict, now: Instant) {
+    /// Writes `verdict` for the server, and says whether it did. Nothing is
+    /// written for a dial planned before the memory was last emptied, and a
+    /// failure is not written over an unexpired proof that the short hello
+    /// works there.
+    fn remember(
+        &mut self,
+        planned: PlannedServer,
+        verdict: ShortHelloVerdict,
+        now: Instant,
+    ) -> bool {
+        if planned.epoch != self.epoch {
+            return false;
+        }
+        let PlannedServer { server, .. } = planned;
+        if verdict == ShortHelloVerdict::DoesNotHelp
+            && self.recall(&server, now) == Some(ShortHelloVerdict::Works)
+        {
+            return false;
+        }
         self.entries
             .retain(|entry| entry.until > now && entry.server != server);
         while self.entries.len() >= REALITY_HELLO_MEMORY_CAPACITY {
@@ -178,15 +221,21 @@ impl HelloMemory {
             verdict,
             until: now + REALITY_HELLO_MEMORY_TTL,
         });
+        true
     }
 
-    fn forget(&mut self, server: &ServerKey) {
-        self.entries.retain(|entry| entry.server != *server);
+    /// Takes the server out, unless the dial was planned before the memory
+    /// was last emptied: what is there now was learnt after it.
+    fn forget(&mut self, planned: &PlannedServer) {
+        if planned.epoch == self.epoch {
+            self.entries.retain(|entry| entry.server != planned.server);
+        }
     }
 
-    /// Lets the buffer go with the entries.
+    /// Lets the buffer go with the entries, and starts a new epoch.
     fn clear(&mut self) {
         self.entries = VecDeque::new();
+        self.epoch = self.epoch.wrapping_add(1);
     }
 }
 
@@ -201,9 +250,9 @@ fn memory() -> MutexGuard<'static, HelloMemory> {
 /// How one dial opens.
 pub(crate) enum HelloPlan {
     /// The configured hello, watched; on a stall, the one retry.
-    Watched(ServerKey),
+    Watched(PlannedServer),
     /// The short hello at once: it worked here within the memory's time.
-    ShortFirst(ServerKey),
+    ShortFirst(PlannedServer),
 }
 
 /// The plan for a dial of `config` to `server`, or `None` when the dial runs
@@ -214,9 +263,12 @@ pub(crate) fn plan(config: &RealityClientConfig, server: &Target) -> Option<Hell
         return None;
     }
     let key = ServerKey::new(server, config);
-    match memory().recall(&key, Instant::now()) {
-        None => Some(HelloPlan::Watched(key)),
-        Some(ShortHelloVerdict::Works) => Some(HelloPlan::ShortFirst(key)),
+    let mut memory = memory();
+    let recalled = memory.recall(&key, Instant::now());
+    let planned = memory.planned(key);
+    match recalled {
+        None => Some(HelloPlan::Watched(planned)),
+        Some(ShortHelloVerdict::Works) => Some(HelloPlan::ShortFirst(planned)),
         Some(ShortHelloVerdict::DoesNotHelp) => None,
     }
 }
@@ -237,12 +289,33 @@ pub(crate) fn is_unanswered(error: &TransportError) -> bool {
     )
 }
 
-pub(crate) fn remember(server: ServerKey, verdict: ShortHelloVerdict) {
-    memory().remember(server, verdict, Instant::now());
+/// Whether the end of the short hello's own handshake says that it does
+/// not help at this server: it went unanswered as well, or the server's
+/// answer failed REALITY's verification (a real certificate, crawled, or a
+/// certificate that was refused), which is what a server that requires the
+/// hybrid share makes of it. Any other end, a reset or a close among them,
+/// may be the path's and not the server's, and says nothing about the hello.
+pub(crate) fn says_short_hello_does_not_help(error: &TransportError) -> bool {
+    match error {
+        TransportError::Reality(
+            RealityError::ClientHelloUnanswered { .. } | RealityError::RealCertificate,
+        ) => true,
+        TransportError::Tls(io) => io
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+            .is_some_and(|inner| matches!(inner, rustls::Error::InvalidCertificate(_))),
+        _ => false,
+    }
 }
 
-pub(crate) fn forget(server: &ServerKey) {
-    memory().forget(server);
+/// Writes `verdict` for the server `planned` names, and says whether it was
+/// written (see `HelloMemory::remember`).
+pub(crate) fn remember(planned: PlannedServer, verdict: ShortHelloVerdict) -> bool {
+    memory().remember(planned, verdict, Instant::now())
+}
+
+pub(crate) fn forget(planned: &PlannedServer) {
+    memory().forget(planned);
 }
 
 /// Empties the memory: the network the outcomes were seen on is gone.
@@ -294,8 +367,12 @@ mod tests {
     fn an_outcome_is_recalled_until_its_time_is_up_and_then_forgotten() {
         let mut memory = HelloMemory::new();
         let start = Instant::now();
-        memory.remember(server(1), ShortHelloVerdict::Works, start);
-        memory.remember(server(2), ShortHelloVerdict::DoesNotHelp, start);
+        memory.remember(memory.planned(server(1)), ShortHelloVerdict::Works, start);
+        memory.remember(
+            memory.planned(server(2)),
+            ShortHelloVerdict::DoesNotHelp,
+            start,
+        );
 
         let late = start + REALITY_HELLO_MEMORY_TTL - Duration::from_millis(1);
         assert_eq!(
@@ -323,17 +400,25 @@ mod tests {
         let mut memory = HelloMemory::new();
         let start = Instant::now();
         let later = start + Duration::from_secs(60);
-        memory.remember(server(1), ShortHelloVerdict::Works, start);
-        memory.remember(server(1), ShortHelloVerdict::DoesNotHelp, later);
+        memory.remember(memory.planned(server(1)), ShortHelloVerdict::Works, start);
+        memory.remember(
+            memory.planned(server(1)),
+            ShortHelloVerdict::DoesNotHelp,
+            later,
+        );
         assert_eq!(memory.entries.len(), 1);
         assert_eq!(
             memory.recall(&server(1), later),
             Some(ShortHelloVerdict::Works)
         );
 
-        memory.remember(server(2), ShortHelloVerdict::DoesNotHelp, start);
-        memory.remember(server(2), ShortHelloVerdict::Works, later);
-        memory.remember(server(1), ShortHelloVerdict::Works, later);
+        memory.remember(
+            memory.planned(server(2)),
+            ShortHelloVerdict::DoesNotHelp,
+            start,
+        );
+        memory.remember(memory.planned(server(2)), ShortHelloVerdict::Works, later);
+        memory.remember(memory.planned(server(1)), ShortHelloVerdict::Works, later);
         assert_eq!(memory.entries.len(), 2);
         for index in [1, 2] {
             assert_eq!(
@@ -343,8 +428,8 @@ mod tests {
             );
         }
 
-        memory.forget(&server(1));
-        memory.forget(&server(2));
+        memory.forget(&memory.planned(server(1)));
+        memory.forget(&memory.planned(server(2)));
         assert!(memory.entries.is_empty());
     }
 
@@ -353,7 +438,11 @@ mod tests {
         let mut memory = HelloMemory::new();
         let start = Instant::now();
         for index in 0..REALITY_HELLO_MEMORY_CAPACITY + 3 {
-            memory.remember(server(index), ShortHelloVerdict::Works, start);
+            memory.remember(
+                memory.planned(server(index)),
+                ShortHelloVerdict::Works,
+                start,
+            );
             assert!(memory.entries.len() <= REALITY_HELLO_MEMORY_CAPACITY);
         }
         assert_eq!(memory.entries.len(), REALITY_HELLO_MEMORY_CAPACITY);
@@ -371,12 +460,39 @@ mod tests {
 
         // Entries whose time is up make room before a live one is pushed out.
         let after = start + REALITY_HELLO_MEMORY_TTL;
-        memory.remember(server(1000), ShortHelloVerdict::Works, after);
+        memory.remember(
+            memory.planned(server(1000)),
+            ShortHelloVerdict::Works,
+            after,
+        );
         assert_eq!(memory.entries.len(), 1);
 
         memory.clear();
         assert!(memory.entries.is_empty());
         assert_eq!(memory.entries.capacity(), 0, "the buffer goes too");
+    }
+
+    /// What a dial planned before the memory was emptied brings back is not
+    /// written, and does not take out what a later dial wrote.
+    #[test]
+    fn a_dial_planned_before_a_clear_writes_nothing() {
+        let mut memory = HelloMemory::new();
+        let start = Instant::now();
+        let planned_before = memory.planned(server(1));
+        let also_planned_before = memory.planned(server(1));
+        memory.clear();
+
+        assert!(!memory.remember(planned_before, ShortHelloVerdict::Works, start));
+        assert!(memory.entries.is_empty());
+        assert!(memory.remember(memory.planned(server(1)), ShortHelloVerdict::Works, start));
+        memory.forget(&also_planned_before);
+        assert_eq!(
+            memory.recall(&server(1), start),
+            Some(ShortHelloVerdict::Works),
+            "what a later dial wrote stays"
+        );
+        memory.forget(&memory.planned(server(1)));
+        assert!(memory.entries.is_empty());
     }
 
     /// Two servers differ by any of address, port and server name.
