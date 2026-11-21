@@ -32,6 +32,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -47,7 +48,13 @@ const (
 	providerInterop  = "interop"
 	rustFlavour      = "rust"
 	rustListenMarker = "SOCKS5 server listening on "
+	// rustBOSHMarker is what the Rust client's log says when its WebSocket
+	// did not dial and its XMPP goes over BOSH (olc-jitsi's join.rs).
+	rustBOSHMarker = "BOSH instead"
 )
+
+// errNotOverBOSH is a start that was to go over BOSH and did not say so.
+var errNotOverBOSH = errors.New("the session is up and the client's log never said its XMPP went over BOSH")
 
 var (
 	gateRustBin = flag.String("olcrtc.gate-rust-bin", os.Getenv("OLCRTC_GATE_RUST_BIN"),
@@ -229,6 +236,9 @@ type rustClient struct {
 	start, stop time.Duration
 	extra       func(*rustConfig)
 	logf        func(format string, args ...any)
+	// overBOSH makes a start whose client did not say its XMPP went over
+	// BOSH (rustBOSHMarker) a failed one: the live target's BOSH runs.
+	overBOSH bool
 }
 
 // Name implements Client.
@@ -243,6 +253,10 @@ func (c rustClient) Start(ctx context.Context, ep Endpoint) (*Tunnel, error) {
 	addr, err := child.listening(c.start, c.stop)
 	if err != nil {
 		return nil, err
+	}
+	if c.overBOSH && !child.overBOSH.Load() {
+		child.halt(c.stop, nil)
+		return nil, fmt.Errorf("%s: %w", child.who, errNotOverBOSH)
 	}
 	liveRust.Store(addr, child)
 	return &Tunnel{SocksAddr: addr, Stop: sync.OnceFunc(func() {
@@ -296,6 +310,9 @@ type rustChild struct {
 	// for a child that wrote none. Under peakMu.
 	gcHeapMB int64
 	once     sync.Once
+	// overBOSH says a line of the child's log held rustBOSHMarker; set by
+	// the reader of its stderr, before the line after it is read.
+	overBOSH atomic.Bool
 }
 
 func startRust(ctx context.Context, bin string, ep Endpoint, extra func(*rustConfig)) (*rustChild, error) {
@@ -364,6 +381,9 @@ func startChild(ctx context.Context, who, bin, dir, name string, cfg []byte, env
 				continue
 			}
 			_, _ = log.Writer().Write([]byte(line + "\n"))
+			if strings.Contains(line, rustBOSHMarker) {
+				c.overBOSH.Store(true)
+			}
 			if i := strings.Index(line, rustListenMarker); i >= 0 && !said {
 				said = true
 				c.ready <- strings.Fields(line[i+len(rustListenMarker):])[0]

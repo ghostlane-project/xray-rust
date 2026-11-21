@@ -21,8 +21,8 @@ use tokio::sync::mpsc;
 
 use crate::carrier::{BuiltIn, CarrierError, CarrierJoin, JoinError, VideoCarriers};
 use crate::config::{
-    Config, ConfigError, ENGINE_INTEROP_P2P, ENGINE_INTEROP_PIPE, ENGINE_MTSLINK,
-    ENGINE_SALUTEJAZZ, ENGINE_VKCALLS, PROVIDER_SALUTEJAZZ, TRANSPORT_VP8CHANNEL,
+    Config, ConfigError, ENGINE_INTEROP_P2P, ENGINE_INTEROP_PIPE, ENGINE_JITSI, ENGINE_MTSLINK,
+    ENGINE_SALUTEJAZZ, ENGINE_VKCALLS, PROVIDER_JITSI, PROVIDER_SALUTEJAZZ, TRANSPORT_VP8CHANNEL,
 };
 use crate::lane::Lane;
 use crate::pipe::PipeLink;
@@ -42,6 +42,9 @@ pub enum LinkError {
     /// SaluteJazz's.
     #[error(transparent)]
     SaluteJazz(#[from] olc_salutejazz::Error),
+    /// Jitsi's: the join. The text holds no room name.
+    #[error(transparent)]
+    Jitsi(#[from] olc_jitsi::join::JoinError),
     /// The settings.
     #[error(transparent)]
     Config(#[from] ConfigError),
@@ -72,8 +75,53 @@ pub enum Link {
     Pipe(Arc<PipeLink>),
     /// The SaluteJazz carrier.
     SaluteJazz(Arc<olc_salutejazz::Link>),
+    /// The Jitsi carrier: datachannel over the bridge.
+    Jitsi(Arc<olc_jitsi::link::Link>),
     /// vp8channel over an engine that carries video.
     Vp8(Arc<Vp8Link>),
+}
+
+/// The Jitsi link's settings: the room from the provider's link
+/// (`https://host/room`) or, for an engine joined directly, the host as the
+/// URL and the room in `engine_extra` (plan D13; `config_base` and `ws_url`
+/// there are the tests' fakes').
+fn jitsi_config(cfg: &Config) -> Result<olc_jitsi::link::LinkConfig, LinkError> {
+    let (host, room) = if cfg.provider == PROVIDER_JITSI {
+        olc_jitsi::room::parse_room_url(&cfg.url)
+            .map_err(|e| LinkError::Jitsi(olc_jitsi::join::JoinError(e.to_string())))?
+    } else {
+        let room = cfg
+            .engine_extra
+            .get(olc_jitsi::room::CREDENTIAL_KEY_ROOM)
+            .map_or("", |r| r.trim());
+        (
+            olc_jitsi::nick::normalise_host(&cfg.url).to_owned(),
+            room.to_owned(),
+        )
+    };
+    if host.is_empty() {
+        return Err(LinkError::Jitsi(olc_jitsi::join::JoinError(
+            "jitsi: a host is required".into(),
+        )));
+    }
+    if room.is_empty() {
+        return Err(LinkError::Jitsi(olc_jitsi::join::JoinError(
+            "jitsi: a room is required".into(),
+        )));
+    }
+    let mut nick = olc_jitsi::nick::sanitise_nick(&cfg.participant_name());
+    if nick.is_empty() {
+        nick = "olcrtc".to_owned();
+    }
+    // Go's join budget for a first join is the caller's; a minute here.
+    let mut join = olc_jitsi::join::JoinConfig::new(&host, &room, &nick, Duration::from_secs(60));
+    join.config_base = cfg.engine_extra.get("config_base").cloned();
+    join.ws_url = cfg.engine_extra.get("ws_url").cloned();
+    Ok(olc_jitsi::link::LinkConfig {
+        join,
+        host_ip: cfg.host_ip()?,
+        relay_only: cfg.relay_only()?,
+    })
 }
 
 impl DataSink for Lane {
@@ -177,6 +225,9 @@ impl Link {
                     olc_salutejazz::Link::connect(jazz, events).await?,
                 ))
             }
+            ENGINE_JITSI => Ok(Link::Jitsi(
+                olc_jitsi::link::Link::connect(jitsi_config(cfg)?, events).await?,
+            )),
             other => Err(ConfigError::Engine(other.to_owned()).into()),
         }
     }
@@ -192,6 +243,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.wait_peer_settled().await,
             Link::SaluteJazz(j) => j.wait_peer_settled().await,
+            Link::Jitsi(j) => j.wait_peer_settled().await,
             Link::Vp8(v) => v.wait_peer_settled().await,
         }
     }
@@ -201,6 +253,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.set_data(lane),
             Link::SaluteJazz(j) => j.set_data(lane.map(|l| l as Arc<dyn DataSink>)),
+            Link::Jitsi(j) => j.set_data(lane.map(|l| l as Arc<dyn DataSink>)),
             Link::Vp8(_) => {}
         }
     }
@@ -228,6 +281,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.set_datagram(sink),
             Link::SaluteJazz(j) => j.set_datagram(sink),
+            Link::Jitsi(j) => j.set_datagram(sink),
             Link::Vp8(v) => v.set_datagram(sink),
         }
     }
@@ -238,6 +292,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.peer_seen(),
             Link::SaluteJazz(j) => j.peer_seen(),
+            Link::Jitsi(j) => j.peer_seen(),
             Link::Vp8(v) => v.peer_seen(),
         }
     }
@@ -248,6 +303,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.can_send(),
             Link::SaluteJazz(j) => j.can_send(),
+            Link::Jitsi(j) => j.can_send(),
             Link::Vp8(v) => v.can_send(),
         }
     }
@@ -257,6 +313,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.wait_ready(limit).await,
             Link::SaluteJazz(j) => j.wait_ready(limit).await,
+            Link::Jitsi(j) => j.wait_ready(limit).await,
             Link::Vp8(v) => v.wait_ready(limit, false).await,
         }
     }
@@ -269,6 +326,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.send(payload).await,
             Link::SaluteJazz(j) => j.send(payload).await,
+            Link::Jitsi(j) => j.send(payload).await,
             Link::Vp8(v) => v.send(payload).await,
         }
     }
@@ -281,6 +339,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.send_datagram(payload).await,
             Link::SaluteJazz(j) => j.send_datagram(payload).await,
+            Link::Jitsi(j) => j.send_datagram(payload).await,
             Link::Vp8(v) => v.send_datagram(payload),
         }
     }
@@ -300,6 +359,10 @@ impl Link {
                 .confirm_peer(peer_id)
                 .await
                 .map_err(|e| io::Error::other(format!("confirm peer: {e}"))),
+            Link::Jitsi(j) => j
+                .confirm_peer(peer_id)
+                .await
+                .map_err(|e| io::Error::other(format!("confirm peer: {e}"))),
             Link::Vp8(v) => v
                 .confirm_peer(peer_id)
                 .map_err(|e| io::Error::other(format!("confirm peer: {e}"))),
@@ -310,6 +373,7 @@ impl Link {
     pub fn reset_peer(&self) {
         match self {
             Link::SaluteJazz(j) => j.reset_peer(),
+            Link::Jitsi(j) => j.reset_peer(),
             Link::Vp8(v) => v.reset_peer(),
             Link::Pipe(_) => {}
         }
@@ -326,6 +390,10 @@ impl Link {
                 .wait_for_peer(PEER_WAIT_TIMEOUT)
                 .await
                 .map_err(|e| io::Error::other(format!("wait for peer: {e}"))),
+            Link::Jitsi(j) => j
+                .wait_for_peer(PEER_WAIT_TIMEOUT)
+                .await
+                .map_err(|e| io::Error::other(format!("wait for peer: {e}"))),
             Link::Vp8(v) => v
                 .wait_for_peer(PEER_WAIT_TIMEOUT)
                 .await
@@ -338,6 +406,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.reconnect(reason),
             Link::SaluteJazz(j) => j.reconnect(reason),
+            Link::Jitsi(j) => j.reconnect(reason),
             Link::Vp8(v) => v.reconnect(reason),
         }
     }
@@ -347,6 +416,7 @@ impl Link {
         match self {
             Link::Pipe(p) => p.close().await,
             Link::SaluteJazz(j) => j.close().await,
+            Link::Jitsi(j) => j.close().await,
             Link::Vp8(v) => v.close().await,
         }
     }
@@ -386,6 +456,8 @@ mod tests {
                 r#"{"url":"https://my.mts-link.ru/j/1/2","key":"k","transport":"datachannel","engine":"mtslink"}"#,
                 r#"{"url":"https://vk.com/call/join/x","key":"k","provider":"vkcalls"}"#,
                 r#"{"url":"https://vk.com/call/join/x","key":"k","transport":"datachannel","engine":"vkcalls"}"#,
+                r#"{"url":"https://meet.example/room","key":"k","transport":"vp8channel","provider":"jitsi"}"#,
+                r#"{"url":"https://meet.example/room","key":"k","transport":"vp8channel","engine":"jitsi"}"#,
             ] {
                 let cfg = Config::from_json(json.as_bytes()).unwrap();
                 let (tx, _rx) = mpsc::channel(4);
@@ -398,6 +470,29 @@ mod tests {
                 );
             }
             assert!(carriers.asked().is_empty(), "a refused pair reached a carrier");
+        })
+        .await;
+    }
+
+    /// PJ5: the Jitsi engine takes a room link or, joined directly, a host
+    /// and a room in its credentials; neither names the room in the error.
+    #[tokio::test]
+    async fn the_jitsi_link_wants_a_host_and_a_room_before_any_dial() {
+        crate::testing::bounded_for(Duration::from_secs(5), async {
+            for (json, want) in [
+                (r#"{"url":"https://meet.example","key":"k","provider":"jitsi"}"#, "invalid room URL"),
+                (r#"{"url":"","key":"k","provider":"jitsi"}"#, "room ID required"),
+                (r#"{"url":"meet.example","key":"k","engine":"jitsi"}"#, "a room is required"),
+                (r#"{"url":"","key":"k","engine":"jitsi","engine_extra":{"room":"secret-room"}}"#, "a host is required"),
+            ] {
+                let Err(err) = pick(json).await else {
+                    panic!("{json} connected");
+                };
+                let text = err.to_string();
+                assert!(matches!(err, LinkError::Jitsi(_)), "{json}: {text}");
+                assert!(text.contains(want), "{json}: {text}");
+                assert!(!text.contains("secret-room"), "{text}");
+            }
         })
         .await;
     }

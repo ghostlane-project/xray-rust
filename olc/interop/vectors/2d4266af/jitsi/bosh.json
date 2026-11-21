@@ -1,0 +1,175 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/jitsifake/zz_vectors_bosh_test.go",
+ "sources": [
+  "j/internal/xmpp/conn.go",
+  "internal/protect/protect.go"
+ ],
+ "cases": {
+  "room": "secret-room",
+  "user": "fedcba9876543210",
+  "nick": "fedcba98",
+  "name": "olcrtc",
+  "path": "/http-bind",
+  "header": {
+   "Accept-Encoding": [
+    "gzip"
+   ],
+   "Content-Type": [
+    "text/xml; charset=utf-8"
+   ],
+   "User-Agent": [
+    "Go-http-client/1.1"
+   ]
+  },
+  "create": "\u003cbody rid=\"RID\" to=\"meet.jitsi\" xml:lang=\"en\" wait=\"60\" hold=\"1\" content=\"text/xml; charset=utf-8\" ver=\"1.6\" xmpp:version=\"1.0\" xmlns=\"http://jabber.org/protocol/httpbind\" xmlns:xmpp=\"urn:xmpp:xbosh\"/\u003e",
+  "poll": "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"/\u003e",
+  "restart": "\u003cbody rid=\"RID\" sid=\"SID\" to=\"meet.jitsi\" xml:lang=\"en\" xmpp:restart=\"true\" xmlns=\"http://jabber.org/protocol/httpbind\" xmlns:xmpp=\"urn:xmpp:xbosh\"/\u003e",
+  "terminate": "\u003cbody rid=\"RID\" sid=\"SID\" type=\"terminate\" xmlns=\"http://jabber.org/protocol/httpbind\"/\u003e",
+  "login": [
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003cauth mechanism=\"ANONYMOUS\" xmlns=\"urn:ietf:params:xml:ns:xmpp-sasl\"/\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq type=\"set\" id=\"bind_1\" xmlns=\"jabber:client\"\u003e\u003cbind xmlns=\"urn:ietf:params:xml:ns:xmpp-bind\"/\u003e\u003c/iq\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq type=\"set\" id=\"sess_1\" xmlns=\"jabber:client\"\u003e\u003csession xmlns=\"urn:ietf:params:xml:ns:xmpp-session\"/\u003e\u003c/iq\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq to=\"focus.meet.jitsi\" type=\"set\" id=\"focus_1\" xmlns=\"jabber:client\"\u003e\u003cconference room=\"secret-room@muc.meet.jitsi\" machine-uid=\"fedcba98\" xmlns=\"http://jitsi.org/protocol/focus\"\u003e\u003cproperty name=\"rtcstatsEnabled\" value=\"false\"/\u003e\u003cproperty name=\"visitors-version\" value=\"1\"/\u003e\u003c/conference\u003e\u003c/iq\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq type=\"get\" to=\"meet.jitsi\" id=\"disco_1\" xmlns=\"jabber:client\"\u003e\u003cservices xmlns=\"urn:xmpp:extdisco:2\"/\u003e\u003c/iq\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003cpresence to=\"secret-room@muc.meet.jitsi/fedcba98\" xmlns=\"jabber:client\"\u003e\u003cx xmlns=\"http://jabber.org/protocol/muc\"/\u003e\u003cstats-id\u003eolc-j\u003c/stats-id\u003e\u003cc hash=\"sha-1\" node=\"https://jitsi.org/jitsi-meet\" ver=\"xUTPQ7C5wic8q6nOytcEI8dwRJI=\" xmlns=\"http://jabber.org/protocol/caps\"/\u003e\u003cSourceInfo\u003e{\"fedcba98-a0\":{\"muted\":true},\"fedcba98-v0\":{\"muted\":true}}\u003c/SourceInfo\u003e\u003cjitsi_participant_codecList\u003evp8,h264,av1,vp9\u003c/jitsi_participant_codecList\u003e\u003cnick xmlns=\"http://jabber.org/protocol/nick\"\u003eolcrtc\u003c/nick\u003e\u003c/presence\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq to=\"secret-room@muc.meet.jitsi\" type=\"get\" id=\"j-1\" xmlns=\"jabber:client\"\u003e\u003cquery xmlns=\"http://jabber.org/protocol/disco#info\"/\u003e\u003c/iq\u003e\u003c/body\u003e"
+  ],
+  "stanzas": [
+   "\u003cauth mechanism=\"ANONYMOUS\" xmlns=\"urn:ietf:params:xml:ns:xmpp-sasl\"/\u003e",
+   "\u003ciq type=\"set\" id=\"bind_1\" xmlns=\"jabber:client\"\u003e\u003cbind xmlns=\"urn:ietf:params:xml:ns:xmpp-bind\"/\u003e\u003c/iq\u003e",
+   "\u003ciq type=\"set\" id=\"sess_1\" xmlns=\"jabber:client\"\u003e\u003csession xmlns=\"urn:ietf:params:xml:ns:xmpp-session\"/\u003e\u003c/iq\u003e",
+   "\u003ciq to=\"focus.meet.jitsi\" type=\"set\" id=\"focus_1\" xmlns=\"jabber:client\"\u003e\u003cconference room=\"secret-room@muc.meet.jitsi\" machine-uid=\"fedcba98\" xmlns=\"http://jitsi.org/protocol/focus\"\u003e\u003cproperty name=\"rtcstatsEnabled\" value=\"false\"/\u003e\u003cproperty name=\"visitors-version\" value=\"1\"/\u003e\u003c/conference\u003e\u003c/iq\u003e",
+   "\u003ciq type=\"get\" to=\"meet.jitsi\" id=\"disco_1\" xmlns=\"jabber:client\"\u003e\u003cservices xmlns=\"urn:xmpp:extdisco:2\"/\u003e\u003c/iq\u003e",
+   "\u003cpresence to=\"secret-room@muc.meet.jitsi/fedcba98\" xmlns=\"jabber:client\"\u003e\u003cx xmlns=\"http://jabber.org/protocol/muc\"/\u003e\u003cstats-id\u003eolc-j\u003c/stats-id\u003e\u003cc hash=\"sha-1\" node=\"https://jitsi.org/jitsi-meet\" ver=\"xUTPQ7C5wic8q6nOytcEI8dwRJI=\" xmlns=\"http://jabber.org/protocol/caps\"/\u003e\u003cSourceInfo\u003e{\"fedcba98-a0\":{\"muted\":true},\"fedcba98-v0\":{\"muted\":true}}\u003c/SourceInfo\u003e\u003cjitsi_participant_codecList\u003evp8,h264,av1,vp9\u003c/jitsi_participant_codecList\u003e\u003cnick xmlns=\"http://jabber.org/protocol/nick\"\u003eolcrtc\u003c/nick\u003e\u003c/presence\u003e",
+   "\u003ciq to=\"secret-room@muc.meet.jitsi\" type=\"get\" id=\"j-1\" xmlns=\"jabber:client\"\u003e\u003cquery xmlns=\"http://jabber.org/protocol/disco#info\"/\u003e\u003c/iq\u003e"
+  ],
+  "sequence": [
+   "\u003cbody rid=\"RID\" to=\"meet.jitsi\" xml:lang=\"en\" wait=\"60\" hold=\"1\" content=\"text/xml; charset=utf-8\" ver=\"1.6\" xmpp:version=\"1.0\" xmlns=\"http://jabber.org/protocol/httpbind\" xmlns:xmpp=\"urn:xmpp:xbosh\"/\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003cauth mechanism=\"ANONYMOUS\" xmlns=\"urn:ietf:params:xml:ns:xmpp-sasl\"/\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" to=\"meet.jitsi\" xml:lang=\"en\" xmpp:restart=\"true\" xmlns=\"http://jabber.org/protocol/httpbind\" xmlns:xmpp=\"urn:xmpp:xbosh\"/\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq type=\"set\" id=\"bind_1\" xmlns=\"jabber:client\"\u003e\u003cbind xmlns=\"urn:ietf:params:xml:ns:xmpp-bind\"/\u003e\u003c/iq\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq type=\"set\" id=\"sess_1\" xmlns=\"jabber:client\"\u003e\u003csession xmlns=\"urn:ietf:params:xml:ns:xmpp-session\"/\u003e\u003c/iq\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq to=\"focus.meet.jitsi\" type=\"set\" id=\"focus_1\" xmlns=\"jabber:client\"\u003e\u003cconference room=\"secret-room@muc.meet.jitsi\" machine-uid=\"fedcba98\" xmlns=\"http://jitsi.org/protocol/focus\"\u003e\u003cproperty name=\"rtcstatsEnabled\" value=\"false\"/\u003e\u003cproperty name=\"visitors-version\" value=\"1\"/\u003e\u003c/conference\u003e\u003c/iq\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq type=\"get\" to=\"meet.jitsi\" id=\"disco_1\" xmlns=\"jabber:client\"\u003e\u003cservices xmlns=\"urn:xmpp:extdisco:2\"/\u003e\u003c/iq\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003cpresence to=\"secret-room@muc.meet.jitsi/fedcba98\" xmlns=\"jabber:client\"\u003e\u003cx xmlns=\"http://jabber.org/protocol/muc\"/\u003e\u003cstats-id\u003eolc-j\u003c/stats-id\u003e\u003cc hash=\"sha-1\" node=\"https://jitsi.org/jitsi-meet\" ver=\"xUTPQ7C5wic8q6nOytcEI8dwRJI=\" xmlns=\"http://jabber.org/protocol/caps\"/\u003e\u003cSourceInfo\u003e{\"fedcba98-a0\":{\"muted\":true},\"fedcba98-v0\":{\"muted\":true}}\u003c/SourceInfo\u003e\u003cjitsi_participant_codecList\u003evp8,h264,av1,vp9\u003c/jitsi_participant_codecList\u003e\u003cnick xmlns=\"http://jabber.org/protocol/nick\"\u003eolcrtc\u003c/nick\u003e\u003c/presence\u003e\u003c/body\u003e",
+   "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq to=\"secret-room@muc.meet.jitsi\" type=\"get\" id=\"j-1\" xmlns=\"jabber:client\"\u003e\u003cquery xmlns=\"http://jabber.org/protocol/disco#info\"/\u003e\u003c/iq\u003e\u003c/body\u003e"
+  ],
+  "disco_reply": "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003ciq to=\"secret-room@muc.meet.jitsi/focus\" id=\"disco-1\" type=\"result\" xmlns=\"jabber:client\"\u003e\u003cquery xmlns=\"http://jabber.org/protocol/disco#info\"\u003e\u003cfeature var=\"http://jabber.org/protocol/caps\"/\u003e\u003cfeature var=\"http://jitsi.org/json-encoded-sources\"/\u003e\u003cfeature var=\"http://jitsi.org/receive-multiple-video-streams\"/\u003e\u003cfeature var=\"http://jitsi.org/remb\"/\u003e\u003cfeature var=\"http://jitsi.org/source-name\"/\u003e\u003cfeature var=\"http://jitsi.org/start-muted-room-metadata\"/\u003e\u003cfeature var=\"http://jitsi.org/tcc\"/\u003e\u003cfeature var=\"http://jitsi.org/visitors-1\"/\u003e\u003cfeature var=\"urn:ietf:rfc:4588\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:1\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:apps:dtls:0\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:apps:rtp:1\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:apps:rtp:audio\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:apps:rtp:video\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:transports:dtls-sctp:1\"/\u003e\u003cfeature var=\"urn:xmpp:jingle:transports:ice-udp:1\"/\u003e\u003c/query\u003e\u003c/iq\u003e\u003c/body\u003e",
+  "leave": "\u003cbody rid=\"RID\" sid=\"SID\" xmlns=\"http://jabber.org/protocol/httpbind\"\u003e\u003cpresence to=\"secret-room@muc.meet.jitsi/fedcba98\" type=\"unavailable\" xmlns=\"jabber:client\"/\u003e\u003c/body\u003e",
+  "rids_consecutive": true,
+  "max_in_flight": 2,
+  "split": [
+   {
+    "name": "two stanzas back to back",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' sid='SID'\u003e\u003ciq type='set' id='a1' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cq xmlns='urn:x'/\u003e\u003c/iq\u003e\u003ciq type='set' id='a2' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cq xmlns='urn:x'/\u003e\u003c/iq\u003e\u003c/body\u003e",
+    "acked": [
+     "a1",
+     "a2"
+    ],
+    "acked_to": [
+     "f@auth.meet.jitsi/focus",
+     "f@auth.meet.jitsi/focus"
+    ]
+   },
+   {
+    "name": "elements of one name nested",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' sid='SID'\u003e\u003ciq type='set' id='n1' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cx\u003e\u003cx\u003e\u003cx/\u003e\u003c/x\u003e\u003c/x\u003e\u003c/iq\u003e\u003ciq type='set' id='n2' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cq xmlns='urn:x'/\u003e\u003c/iq\u003e\u003c/body\u003e",
+    "acked": [
+     "n1",
+     "n2"
+    ],
+    "acked_to": [
+     "f@auth.meet.jitsi/focus",
+     "f@auth.meet.jitsi/focus"
+    ]
+   },
+   {
+    "name": "white space between the stanzas",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' sid='SID'\u003e\n  \u003ciq type='set' id='w1' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cq xmlns='urn:x'/\u003e\u003c/iq\u003e\n  \u003ciq type='set' id='w2' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cq xmlns='urn:x'/\u003e\u003c/iq\u003e\n\u003c/body\u003e",
+    "acked": [
+     "w1",
+     "w2"
+    ],
+    "acked_to": [
+     "f@auth.meet.jitsi/focus",
+     "f@auth.meet.jitsi/focus"
+    ]
+   },
+   {
+    "name": "stanzas that close themselves",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' sid='SID'\u003e\u003ciq type='set' id='s1' from='f@auth.meet.jitsi/focus'/\u003e\u003cpresence from='secret-room@muc.meet.jitsi/zz' xmlns='jabber:client'/\u003e\u003ciq type='set' id='s2' from='f@auth.meet.jitsi/focus'/\u003e\u003c/body\u003e",
+    "acked": [
+     "s1",
+     "s2"
+    ],
+    "acked_to": [
+     "f@auth.meet.jitsi/focus",
+     "f@auth.meet.jitsi/focus"
+    ]
+   },
+   {
+    "name": "text with entities",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' sid='SID'\u003e\u003ciq type='set' id='t1' from='f@auth.meet.jitsi/focus'\u003e\u003cq\u003e1 \u0026lt; 2 \u0026gt; 0 \u0026amp; so\u003c/q\u003e\u003c/iq\u003e\u003ciq type='set' id='t2' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cq xmlns='urn:x'/\u003e\u003c/iq\u003e\u003c/body\u003e",
+    "acked": [
+     "t1",
+     "t2"
+    ],
+    "acked_to": [
+     "f@auth.meet.jitsi/focus",
+     "f@auth.meet.jitsi/focus"
+    ]
+   },
+   {
+    "name": "attributes in double quotes",
+    "reply": "\u003cbody xmlns=\"http://jabber.org/protocol/httpbind\" sid=\"SID\"\u003e\u003ciq type=\"set\" id=\"d1\" from=\"f@auth.meet.jitsi/focus\"\u003e\u003cq a=\"1\"/\u003e\u003c/iq\u003e\u003c/body\u003e",
+    "acked": [
+     "d1"
+    ],
+    "acked_to": [
+     "f@auth.meet.jitsi/focus"
+    ]
+   },
+   {
+    "name": "an entity for the tag end in a value",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' sid='SID'\u003e\u003ciq type='set' id='e1' from='f@auth.meet.jitsi/focus'\u003e\u003cq a='1\u0026gt;2'/\u003e\u003c/iq\u003e\u003ciq type='set' id='e2' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cq xmlns='urn:x'/\u003e\u003c/iq\u003e\u003c/body\u003e",
+    "acked": [
+     "e1",
+     "e2"
+    ],
+    "acked_to": [
+     "f@auth.meet.jitsi/focus",
+     "f@auth.meet.jitsi/focus"
+    ]
+   },
+   {
+    "name": "a body with nothing in it",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' sid='SID'/\u003e",
+    "acked": [],
+    "acked_to": []
+   },
+   {
+    "name": "a body opened and closed",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' sid='SID'\u003e\u003c/body\u003e",
+    "acked": [],
+    "acked_to": []
+   },
+   {
+    "name": "the stream's own attributes on the body",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' xmlns:stream='http://etherx.jabber.org/streams' sid='SID' type='result'\u003e\u003ciq type='set' id='b1' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cq xmlns='urn:x'/\u003e\u003c/iq\u003e\u003c/body\u003e",
+    "acked": [
+     "b1"
+    ],
+    "acked_to": [
+     "f@auth.meet.jitsi/focus"
+    ]
+   },
+   {
+    "name": "a tag end written raw in a value",
+    "reply": "\u003cbody xmlns='http://jabber.org/protocol/httpbind' sid='SID'\u003e\u003ciq type='set' id='g1' from='f@auth.meet.jitsi/focus'\u003e\u003cq a='1\u003e2'/\u003e\u003c/iq\u003e\u003ciq type='set' id='g2' from='f@auth.meet.jitsi/focus' xmlns='jabber:client'\u003e\u003cq xmlns='urn:x'/\u003e\u003c/iq\u003e\u003c/body\u003e",
+    "acked": [],
+    "acked_to": []
+   }
+  ]
+ }
+}

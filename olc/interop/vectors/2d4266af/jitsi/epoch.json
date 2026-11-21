@@ -1,0 +1,400 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/jitsi/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/jitsi/epoch.go",
+  "internal/engine/jitsi/bridge.go:582-640 (deliverBridgeMessageGen)"
+ ],
+ "cases": [
+  {
+   "name": "the header validation",
+   "targeted": false,
+   "local": 17476,
+   "steps": [
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 0,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000000000000444478",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 0,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000044440000000078",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 0,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000011110000999978",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 0,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000011110000000078",
+     "delivered_hex": "78",
+     "delivered": true,
+     "peer_epoch": 4369,
+     "endpoint": "peerA"
+    },
+    {
+     "op": "reset",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 0,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000011110000444478",
+     "delivered_hex": "78",
+     "delivered": true,
+     "peer_epoch": 4369,
+     "endpoint": "peerA"
+    }
+   ]
+  },
+  {
+   "name": "magic and the peer latch",
+   "targeted": false,
+   "local": 39321,
+   "steps": [
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c52310000111100000000616c706861",
+     "delivered_hex": "616c706861",
+     "delivered": true,
+     "peer_epoch": 4369,
+     "endpoint": "peerA"
+    },
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "616c7068612d6e6f2d6d616769632d61742d616c6c",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 4369,
+     "endpoint": "peerA"
+    },
+    {
+     "op": "recv",
+     "from": "peerB",
+     "raw_hex": "4f4c5231000011110000000062657461",
+     "delivered_hex": "62657461",
+     "delivered": true,
+     "peer_epoch": 4369,
+     "endpoint": "peerB"
+    },
+    {
+     "op": "recv",
+     "raw_hex": "4f4c5231000011110000000066726f6d2d7468652d726f6f6d",
+     "delivered_hex": "66726f6d2d7468652d726f6f6d",
+     "delivered": true,
+     "peer_epoch": 4369,
+     "endpoint": "peerB"
+    }
+   ]
+  },
+  {
+   "name": "an old incarnation",
+   "targeted": false,
+   "local": 8738,
+   "steps": [
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000011110000aaaa6f6c642d736d7578",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 0,
+     "endpoint": ""
+    }
+   ]
+  },
+  {
+   "name": "an announce",
+   "targeted": false,
+   "local": 8738,
+   "steps": [
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c52310000111100000000",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 4369,
+     "endpoint": "peerA"
+    },
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000011110000000062",
+     "delivered_hex": "62",
+     "delivered": true,
+     "peer_epoch": 4369,
+     "endpoint": "peerA"
+    },
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000033330000000063",
+     "delivered_hex": "63",
+     "delivered": true,
+     "peer_epoch": 13107,
+     "endpoint": "peerA"
+    },
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000033330000222264",
+     "delivered_hex": "64",
+     "delivered": true,
+     "peer_epoch": 13107,
+     "endpoint": "peerA"
+    },
+    {
+     "op": "recv",
+     "from": "peerC",
+     "raw_hex": "4f4c5231000044440000222265",
+     "delivered_hex": "65",
+     "delivered": true,
+     "peer_epoch": 17476,
+     "endpoint": "peerC"
+    }
+   ]
+  },
+  {
+   "name": "targeted until confirmed",
+   "targeted": true,
+   "local": 13107,
+   "steps": [
+    {
+     "op": "recv",
+     "from": "clientB",
+     "raw_hex": "4f4c52310000222200000000434c49454e545f48454c4c4f",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 0,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "server",
+     "raw_hex": "4f4c523100001111000033335345525645525f57454c434f4d45",
+     "delivered_hex": "5345525645525f57454c434f4d45",
+     "delivered": true,
+     "peer_epoch": 0,
+     "endpoint": ""
+    },
+    {
+     "op": "confirm",
+     "peer_id": "00001111",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 4369,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "clientB",
+     "raw_hex": "4f4c52310000222200000000434c49454e545f48454c4c4f",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 4369,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "clientB",
+     "raw_hex": "4f4c5231000022220000333378",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 4369,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "server",
+     "raw_hex": "4f4c523100001111000033334d4f5245",
+     "delivered_hex": "4d4f5245",
+     "delivered": true,
+     "peer_epoch": 4369,
+     "endpoint": "server"
+    },
+    {
+     "op": "recv",
+     "from": "server",
+     "raw_hex": "4f4c5231000011110000000062726f616463617374",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 4369,
+     "endpoint": "server"
+    },
+    {
+     "op": "confirm",
+     "peer_id": "00001111",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 4369,
+     "endpoint": "server"
+    },
+    {
+     "op": "confirm",
+     "peer_id": "0000abcd",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 43981,
+     "endpoint": "server"
+    },
+    {
+     "op": "recv",
+     "from": "server",
+     "raw_hex": "4f4c523100001111000033336f6c64",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 43981,
+     "endpoint": "server"
+    },
+    {
+     "op": "recv",
+     "from": "server2",
+     "raw_hex": "4f4c52310000abcd000033336e6577",
+     "delivered_hex": "6e6577",
+     "delivered": true,
+     "peer_epoch": 43981,
+     "endpoint": "server2"
+    },
+    {
+     "op": "confirm",
+     "peer_id": "00000000",
+     "delivered_hex": "",
+     "delivered": false,
+     "error": "invalid",
+     "peer_epoch": 43981,
+     "endpoint": "server2"
+    },
+    {
+     "op": "confirm",
+     "peer_id": "zz",
+     "delivered_hex": "",
+     "delivered": false,
+     "error": "parse",
+     "peer_epoch": 43981,
+     "endpoint": "server2"
+    },
+    {
+     "op": "confirm",
+     "delivered_hex": "",
+     "delivered": false,
+     "error": "parse",
+     "peer_epoch": 43981,
+     "endpoint": "server2"
+    },
+    {
+     "op": "confirm",
+     "peer_id": "100000000",
+     "delivered_hex": "",
+     "delivered": false,
+     "error": "parse",
+     "peer_epoch": 43981,
+     "endpoint": "server2"
+    },
+    {
+     "op": "confirm",
+     "peer_id": "ABCDEF01",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 2882400001,
+     "endpoint": "server2"
+    },
+    {
+     "op": "confirm",
+     "peer_id": "+1",
+     "delivered_hex": "",
+     "delivered": false,
+     "error": "parse",
+     "peer_epoch": 2882400001,
+     "endpoint": "server2"
+    },
+    {
+     "op": "reset",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 0,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "server",
+     "raw_hex": "4f4c5231000011110000333361667465722d7265736574",
+     "delivered_hex": "61667465722d7265736574",
+     "delivered": true,
+     "peer_epoch": 0,
+     "endpoint": ""
+    }
+   ]
+  },
+  {
+   "name": "reset and re-latch",
+   "targeted": false,
+   "local": 3735928559,
+   "steps": [
+    {
+     "op": "recv",
+     "from": "peerA",
+     "raw_hex": "4f4c5231000011110000000066726f6d2d41",
+     "delivered_hex": "66726f6d2d41",
+     "delivered": true,
+     "peer_epoch": 4369,
+     "endpoint": "peerA"
+    },
+    {
+     "op": "recv",
+     "from": "peerB",
+     "raw_hex": "4f4c5231000022220000000066726f6d2d422d72656c617463686564",
+     "delivered_hex": "66726f6d2d422d72656c617463686564",
+     "delivered": true,
+     "peer_epoch": 8738,
+     "endpoint": "peerB"
+    },
+    {
+     "op": "reset",
+     "delivered_hex": "",
+     "delivered": false,
+     "peer_epoch": 0,
+     "endpoint": ""
+    },
+    {
+     "op": "recv",
+     "from": "peerB",
+     "raw_hex": "4f4c5231000022220000000066726f6d2d422d66696e616c",
+     "delivered_hex": "66726f6d2d422d66696e616c",
+     "delivered": true,
+     "peer_epoch": 8738,
+     "endpoint": "peerB"
+    }
+   ]
+  }
+ ]
+}

@@ -30,6 +30,9 @@ pub const ENGINE_INTEROP_P2P: &str = "interop-p2p";
 pub const ENGINE_MTSLINK: &str = "mtslink";
 /// The VK Calls carrier's engine: a video track its SFU forwards as VP8.
 pub const ENGINE_VKCALLS: &str = "vkcalls";
+/// The Jitsi engine: XMPP signalling, the bridge's data channel; datachannel
+/// transport alone (no video track, no vp8channel).
+pub const ENGINE_JITSI: &str = "jitsi";
 
 /// No auth provider: the engine joins `url` with `token` and `room_id` as
 /// given (Go's `none`, the default).
@@ -44,6 +47,8 @@ pub const PROVIDER_MTSLINK: &str = "mtslink";
 /// VK Calls' auth provider: `url` is the call's join link
 /// (`https://vk.com/call/join/<id>`).
 pub const PROVIDER_VKCALLS: &str = "vkcalls";
+/// Jitsi's auth provider: `url` is the room link (`https://host/room`).
+pub const PROVIDER_JITSI: &str = "jitsi";
 
 /// The ICE mode the client side asks of a carrier whose room link names
 /// none (`linkRole`'s `DefaultICE`, `internal/client/link.go:846-852`,
@@ -67,11 +72,13 @@ pub struct Config {
     pub url: String,
     /// The engine (`engine.name`): [`ENGINE_INTEROP_PIPE`] when empty, or
     /// [`ENGINE_SALUTEJAZZ`], [`ENGINE_INTEROP_P2P`], [`ENGINE_MTSLINK`],
-    /// [`ENGINE_VKCALLS`]; a provider's own engine when it names one.
+    /// [`ENGINE_VKCALLS`], [`ENGINE_JITSI`]; a provider's own engine when it
+    /// names one.
     #[serde(default)]
     pub engine: String,
     /// The auth provider (`auth.provider`): [`PROVIDER_NONE`] when empty, or
-    /// [`PROVIDER_SALUTEJAZZ`], [`PROVIDER_MTSLINK`], [`PROVIDER_VKCALLS`].
+    /// [`PROVIDER_SALUTEJAZZ`], [`PROVIDER_MTSLINK`], [`PROVIDER_VKCALLS`],
+    /// [`PROVIDER_JITSI`].
     #[serde(default)]
     pub provider: String,
     /// `engine.Credentials.Extra` for a carrier's engine joined without its
@@ -250,13 +257,13 @@ pub enum ConfigError {
     Rule(String),
     /// An engine the port does not carry.
     #[error(
-        "unsupported engine {0:?} for the transport: the Rust client carries interop-pipe and salutejazz (datachannel) and interop-p2p, mtslink and vkcalls (vp8channel)"
+        "unsupported engine {0:?} for the transport: the Rust client carries interop-pipe, salutejazz and jitsi (datachannel) and interop-p2p, mtslink and vkcalls (vp8channel)"
     )]
     Engine(String),
     /// A provider the port does not carry, or one whose engine is not the
     /// one named.
     #[error(
-        "unsupported auth provider {0:?}: the Rust client carries none, salutejazz, mtslink and vkcalls"
+        "unsupported auth provider {0:?}: the Rust client carries none, salutejazz, mtslink, vkcalls and jitsi"
     )]
     Provider(String),
     /// `ice_local_ip` is not an address.
@@ -367,13 +374,13 @@ impl Config {
         }
     }
 
-    /// Whether the settings name MTS Link or VK Calls, by provider or by
-    /// engine (it reads both, so settings that would be refused still hide
-    /// their room).
+    /// Whether the settings name MTS Link, VK Calls or Jitsi, by provider or
+    /// by engine (it reads both, so settings that would be refused still
+    /// hide their room). A Jitsi room's name is its whole secret.
     fn is_video_carrier(&self) -> bool {
         [self.provider.as_str(), self.engine.as_str()]
             .iter()
-            .any(|n| matches!(*n, ENGINE_MTSLINK | ENGINE_VKCALLS))
+            .any(|n| matches!(*n, ENGINE_MTSLINK | ENGINE_VKCALLS | ENGINE_JITSI))
     }
 
     /// Reads the JSON form.
@@ -402,6 +409,9 @@ impl Config {
             }
             PROVIDER_VKCALLS if self.engine.is_empty() || self.engine == ENGINE_VKCALLS => {
                 Ok(ENGINE_VKCALLS)
+            }
+            PROVIDER_JITSI if self.engine.is_empty() || self.engine == ENGINE_JITSI => {
+                Ok(ENGINE_JITSI)
             }
             other => Err(ConfigError::Provider(other.to_owned())),
         }
@@ -654,6 +664,47 @@ mod tests {
         }
         // The client side's default (`TestTheClientSideAsksForTCPWhereTheLinkSaysNothing`).
         assert_eq!(DEFAULT_ICE, "tcp");
+    }
+
+    /// PJ5: Jitsi's provider and engine are known by either name, and a
+    /// provider runs its own engine alone; the engine carries no video.
+    #[test]
+    fn the_jitsi_provider_and_engine_are_known() {
+        let cfg = |raw: &str| Config::from_json(raw.as_bytes()).unwrap();
+        for json in [
+            r#"{"url":"https://meet.example/room","key":"k","provider":"jitsi"}"#,
+            r#"{"url":"https://meet.example/room","key":"k","provider":"jitsi","engine":"jitsi"}"#,
+            r#"{"url":"https://meet.example/room","key":"k","engine":"jitsi"}"#,
+            r#"{"url":"https://meet.example/room","key":"k","provider":"none","engine":"jitsi"}"#,
+        ] {
+            assert_eq!(cfg(json).engine_name(), Ok(ENGINE_JITSI), "{json}");
+        }
+        assert_eq!(
+            cfg(r#"{"url":"u","key":"k","provider":"jitsi","engine":"salutejazz"}"#).engine_name(),
+            Err(ConfigError::Provider(PROVIDER_JITSI.to_owned()))
+        );
+        assert!(!Config::engine_carries_video(ENGINE_JITSI));
+    }
+
+    /// D12: a Jitsi room's name is the room's whole secret, so a label shows
+    /// the host alone, for the provider's link and for a direct engine's.
+    #[test]
+    fn a_jitsi_room_is_named_by_its_host_alone() {
+        for who in [r#""provider":"jitsi""#, r#""engine":"jitsi""#] {
+            let room = "https://meet.example.org/secret-room-name";
+            let cfg = Config::from_json(
+                format!(
+                    r#"{{"url":"{room}","rooms":["{room}"],"key":"k",{who},"engine_extra":{{"room":"secret-room-name"}}}}"#
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+            assert_eq!(cfg.room_label(room), "meet.example.org/<hidden>", "{who}");
+            let shown = format!("{cfg:?}");
+            assert!(!shown.contains("secret-room-name"), "{who}: {shown}");
+            // A bare name is not a link: nothing of it is shown.
+            assert_eq!(cfg.room_label("secret-room-name"), "<malformed room link>");
+        }
     }
 
     /// K6 (`TestEndpointSecretsWithholdBothIDsOfAnMTSLink`,

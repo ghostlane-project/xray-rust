@@ -18,6 +18,17 @@
 //! connection, none on a WebSocket's. A server that accepts it gets the
 //! client's own, empty as Chrome's, before the client's Finished
 //! (`tests/alps_fetch.rs`).
+//!
+//! Trust for tests only: a lab's deployment has a certificate of the lab's
+//! own CA, which the webpki roots do not hold. The cargo feature
+//! `tls-test-pin` makes every dial trust the one certificate whose SHA-256
+//! the environment variable [`TEST_PIN_ENV`] names, by the connector's own
+//! pin (Xray's `pinnedPeerCertSha256`). A lab names its CA: a CA with that
+//! hash in the chain the server presents becomes the only trust anchor, and
+//! the chain, the dates and the name are checked as ever. (A leaf with that
+//! hash is taken as it is, which is the connector's rule and the reason a
+//! lab pins its CA.) `tests/test_pin.rs` holds each of these. No app build
+//! has the feature, and no setting reaches it.
 
 use std::io;
 use std::sync::Arc;
@@ -29,6 +40,72 @@ use crate::stream::{set_tls_connector, BoxStream, Dialed, Offer, TlsFuture};
 
 /// The profile [`install`] shapes by default.
 pub const FINGERPRINT: &str = "chrome";
+
+/// The environment variable the `tls-test-pin` feature reads: the SHA-256 of
+/// one certificate's DER, 64 hex digits (`openssl x509 -outform der | sha256sum`).
+/// The shipped features never read it.
+pub const TEST_PIN_ENV: &str = "OLC_TLS_TEST_PIN";
+
+/// Whether this build reads [`TEST_PIN_ENV`]: a test build's `tls-test-pin`.
+pub const TEST_PIN_BUILD: bool = cfg!(feature = "tls-test-pin");
+
+/// A pin as [`TEST_PIN_ENV`] gives it: 64 hex digits, blanks around them
+/// dropped.
+#[must_use]
+pub fn parse_pin(text: &str) -> Option<[u8; 32]> {
+    let text = text.trim().as_bytes();
+    if text.len() != 64 {
+        return None;
+    }
+    let digit = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    };
+    let mut pin = [0u8; 32];
+    for (i, pair) in text.chunks_exact(2).enumerate() {
+        pin[i] = (digit(pair[0])? << 4) | digit(pair[1])?;
+    }
+    Some(pin)
+}
+
+/// The pins the variable's value stands for: its one pin, or none.
+#[cfg(any(test, feature = "tls-test-pin"))]
+fn pins_of(value: Option<&str>) -> Vec<[u8; 32]> {
+    value.and_then(parse_pin).into_iter().collect()
+}
+
+/// The certificates every dial is pinned to: none in the shipped client,
+/// whatever the environment says.
+#[cfg(not(feature = "tls-test-pin"))]
+fn test_pins() -> Vec<[u8; 32]> {
+    Vec::new()
+}
+
+/// The certificates every dial is pinned to: the one [`TEST_PIN_ENV`]
+/// names, read once.
+#[cfg(feature = "tls-test-pin")]
+fn test_pins() -> Vec<[u8; 32]> {
+    static PINS: std::sync::OnceLock<Vec<[u8; 32]>> = std::sync::OnceLock::new();
+    PINS.get_or_init(|| {
+        let value = std::env::var(TEST_PIN_ENV).ok();
+        let pins = pins_of(value.as_deref());
+        match (&value, pins.is_empty()) {
+            (Some(v), true) if !v.trim().is_empty() => {
+                crate::info!("tls: {TEST_PIN_ENV} is not a certificate's SHA-256: ignored");
+            }
+            (_, false) => {
+                crate::info!(
+                    "tls: a test build: every TLS dial trusts the one certificate {TEST_PIN_ENV} names"
+                );
+            }
+            _ => {}
+        }
+        pins
+    })
+    .clone()
+}
 
 /// The ALPN protocols a dial for `offer` names.
 #[must_use]
@@ -46,7 +123,7 @@ pub fn client_config(host: String, offer: Offer, fingerprint: &str) -> TlsClient
     TlsClientConfig {
         server_name: host,
         allow_insecure: false,
-        pinned_peer_cert_sha256: Vec::new(),
+        pinned_peer_cert_sha256: test_pins(),
         verify_peer_cert_by_name: Vec::new(),
         alpn: alpn(offer),
         fingerprint: Some(fingerprint.to_owned()),
@@ -197,6 +274,100 @@ mod tests {
         );
         assert_eq!(extension(&websocket, ALPS), None, "Chrome's has none");
         assert_eq!(extension(&websocket, ALPS_OLD), None);
+    }
+
+    const PIN_HEX: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+
+    fn pin_bytes() -> [u8; 32] {
+        let mut b = [0u8; 32];
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = u8::try_from(i).unwrap();
+        }
+        b
+    }
+
+    /// A pin is the SHA-256 of a certificate's DER as `sha256sum` prints
+    /// it: 64 hex digits, either case, blanks around it dropped; anything
+    /// else is no pin.
+    #[test]
+    fn a_pin_is_64_hex_digits() {
+        assert_eq!(parse_pin(PIN_HEX), Some(pin_bytes()));
+        assert_eq!(parse_pin(&PIN_HEX.to_uppercase()), Some(pin_bytes()));
+        assert_eq!(parse_pin(&format!("  {PIN_HEX}\n")), Some(pin_bytes()));
+        for bad in [
+            "",
+            "00",
+            &PIN_HEX[..63],
+            &format!("{PIN_HEX}0"),
+            &format!("{}g", &PIN_HEX[..63]),
+            &format!("{} {}", &PIN_HEX[..32], &PIN_HEX[32..]),
+            &format!("+{}", &PIN_HEX[..63]),
+        ] {
+            assert_eq!(parse_pin(bad), None, "{bad:?}");
+        }
+    }
+
+    /// What the variable gives a test build: its one pin, or none when it is
+    /// unset, empty or not a pin (such a build then trusts as a shipped one).
+    #[test]
+    fn the_variable_names_one_pin_or_none() {
+        assert_eq!(pins_of(Some(PIN_HEX)), vec![pin_bytes()]);
+        assert_eq!(pins_of(None), Vec::<[u8; 32]>::new());
+        assert_eq!(pins_of(Some("")), Vec::<[u8; 32]>::new());
+        assert_eq!(pins_of(Some("not a pin")), Vec::<[u8; 32]>::new());
+    }
+
+    /// The shipped client pins nothing whatever the environment says: the
+    /// `tls-test-pin` feature is the only way in, and a dial's settings carry
+    /// no pin and no name but the host's without it.
+    #[test]
+    fn the_shipped_client_pins_no_certificate() {
+        assert_eq!(TEST_PIN_ENV, "OLC_TLS_TEST_PIN");
+        assert_eq!(TEST_PIN_BUILD, cfg!(feature = "tls-test-pin"));
+        if !TEST_PIN_BUILD {
+            let cfg = client_config("meet.example".to_owned(), Offer::Fetch, FINGERPRINT);
+            assert!(cfg.pinned_peer_cert_sha256.is_empty());
+            assert!(cfg.verify_peer_cert_by_name.is_empty());
+            assert!(!cfg.allow_insecure);
+        }
+    }
+
+    /// The pin cannot be turned on from an app: the libraries the apps link
+    /// (olc-ffi, and ghostlane-core over it) name no feature that reaches
+    /// `tls-test-pin`, and the client's settings (olc-client's `Config`, the
+    /// FFI's JSON) have no field for it: it is a cargo feature of a test
+    /// build and a variable of that process, nothing else.
+    #[test]
+    fn the_apps_libraries_cannot_turn_the_pin_on() {
+        for (name, manifest) in [
+            ("olc-ffi", include_str!("../../olc-ffi/Cargo.toml")),
+            (
+                "ghostlane-core",
+                include_str!("../../../crates/ghostlane-core/Cargo.toml"),
+            ),
+        ] {
+            assert!(
+                !manifest.contains("tls-test-pin"),
+                "{name}'s manifest names the test pin"
+            );
+        }
+        for (name, source) in [
+            (
+                "olc-client's config",
+                include_str!("../../olc-client/src/config.rs"),
+            ),
+            (
+                "olc-ffi's config",
+                include_str!("../../olc-ffi/src/config.rs"),
+            ),
+        ] {
+            assert!(
+                !source.contains("TEST_PIN") && !source.contains("test_pin"),
+                "{name} reaches for the test pin"
+            );
+        }
+        let own = include_str!("../Cargo.toml");
+        assert!(own.contains("tls-test-pin = [\"shaped-tls\"]"));
     }
 
     #[test]

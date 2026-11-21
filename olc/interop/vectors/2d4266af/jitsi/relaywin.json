@@ -1,0 +1,448 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/jitsi/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/jitsi/relaywindow.go"
+ ],
+ "cases": [
+  {
+   "name": "an_echo_turns_the_window_on",
+   "steps": [
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 0
+     },
+     "room": "open",
+     "marks": [],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "sent",
+      "n": 1000,
+      "at_ms": 0
+     },
+     "marks": [
+      1000
+     ],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 0
+     },
+     "room": "open",
+     "marks": [],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 1000,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 0
+     },
+     "room": "open",
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "sent",
+      "n": 100,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 5000,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 1100,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 1100,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    }
+   ]
+  },
+  {
+   "name": "a_full_window_holds_and_probes",
+   "steps": [
+    {
+     "op": {
+      "op": "sent",
+      "n": 1000,
+      "at_ms": 0
+     },
+     "marks": [
+      1000
+     ],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 1000,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "timing",
+      "n": 1000,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "sent",
+      "n": 523288,
+      "at_ms": 0
+     },
+     "marks": [
+      524288
+     ],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 100
+     },
+     "room": "open",
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "sent",
+      "n": 1000,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 200
+     },
+     "room": "held",
+     "marks": [],
+     "on": true,
+     "full": true
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 1500
+     },
+     "room": "probe",
+     "probe": 525288,
+     "marks": [
+      525288
+     ],
+     "on": true,
+     "full": true
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 1700
+     },
+     "room": "held",
+     "marks": [],
+     "on": true,
+     "full": true
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 2800
+     },
+     "room": "probe",
+     "probe": 525288,
+     "marks": [
+      525288
+     ],
+     "on": true,
+     "full": true
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 524288,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 2900
+     },
+     "room": "open",
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 525288,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 3000
+     },
+     "room": "open",
+     "marks": [],
+     "on": true,
+     "full": false
+    }
+   ]
+  },
+  {
+   "name": "a_silent_peer_turns_the_window_off",
+   "steps": [
+    {
+     "op": {
+      "op": "sent",
+      "n": 1000,
+      "at_ms": 0
+     },
+     "marks": [
+      1000
+     ],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 1000,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "sent",
+      "n": 524288,
+      "at_ms": 0
+     },
+     "marks": [
+      525288
+     ],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 0
+     },
+     "room": "held",
+     "marks": [],
+     "on": true,
+     "full": true
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 20000
+     },
+     "room": "held",
+     "marks": [],
+     "on": true,
+     "full": true
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 29000
+     },
+     "room": "held",
+     "marks": [],
+     "on": true,
+     "full": true
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 31000
+     },
+     "room": "open",
+     "marks": [],
+     "on": false,
+     "full": true
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 32000
+     },
+     "room": "open",
+     "marks": [],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "sent",
+      "n": 10,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": false,
+     "full": false
+    }
+   ]
+  },
+  {
+   "name": "a_reset_keeps_the_count",
+   "steps": [
+    {
+     "op": {
+      "op": "sent",
+      "n": 3000,
+      "at_ms": 0
+     },
+     "marks": [
+      3000
+     ],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 3000,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "reset",
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 0
+     },
+     "room": "open",
+     "marks": [],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "sent",
+      "n": 70000,
+      "at_ms": 0
+     },
+     "marks": [
+      73000
+     ],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 3000,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": false,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "echo",
+      "counter": 73000,
+      "at_ms": 0
+     },
+     "marks": [],
+     "on": true,
+     "full": false
+    },
+    {
+     "op": {
+      "op": "room",
+      "at_ms": 0
+     },
+     "room": "open",
+     "marks": [],
+     "on": true,
+     "full": false
+    }
+   ]
+  }
+ ]
+}

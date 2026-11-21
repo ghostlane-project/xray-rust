@@ -48,6 +48,7 @@ pub mod shaped_tls;
 pub mod stream;
 mod sys;
 pub mod ws;
+mod ws_deflate;
 
 /// Bounds for this crate's tests: a stuck test fails instead of holding the
 /// shared build box.
