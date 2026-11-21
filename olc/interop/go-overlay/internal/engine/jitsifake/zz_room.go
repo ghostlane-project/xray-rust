@@ -122,6 +122,11 @@ type switches struct {
 	// BOSH request is held on each listener (zz_bosh.go).
 	refusePlainWS, bosh bool
 	holdPlain, holdTLS  time.Duration
+	// boshProsody says the stream's features after the SASL exchange on the
+	// next request, whichever it is; boshSuccessLag writes the answer that
+	// carries <success/> that much late (BOSHAsProsody, zz_bosh.go).
+	boshProsody    bool
+	boshSuccessLag time.Duration
 }
 
 var (

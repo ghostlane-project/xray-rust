@@ -22,6 +22,10 @@
 //     a Go engine in the room on its WebSocket; a poll held past the 10 s the
 //     Go client gives one (TestGoJitsiFakeBOSHHeldPoll) brings its stanza and
 //     the client answers it in the next request;
+//   - TestRustJitsiOverBOSHLogsInThoughItsAnswersCross: the features after
+//     the SASL exchange said as a real Prosody says them, on the poll beside
+//     the <auth/>, and the answer with <success/> late on its way, so that
+//     the features reach the client first; it logs in and joins all the same;
 //   - TestRustJitsiARefusedWebSocketWithNoBOSHNamedIsTheWebSocketsFailure.
 //
 // There is no olcRTC server in these rooms, so a client's handshake never
@@ -215,8 +219,9 @@ func rustTail(log string, n int) string {
 
 // rustBOSHHub is a hub whose config.js names /http-bind and whose plain
 // listener, the Rust client's, refuses the WebSocket. A request is held for
-// the wait its client asked for, as Prosody holds it; a Go engine in the
-// same hub keeps its WebSocket over TLS.
+// the wait its client asked for, as Prosody holds it, and the stream's
+// features after the SASL exchange are said as Prosody says them
+// (BOSHAsProsody); a Go engine in the same hub keeps its WebSocket over TLS.
 func rustBOSHHub(t *testing.T) *Hub {
 	t.Helper()
 	hub, err := Start()
@@ -226,6 +231,7 @@ func rustBOSHHub(t *testing.T) *Hub {
 	t.Cleanup(hub.Close)
 	hub.BOSH(true)
 	hub.RefusePlainWebSocket(true)
+	hub.BOSHAsProsody(true, 0)
 	return hub
 }
 
@@ -477,6 +483,54 @@ func TestRustJitsiOverBOSHReachesTheBridgeBesideAGoEngine(t *testing.T) {
 	}
 	t.Logf("rust over BOSH beside a Go engine: %d requests, the longest held %s and answered, %d open at once",
 		len(b.Requests), held.Round(100*time.Millisecond), b.MaxInFlight)
+}
+
+// rustSuccessLag is how late the answer with <success/> reaches the client in
+// the crossing test: far longer than the poll beside it takes to bring the
+// features, far shorter than the login's budget.
+const rustSuccessLag = 300 * time.Millisecond
+
+func TestRustJitsiOverBOSHLogsInThoughItsAnswersCross(t *testing.T) {
+	rustBin(t)
+	hub := rustBOSHHub(t)
+	hub.BOSHAsProsody(true, rustSuccessLag)
+	const user = "fedcba9876543210"
+	// The answers cross when the poll goes out beside the <auth/>, which is
+	// the client's own scheduling: nearly every start, not every one. Every
+	// start has to log in; one whose answers crossed has to be among them.
+	crossed := false
+	for start := 1; start <= 4 && !crossed; start++ {
+		room := hub.Open()
+		hub.FixJID(user)
+		begun := time.Now()
+		p := startRust(t, rustRoomConfig(hub, room), room.Name(), user)
+		// A login that lost its features waits for them until its budget
+		// ends; one that did not is in the room well under a second past
+		// the lag.
+		within(t, 10*time.Second, "the rust client in the room", func() bool {
+			return room.State().Joins == 1
+		})
+		took := time.Since(begun)
+		sessions := hub.BOSHSessions()
+		if len(sessions) != start {
+			t.Fatalf("%d BOSH sessions after %d starts", len(sessions), start)
+		}
+		b := sessions[start-1]
+		_, consecutive := BOSHBodies(b)
+		if !consecutive || b.Refused != 0 || b.MaxInFlight > 2 || b.Expired {
+			t.Errorf("ids up by one %v, %d refused, %d open at once, expired %v", consecutive, b.Refused, b.MaxInFlight, b.Expired)
+		}
+		if took < rustSuccessLag {
+			t.Errorf("in the room %s after the start, sooner than the %s the answer with <success/> was held back", took.Round(time.Millisecond), rustSuccessLag)
+		}
+		t.Logf("start %d: <success/> %s late, the features ahead of it: %v; in the room %s after its start, %d requests",
+			start, rustSuccessLag, b.Crossed, took.Round(10*time.Millisecond), len(b.Requests))
+		crossed = b.Crossed
+		p.stop(t)
+	}
+	if !crossed {
+		t.Fatal("in four starts no login's features came ahead of its <success/>: the test proved nothing")
+	}
 }
 
 func TestRustJitsiARefusedWebSocketWithNoBOSHNamedIsTheWebSocketsFailure(t *testing.T) {

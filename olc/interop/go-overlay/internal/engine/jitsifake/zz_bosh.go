@@ -16,6 +16,10 @@
 //     missing one, as Prosody's does; anything else ends the session;
 //   - a session nobody polls for a minute is gone, and so is its occupant.
 //
+// The stream's features after the SASL exchange are the answer to the
+// xmpp:restart request, as XEP-0206 has it. A real Prosody says them
+// elsewhere (BOSHAsProsody), and the Go client does not always survive that.
+//
 // Every request is recorded with its headers (BOSHSessions).
 
 package jitsifake
@@ -71,6 +75,10 @@ type BOSHState struct {
 	// Dropped is how long each held request had waited when its client hung
 	// up on it; Held how long each answered one had.
 	Dropped, Held []time.Duration
+	// Crossed says the stream's features after the SASL exchange were given
+	// to a request before the answer with <success/> was written: the two
+	// answers were on their way at once, the later one ahead.
+	Crossed bool
 }
 
 type boshOut struct {
@@ -93,6 +101,12 @@ type boshSession struct {
 	// pmu lets one request's stanzas through at a time, in the order of
 	// their ids.
 	pmu sync.Mutex
+
+	// notOpen says the SASL exchange is done and no request has opened the
+	// stream again (BOSHAsProsody); it is read and set under pmu.
+	notOpen bool
+	// successOut says the answer with <success/> was written (under mu).
+	successOut bool
 
 	mu       sync.Mutex
 	rid      int64
@@ -118,6 +132,26 @@ func (h *Hub) RefusePlainWebSocket(on bool) {
 // listener; zero holds for the wait the client asked for, as Prosody does.
 func (h *Hub) BOSHHold(plain, tls time.Duration) {
 	h.setSwitch(func(s *switches) { s.holdPlain, s.holdTLS = plain, tls })
+}
+
+// BOSHAsProsody makes the hub say the stream's features after the SASL
+// exchange as a real Prosody does (13.0.7 behind docker-jitsi-meet
+// stable-11248-3, its log in the lab run 44935236619): after <success/> the
+// stream is not open, the session's next request opens it, whichever it is,
+// and that request's answer carries the features; the xmpp:restart request is
+// then held like any other. In every login of that run the next request was
+// the poll that went out beside the <auth/>, half a millisecond behind it.
+//
+// successLag, when it is not zero, also writes the answer that carries
+// <success/> that much late, so that the features' answer reaches the client
+// first: what two connections do by chance on a real deployment. A client
+// that hands answers on as they arrive then reads the features before
+// <success/>; the Go library does, drops them, and its login waits 10 s for
+// features that have come (one login in four of that run). Which is why the
+// switch is off by default: the Go client's own tests need a login that
+// always passes.
+func (h *Hub) BOSHAsProsody(on bool, successLag time.Duration) {
+	h.setSwitch(func(s *switches) { s.boshProsody, s.boshSuccessLag = on, successLag })
 }
 
 // BOSHSessions is what every BOSH session of the hub saw, oldest first.
@@ -330,13 +364,23 @@ func (s *boshSession) serve(w http.ResponseWriter, r *http.Request, hd string, r
 	s.mu.Lock()
 	over := s.ended
 	s.mu.Unlock()
-	switch {
-	case terminate || over:
-	case attr(hd, "xmpp:restart") == "true":
+	sw := s.hub.switches()
+	restart := attr(hd, "xmpp:restart") == "true"
+	if !terminate && !over && s.notOpen && (restart || sw.boshProsody) {
+		// The request that opens the stream again: the restart, or, as
+		// Prosody has it, whichever comes first after the SASL exchange.
+		s.notOpen = false
+		s.mu.Lock()
+		s.st.Crossed = !s.successOut
+		s.mu.Unlock()
 		s.c.say("<stream:features xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></stream:features>")
-	default:
+	}
+	if !terminate && !over && !restart {
 		if inner := boshInner(rec.Body); inner != "" {
 			s.c.heard(inner)
+			if strings.HasPrefix(inner, "<auth ") {
+				s.notOpen = true
+			}
 		}
 	}
 	// The request one ahead goes after this one's stanzas.
@@ -372,16 +416,35 @@ func (s *boshSession) serve(w http.ResponseWriter, r *http.Request, hd string, r
 	select {
 	case body := <-held.ch:
 		s.note(held, false)
-		boshWrite(w, body)
+		s.answer(w, r, body)
 	case <-timer.C:
 		body := s.unhold(held)
 		s.note(held, false)
-		boshWrite(w, body)
+		s.answer(w, r, body)
 	case <-r.Context().Done():
 		// The client hung up on a held request: what was already given to it
 		// is lost with it, as it would be on the wire.
 		_ = s.unhold(held)
 		s.note(held, true)
+	}
+}
+
+// answer writes a request's answer. The one that carries <success/> is held
+// back for as long as the hub makes it slow on its way to the client
+// (BOSHAsProsody's successLag): the next request's answer then overtakes it.
+func (s *boshSession) answer(w http.ResponseWriter, r *http.Request, body string) {
+	success := strings.Contains(body, "<success ")
+	if lag := s.hub.switches().boshSuccessLag; success && lag > 0 {
+		select {
+		case <-time.After(lag):
+		case <-r.Context().Done():
+		}
+	}
+	boshWrite(w, body)
+	if success {
+		s.mu.Lock()
+		s.successOut = true
+		s.mu.Unlock()
 	}
 }
 

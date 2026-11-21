@@ -15,7 +15,9 @@
 //
 // With -olcrtc.gate-jitsi-bosh the rust client's WebSocket is refused and
 // config.js names the fake's /http-bind: the same cells with its XMPP over
-// BOSH (plan J19), the Go server beside it on its WebSocket.
+// BOSH (plan J19), the Go server beside it on its WebSocket. The fake then
+// says the stream's features as a real Prosody does, and the answer with
+// <success/> reaches the client after them (jitsifake's BOSHAsProsody).
 //
 // The rust flavour is the Rust client with provider jitsi, its plain HTTP
 // origin and WebSocket the fake's (engine_extra config_base and ws_url); the
@@ -72,6 +74,10 @@ const targetJitsiFake = "jitsifake"
 // gateGoPollLimit is how long the Go engine waits for a BOSH poll's answer
 // (internal/protect/protect.go, the response header timeout).
 const gateGoPollLimit = 10 * time.Second
+
+// gateBOSHSuccessLag is how late the answer with <success/> reaches a client
+// in the BOSH pass, the features' answer ahead of it.
+const gateBOSHSuccessLag = 300 * time.Millisecond
 
 // stanzaPattern is what an XMPP stanza of the join looks like in a log line:
 // an element the client sends or hears (a BOSH body among them), or a JID of
@@ -228,6 +234,8 @@ func TestGateRustJitsiFake(t *testing.T) {
 		// held for the wait its client asked for, as Prosody holds it.
 		hub.BOSH(true)
 		hub.RefusePlainWebSocket(true)
+		// And every login's answers cross, as a real Prosody's can.
+		hub.BOSHAsProsody(true, gateBOSHSuccessLag)
 	}
 	if *gateJitsiStall {
 		stop := make(chan struct{})
@@ -383,11 +391,14 @@ func TestGateRustJitsiFake(t *testing.T) {
 		if overBOSH == 0 || len(sessions) == 0 {
 			t.Errorf("%d clients joined over BOSH in %d sessions: the pass proved nothing", overBOSH, len(sessions))
 		}
-		var requests, ahead int
+		var requests, ahead, crossed int
 		var longest time.Duration
 		for _, s := range sessions {
 			requests += len(s.Requests)
 			ahead += s.OutOfOrder
+			if s.Crossed {
+				crossed++
+			}
 			for _, d := range s.Held {
 				longest = max(longest, d)
 			}
@@ -404,8 +415,12 @@ func TestGateRustJitsiFake(t *testing.T) {
 				}
 			}
 		}
-		t.Logf("bosh: %d clients over BOSH, %d sessions, %d requests, %d one ahead of their turn, the longest a request was held %s",
-			overBOSH, len(sessions), requests, ahead, longest.Round(100*time.Millisecond))
+		t.Logf("bosh: %d clients over BOSH, %d sessions, %d requests, %d one ahead of their turn, the longest a request was held %s; in %d logins the features came ahead of <success/>",
+			overBOSH, len(sessions), requests, ahead, longest.Round(100*time.Millisecond), crossed)
+		if crossed == 0 && len(sessions) != 0 {
+			t.Errorf("no login's features came ahead of its <success/> (%s late) in %d sessions: the pass did not try what a real Prosody's answers do",
+				gateBOSHSuccessLag, len(sessions))
+		}
 		// S4 keeps the tunnel up for a minute with nothing to say over XMPP
 		// but the client's ping: a poll is held far past the 10 s the Go
 		// client waits for one (jitsifake's TestGoJitsiFakeBOSHHeldPoll).
