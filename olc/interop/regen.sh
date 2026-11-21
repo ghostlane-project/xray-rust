@@ -74,6 +74,8 @@ expected=(
 	jitsi/room.json jitsi/nick.json jitsi/configjs.json jitsi/frames.json jitsi/epoch.json
 	# The fake's half (internal/engine/jitsifake): what the engine says to a room.
 	jitsi/transcript.json jitsi/handshake.json jitsi/offer.json jitsi/accept.json jitsi/relaywin.json
+	# The same engine over BOSH, its WebSocket refused (zz_vectors_bosh_test.go).
+	jitsi/bosh.json
 	# The rejoin supervisor's (internal/engine: olc-net's reconnect.rs).
 	reconnect/backoff.json
 )

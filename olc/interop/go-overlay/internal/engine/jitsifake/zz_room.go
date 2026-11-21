@@ -6,7 +6,8 @@
 // /xmpp-websocket (an anonymous login, stream management, the MUC, the focus
 // and the services IQs, the caps disco, the session-initiate when a second
 // occupant is in the room). zz_bridge.go is the bridge half: one pion peer
-// per participant as the JVB.
+// per participant as the JVB. zz_bosh.go serves the same XMPP over BOSH
+// (/http-bind) to a client whose WebSocket was refused.
 //
 // Two listeners serve the same handlers: TLS for the Go engine (it only dials
 // https and wss; the hub's certificate is in the file SSL_CERT_FILE names from
@@ -106,10 +107,18 @@ type Hub struct {
 	sw       switches
 	roomSeq  int
 	sessions int
+	// bosh is every BOSH session there was (zz_bosh.go), boshSeq their count.
+	bosh    []*boshSession
+	boshSeq int
 }
 
 type switches struct {
 	refuseWS, refuseFocus, noDeflate, turn bool
+	// refusePlainWS refuses the upgrade on the plain listener alone; bosh
+	// makes config.js name /http-bind; holdPlain and holdTLS cap how long a
+	// BOSH request is held on each listener (zz_bosh.go).
+	refusePlainWS, bosh bool
+	holdPlain, holdTLS  time.Duration
 }
 
 var (
@@ -188,6 +197,7 @@ func Start() (*Hub, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/config.js", h.serveConfig)
 	mux.HandleFunc("/xmpp-websocket", h.serveWS)
+	mux.HandleFunc(boshPath, h.serveBOSH)
 	h.srv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = h.srv.Serve(h.plain) }()
 	go func() { _ = h.srv.Serve(h.tlsLn) }()
@@ -321,6 +331,15 @@ func (h *Hub) serveConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/javascript")
 	_, _ = fmt.Fprintf(w, "var config = {};\nconfig.hosts = {};\nconfig.hosts.domain = '%s';\nconfig.hosts.muc = '%s';\n", Domain, MUC)
+	if h.switches().bosh {
+		// The BOSH URL of the listener that was asked: https for the Go
+		// engine, plain http for the Rust client's test origin.
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		_, _ = fmt.Fprintf(w, "config.bosh = '%s://%s%s';\n", scheme, r.Host, boshPath)
+	}
 }
 
 // Room is one conference: its occupants, its sessions, what it saw.
@@ -388,19 +407,23 @@ func (r *Room) closeAll() {
 	r.mu.Unlock()
 	for _, c := range members {
 		c.closeSession()
-		_ = c.ws.Close(websocket.StatusGoingAway, "")
+		c.hangUp()
 	}
 }
 
 func (r *Room) jid() string { return r.name + "@" + MUC }
 
-// conn is one client's XMPP connection.
+// conn is one client's XMPP connection: over a WebSocket (ws) or over BOSH
+// (bosh, zz_bosh.go). A BOSH client names its room only in its focus request:
+// until then room is nil and what it said waits in early.
 type conn struct {
-	hub  *Hub
-	room *Room
-	ws   *websocket.Conn
-	ctx  context.Context
-	idx  int
+	hub   *Hub
+	room  *Room
+	ws    *websocket.Conn
+	bosh  *boshSession
+	ctx   context.Context
+	idx   int
+	early []string
 
 	user, nick, full string
 	authed, joined   bool
@@ -413,7 +436,7 @@ type conn struct {
 func (h *Hub) serveWS(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("room")
 	sw := h.switches()
-	if name == "" || sw.refuseWS {
+	if name == "" || sw.refuseWS || (sw.refusePlainWS && r.TLS == nil) {
 		http.Error(w, "no websocket", http.StatusForbidden)
 		return
 	}
@@ -440,6 +463,10 @@ func (h *Hub) serveWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *conn) say(s string) {
+	if c.bosh != nil {
+		c.bosh.push(s)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = c.ws.Write(ctx, websocket.MessageText, []byte(s))
@@ -454,16 +481,58 @@ func (c *conn) loop() {
 		if err != nil {
 			return
 		}
-		t := string(data)
-		c.room.mu.Lock()
-		c.room.state.Transcripts[c.idx] = append(c.room.state.Transcripts[c.idx], t)
-		first, _, _ := strings.Cut(strings.TrimPrefix(t, "<"), " ")
-		c.room.state.Stanzas[strings.TrimSuffix(first, "/>")]++
-		c.room.mu.Unlock()
-		if !c.handle(t) {
+		if !c.heard(string(data)) {
 			return
 		}
 	}
+}
+
+// heard records one stanza of the client and answers it; false ends the
+// connection.
+func (c *conn) heard(t string) bool {
+	if c.room == nil {
+		name := boshRoom(t)
+		if name == "" {
+			c.early = append(c.early, t)
+			return c.handle(t)
+		}
+		// The focus request names the room: the session is that room's from
+		// here on, with what it said before.
+		room := c.hub.room(name)
+		room.mu.Lock()
+		room.state.Transcripts = append(room.state.Transcripts, nil)
+		c.idx = len(room.state.Transcripts) - 1
+		room.mu.Unlock()
+		c.room = room
+		if c.bosh != nil {
+			c.bosh.mu.Lock()
+			c.bosh.st.Room = name
+			c.bosh.mu.Unlock()
+		}
+		for _, e := range c.early {
+			c.record(e)
+		}
+		c.early = nil
+	}
+	c.record(t)
+	return c.handle(t)
+}
+
+func (c *conn) record(t string) {
+	c.room.mu.Lock()
+	c.room.state.Transcripts[c.idx] = append(c.room.state.Transcripts[c.idx], t)
+	first, _, _ := strings.Cut(strings.TrimPrefix(t, "<"), " ")
+	c.room.state.Stanzas[strings.TrimSuffix(first, "/>")]++
+	c.room.mu.Unlock()
+}
+
+// hangUp ends the client's transport from the server's side.
+func (c *conn) hangUp() {
+	if c.bosh != nil {
+		c.bosh.end(false)
+		return
+	}
+	_ = c.ws.Close(websocket.StatusGoingAway, "")
 }
 
 // attr is the value of the first name attribute in s, in either quote.
@@ -554,11 +623,11 @@ func (c *conn) iq(t string, sw switches) {
 			services = "<service type='turn' host='127.0.0.1' port='3478' transport='udp' username='u' password='p'/><service type='stun' host='127.0.0.1' port='3478'/>"
 		}
 		c.say("<iq id='disco_1' type='result' xmlns='jabber:client'><services xmlns='urn:xmpp:extdisco:2'>" + services + "</services></iq>")
-	case typ == "get" && strings.Contains(t, "disco#info"):
+	case typ == "get" && strings.Contains(t, "disco#info") && c.room != nil:
 		result("<query xmlns='http://jabber.org/protocol/disco#info'><identity category='conference' type='text' name='" + c.room.name + "'/><feature var='http://jabber.org/protocol/muc'/></query>")
 	case typ == "get":
 		result("") // the XMPP ping and whatever else
-	case typ == "set" && strings.Contains(t, "<jingle"):
+	case typ == "set" && strings.Contains(t, "<jingle") && c.room != nil:
 		result("")
 		c.jingle(t)
 	case typ == "set":
@@ -576,7 +645,7 @@ func orElse(a, b string) string {
 func (c *conn) presence(t string) {
 	h := head(t)
 	to := attr(h, "to")
-	if !strings.HasPrefix(to, c.room.jid()+"/") {
+	if c.room == nil || !strings.HasPrefix(to, c.room.jid()+"/") {
 		return
 	}
 	nick := strings.TrimPrefix(to, c.room.jid()+"/")
@@ -628,6 +697,9 @@ func (c *conn) join(nick string) {
 // leave takes the client out of the MUC; echo says the leave to it too.
 func (c *conn) leave(echo bool) {
 	r := c.room
+	if r == nil {
+		return
+	}
 	r.mu.Lock()
 	if !c.joined {
 		r.mu.Unlock()
@@ -654,7 +726,9 @@ func (c *conn) leave(echo bool) {
 
 func (c *conn) gone() {
 	c.leave(false)
-	_ = c.ws.CloseNow()
+	if c.ws != nil {
+		_ = c.ws.CloseNow()
+	}
 }
 
 // Login is what a client said from its first stanza to its room disco (the
