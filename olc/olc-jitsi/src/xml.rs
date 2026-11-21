@@ -87,6 +87,8 @@ pub enum Event<'a> {
 pub struct Reader<'a> {
     src: &'a str,
     pos: usize,
+    /// Where the last opening tag began.
+    tag: usize,
     stack: [&'a str; MAX_DEPTH],
     depth: usize,
     started: bool,
@@ -100,6 +102,7 @@ impl<'a> Reader<'a> {
         Self {
             src,
             pos: 0,
+            tag: 0,
             stack: [""; MAX_DEPTH],
             depth: 0,
             started: false,
@@ -181,6 +184,7 @@ impl<'a> Reader<'a> {
                 return Err(XmlError::TooDeep);
             }
             self.started = true;
+            self.tag = self.pos;
             self.pos += 1 + attrs_from + tag_len;
             if self_closing {
                 self.finished = self.depth == 0;
@@ -206,6 +210,46 @@ pub fn root(xml: &str) -> Result<Start<'_>, XmlError> {
         Some(Event::Start(s)) => Ok(s),
         _ => Err(XmlError::Syntax("no root element")),
     }
+}
+
+/// The elements just inside the root element, each whole as it is written,
+/// in order; none for a root that closes itself or holds no element. Text
+/// and comments between them are left out.
+///
+/// # Errors
+/// The text is not one well-formed element.
+pub fn children(xml: &str) -> Result<Vec<&str>, XmlError> {
+    let mut r = Reader::new(xml);
+    if !matches!(r.next_event()?, Some(Event::Start(_))) {
+        return Err(XmlError::Syntax("no root element"));
+    }
+    let mut out = Vec::new();
+    // How many elements are open inside the root, and where the one just
+    // inside it began.
+    let (mut depth, mut from) = (0usize, 0usize);
+    while let Some(e) = r.next_event()? {
+        match e {
+            Event::Start(s) => {
+                if depth == 0 {
+                    from = r.tag;
+                }
+                if !s.self_closing {
+                    depth += 1;
+                } else if depth == 0 {
+                    out.push(&xml[from..r.pos]);
+                }
+            }
+            // The root's own end comes with nothing open inside it.
+            Event::End(_) if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    out.push(&xml[from..r.pos]);
+                }
+            }
+            Event::End(_) | Event::Text(_) => {}
+        }
+    }
+    Ok(out)
 }
 
 /// The text just inside the first element called `name` (empty for an
@@ -451,6 +495,83 @@ mod tests {
         let s = root(r#"<a b=">" c='x>y'/>"#).unwrap();
         assert_eq!(s.attr("b").unwrap().as_deref(), Some(">"));
         assert_eq!(s.attr("c").unwrap().as_deref(), Some("x>y"));
+    }
+
+    /// Go's `TestExtractBOSHInner` and `TestSplitXMLElements`
+    /// (`conn_test.go:380-420`): what stands inside a BOSH body, element by
+    /// element. Go cuts the text between the first `>` and the last
+    /// `</body>` and counts tags; here the body is read as XML.
+    #[test]
+    fn the_elements_inside_a_root_as_go_s_bosh_helpers_take_them() {
+        // extractBOSHInner: (input, want); the children joined are its text.
+        let inner: &[(&str, &str)] = &[
+            (
+                r#"<body sid="x" xmlns="http://jabber.org/protocol/httpbind"><iq id="1"/><presence/></body>"#,
+                r#"<iq id="1"/><presence/>"#,
+            ),
+            (
+                r#"<body sid="x" xmlns="http://jabber.org/protocol/httpbind"/>"#,
+                "",
+            ),
+            (r#"<body sid="x"></body>"#, ""),
+            (
+                r#"<body sid="abc"><stream:features><mechanisms xmlns="urn:ietf:params:xml:ns:xmpp-sasl"><mechanism>ANONYMOUS</mechanism></mechanisms></stream:features></body>"#,
+                r#"<stream:features><mechanisms xmlns="urn:ietf:params:xml:ns:xmpp-sasl"><mechanism>ANONYMOUS</mechanism></mechanisms></stream:features>"#,
+            ),
+        ];
+        for (input, want) in inner {
+            assert_eq!(children(input).unwrap().concat(), *want, "{input}");
+        }
+        // splitXMLElements: (input, count), inside a body here.
+        let split: &[(&str, usize)] = &[
+            (r#"<iq id="1"/><presence from="x"/>"#, 2),
+            (
+                "<stream:features><mechanisms><mechanism>ANONYMOUS</mechanism></mechanisms></stream:features>",
+                1,
+            ),
+            (
+                r#"<iq id="1"/><presence><x><item/></x></presence><message><body>hi</body></message>"#,
+                3,
+            ),
+            ("", 0),
+        ];
+        for (input, count) in split {
+            let body = format!("<body>{input}</body>");
+            let got = children(&body).unwrap();
+            assert_eq!(got.len(), *count, "{input}");
+            assert_eq!(got.concat(), *input);
+        }
+        assert_eq!(
+            children(r#"<body><iq id="1"/><presence><x><item/></x></presence><message><body>hi</body></message></body>"#).unwrap(),
+            [
+                r#"<iq id="1"/>"#,
+                "<presence><x><item/></x></presence>",
+                "<message><body>hi</body></message>"
+            ]
+        );
+    }
+
+    /// What Go's tag counter gets wrong and an XML reader does not: a `>`
+    /// inside a value, an element of the root's own name inside it, white
+    /// space, comments and text between the elements.
+    #[test]
+    fn the_elements_inside_a_root_are_cut_where_they_end() {
+        assert_eq!(
+            children("<body><iq id='g1'><q a='1>2'/></iq><iq id='g2'/></body>").unwrap(),
+            ["<iq id='g1'><q a='1>2'/></iq>", "<iq id='g2'/>"]
+        );
+        assert_eq!(
+            children("<body>\n  <a/>\n <!-- <x/> --> text <b>t</b>\n</body>\n").unwrap(),
+            ["<a/>", "<b>t</b>"]
+        );
+        assert_eq!(
+            children("<x><x><x/></x><x/></x>").unwrap(),
+            ["<x><x/></x>", "<x/>"]
+        );
+        assert!(children("<body><a></body>").is_err());
+        assert!(children("<body><a/>").is_err());
+        assert!(children("<body/><a/>").is_err());
+        assert!(children("").is_err());
     }
 
     #[test]

@@ -77,4 +77,6 @@ func TestZZVectors(t *testing.T) {
 		zzTranscript{Room: "secret-room", User: user, Nick: user[:8], Name: "olcrtc", Login: said[:10], DiscoReply: said[10], Leave: said[len(said)-1]})
 	zzvectors.Write(t, "jitsi/handshake.json", zzGenerator, []string{"j/internal/xmpp/conn.go"},
 		zzHandshake{ConfigJS: zzHeader(hub, st.Config[0]), Upgrade: zzHeader(hub, st.Upgrades[0])})
+	// The same engine over BOSH: jitsi/bosh.json (zz_vectors_bosh_test.go).
+	zzBOSHVectors(t)
 }

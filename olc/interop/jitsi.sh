@@ -3,7 +3,7 @@
 # jitsi.sh <rust-client-bin|-> <gate|rust|go> [go test flags...]
 #
 # T2 for the Jitsi carrier: the Rust client against the Go fake of a Jitsi
-# Meet room (Prosody and Jicofo over a WebSocket, one pion peer per
+# Meet room (Prosody and Jicofo over a WebSocket or BOSH, one pion peer per
 # participant as the JVB; internal/engine/jitsifake). No Jitsi deployment is
 # contacted and no room is used. Run it on the build box, never on DATA:
 #   go-remote.sh olc-w2-jitsi-go <repo>/olc/interop bash jitsi.sh <bin> gate
@@ -18,6 +18,10 @@
 #         stanzas, and logs the client's heap peak and VmHWM beside the Go
 #         client's. -olcrtc.gate-flavours=rust,cli adds the Go baseline (a
 #         process of its own; p2p.sh says how, and its three flags).
+#         -olcrtc.gate-jitsi-bosh is the BOSH pass: the fake refuses the
+#         Rust client's WebSocket and config.js names /http-bind, so its
+#         XMPP goes over BOSH (the Go server and the cli flavour keep their
+#         WebSocket: the Go client hangs up on a poll held 10 s);
 #         -olcrtc.gate-jitsi-tls (a client built with the shaped-tls and
 #         tls-test-pin features) runs the rust flavour over https and wss as
 #         an app does, the fake's certificate trusted by its pin, and adds
@@ -25,7 +29,8 @@
 #         holds the live target's own checks (jitsi-live/, the guard against
 #         a host elsewhere and the rows' origin), which need no client;
 #   rust  the TestRustJitsi* tests (internal/engine/jitsifake): the Rust
-#         client against the fake with one Go engine in the room;
+#         client's join against the fake, over the WebSocket and over BOSH,
+#         read against the Go engine's in the same fake;
 #   go    the engine's own tests of internal/auth/jitsi and
 #         internal/engine/jitsi, the baseline the rust ones are read against,
 #         and the fake's own tests (TestGoJitsiFakeJoin, TestGoJitsiFakePair:

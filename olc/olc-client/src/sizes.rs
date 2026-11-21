@@ -142,11 +142,12 @@ pub fn budget_with(bytes: ByteBudgetSettings) -> Vec<Row> {
 
 /// Jitsi's rows (plan section 8): what its session holds. No reader per SSRC
 /// exists in a datachannel run, and no queue of raw stanzas (decision D4).
-fn jitsi_rows() -> [Row; 8] {
+fn jitsi_rows() -> [Row; 9] {
     use olc_jitsi::bridge::{BACKLOG_HIGH_WATER, SEND_QUEUE};
     use olc_jitsi::frame::MAX_MESSAGE;
     use olc_jitsi::join::{FETCH_MAX, WS_READ_LIMIT};
     use olc_jitsi::session::SCTP_BUFFERED;
+    use olc_jitsi::xmpp::bosh::{INBOX_BYTES, REPLY_LIMIT};
     use olc_jitsi::xmpp::conn::{MAX_IQ_WAITERS, MAX_OCCUPANTS};
     [
         Row {
@@ -156,6 +157,15 @@ fn jitsi_rows() -> [Row; 8] {
             formula: "WS_READ_LIMIT (1 MiB, Go's read limit) for the stanza being read, parsed in \
                       place, and the same for the one session-initiate kept parsed (its parts are \
                       capped, a few KiB in a two-party room); no queue of stanzas",
+        },
+        Row {
+            layer: "Jitsi BOSH answers and unread stanzas (only when the WebSocket did not dial)",
+            cap: 2 * REPLY_LIMIT + INBOX_BYTES,
+            burst: 24 << 10,
+            formula: "REPLY_LIMIT (1 MiB, the WebSocket's limit for a stanza) for the answer of \
+                      each of the two requests that can be open, the poll and one stanza's, and \
+                      INBOX_BYTES (1 MiB) of stanzas taken out of answers and not yet read, past \
+                      which the transport ends; an answer in a two-party room is a few KiB",
         },
         Row {
             layer: "Jitsi config.js (only while it is fetched)",
@@ -660,6 +670,25 @@ mod tests {
 
     fn phone() -> ByteBudgetSettings {
         ByteBudgetSettings::for_class(ghostlane_runtime::MemoryClass::Constrained)
+    }
+
+    /// Plan section 8, the BOSH row: an answer is read up to the limit of a
+    /// WebSocket stanza; two requests are open at most (the poll and one
+    /// stanza), and what was taken out of answers and not yet read is bounded
+    /// too.
+    #[test]
+    fn the_jitsi_bosh_row_follows_the_constants() {
+        use olc_jitsi::xmpp::bosh::{INBOX_BYTES, REPLY_LIMIT};
+        let rows = budget_with(phone());
+        let bosh = rows
+            .iter()
+            .find(|r| r.layer.starts_with("Jitsi BOSH"))
+            .expect("a row for BOSH");
+        assert_eq!(REPLY_LIMIT, olc_jitsi::join::WS_READ_LIMIT);
+        assert_eq!(REPLY_LIMIT, 1 << 20);
+        assert_eq!(INBOX_BYTES, 1 << 20);
+        assert_eq!(bosh.cap, 2 * REPLY_LIMIT + INBOX_BYTES);
+        assert!(bosh.burst <= 64 << 10, "{}", bosh.burst);
     }
 
     #[test]

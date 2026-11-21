@@ -31,12 +31,33 @@ use crate::xml::{self, Event, Reader, Start};
 /// A boxed future, for the transport traits.
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// How a transport carries the XMPP stream, which shapes the login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    /// RFC 7395: the stream is opened and reopened with `<open/>` frames,
+    /// and stream management keeps it alive.
+    WebSocket,
+    /// XEP-0206: the session request opened the stream, its restart is a
+    /// request of the transport's own, and there is no stream management
+    /// (`authBOSH`; `keepaliveLoop` returns at once on BOSH).
+    Bosh,
+}
+
 /// The sending half of a transport: one text message at a time.
 pub trait Tx: Send + Sync + 'static {
     /// Sends `text` as one message.
     fn send<'a>(&'a self, text: &'a str) -> BoxFut<'a, Result<(), ConnError>>;
     /// Closes the transport.
     fn close(&self) -> BoxFut<'_, ()>;
+    /// How the transport carries the stream.
+    fn framing(&self) -> Framing {
+        Framing::WebSocket
+    }
+    /// Restarts the stream after the SASL exchange, where that is the
+    /// transport's to do ([`Framing::Bosh`]).
+    fn restart(&self) -> BoxFut<'_, Result<(), ConnError>> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 /// The receiving half: one text message at a time.
@@ -172,7 +193,7 @@ impl std::fmt::Debug for Conn {
 
 /// Resolves once the flag is true (or its sender is gone). Not `wait_for`,
 /// whose future holds a lock guard and so cannot be sent between threads.
-async fn wait_closed(rx: &mut watch::Receiver<bool>) {
+pub(super) async fn wait_closed(rx: &mut watch::Receiver<bool>) {
     loop {
         if *rx.borrow_and_update() {
             return;
@@ -226,6 +247,10 @@ impl Conn {
     /// stream opened again, the resource bound, the session, stream
     /// management enabled; then the read loop and the keepalive run.
     ///
+    /// Over BOSH (`authBOSH`, [`Framing::Bosh`]) the session request has
+    /// opened the stream, the transport restarts it, and there is no stream
+    /// management: neither enabled nor kept alive.
+    ///
     /// # Errors
     /// The server's refusal at a step, with that step's name and the text it
     /// sent; or the transport's.
@@ -235,6 +260,7 @@ impl Conn {
         cfg: ConnConfig,
         budget: Duration,
     ) -> Result<(Self, mpsc::Receiver<Incoming>), ConnError> {
+        let framing = tx.framing();
         let steps = Self::login_steps(&tx, &mut rx, &cfg);
         let (jid, nick) = match tokio::time::timeout(budget, steps).await {
             Ok(r) => r?,
@@ -255,7 +281,9 @@ impl Conn {
             events,
         });
         tokio::spawn(read_loop(sh.clone(), rx));
-        tokio::spawn(keepalive(sh.clone()));
+        if framing == Framing::WebSocket {
+            tokio::spawn(keepalive(sh.clone()));
+        }
         Ok((Self { sh }, incoming))
     }
 
@@ -264,8 +292,11 @@ impl Conn {
         rx: &mut R,
         cfg: &ConnConfig,
     ) -> Result<(String, String), ConnError> {
+        let bosh = tx.framing() == Framing::Bosh;
         let open = stanza::open(&cfg.xmpp_domain);
-        tx.send(&open).await?;
+        if !bosh {
+            tx.send(&open).await?;
+        }
         let features = read_until(rx, |_, r| local(r.name) == "features")
             .await
             .map_err(|e| step("initial features", &e))?;
@@ -278,7 +309,11 @@ impl Conn {
         read_until(rx, |_, r| r.name == "success")
             .await
             .map_err(|e| step("sasl", &e))?;
-        tx.send(&open).await?;
+        if bosh {
+            tx.restart().await.map_err(|e| step("bosh restart", &e))?;
+        } else {
+            tx.send(&open).await?;
+        }
         read_until(rx, |_, r| local(r.name) == "features")
             .await
             .map_err(|e| step("post-auth features", &e))?;
@@ -305,6 +340,9 @@ impl Conn {
         read_until(rx, |_, r| r.name == "iq" && attr(r, "id") == "sess_1")
             .await
             .map_err(|e| step("session", &e))?;
+        if bosh {
+            return Ok((jid, nick));
+        }
         tx.send(stanza::ENABLE_SM).await?;
         read_until(rx, |_, r| r.name == "enabled")
             .await
@@ -805,7 +843,7 @@ async fn keepalive(sh: Arc<Shared>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::xmpp::testing::{pipe, serve_login, Server};
+    use crate::xmpp::testing::{pipe, pipe_bosh, serve_login, Server, RESTART};
 
     const S: fn(u64) -> Duration = Duration::from_secs;
 
@@ -843,6 +881,36 @@ mod tests {
         for _ in 0..20 {
             tokio::task::yield_now().await;
         }
+    }
+
+    /// `authBOSH` (`conn.go:1375-1437`): the session request has opened the
+    /// stream, so the login starts at the features; the restart after the
+    /// SASL exchange is the transport's own request; and stream management
+    /// is neither asked for nor run (`keepaliveLoop` returns at once).
+    #[tokio::test(start_paused = true)]
+    async fn over_bosh_the_login_opens_no_stream_and_runs_no_stream_management() {
+        let (tx, rx, mut server) = pipe_bosh();
+        let tx: Arc<dyn Tx> = Arc::new(tx);
+        let login = tokio::spawn(Conn::login(tx, rx, cfg(), S(30)));
+        server.say("<stream:features xmlns='jabber:client'><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>ANONYMOUS</mechanism></mechanisms></stream:features>");
+        assert_eq!(server.next().await, stanza::AUTH_ANONYMOUS);
+        server.say("<success xmlns='urn:ietf:params:xml:ns:xmpp-sasl'/>");
+        assert_eq!(server.next().await, RESTART);
+        server.say("<stream:features xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'/></stream:features>");
+        assert_eq!(server.next().await, stanza::BIND);
+        server.say("<iq type='result' id='bind_1' xmlns='jabber:client'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><jid>abcdef0123456789@meet.example/res</jid></bind></iq>");
+        assert_eq!(server.next().await, stanza::SESSION);
+        server.say("<iq type='result' id='sess_1' xmlns='jabber:client'/>");
+        let (conn, _incoming) = login.await.unwrap().unwrap();
+        assert_eq!(conn.nick(), "abcdef01");
+        settle().await;
+        assert!(server.drain().is_empty(), "no <enable>");
+        // Over a WebSocket a request goes out at SM_INTERVAL and the
+        // connection closes SM_ACK_WAIT later for want of an answer.
+        tokio::time::sleep(SM_INTERVAL + SM_ACK_WAIT + S(5)).await;
+        settle().await;
+        assert!(server.drain().is_empty(), "no <r>");
+        assert!(!conn.is_closed());
     }
 
     #[tokio::test(start_paused = true)]
