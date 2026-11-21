@@ -10,6 +10,22 @@ long-term supported release series.
 
 ## Unreleased
 
+- A REALITY dial whose fingerprint has the `X25519MLKEM768` share, and
+  whose hello therefore leaves in two TCP segments, is retried once with
+  the hello of `hellochrome_120`, which fits one, when not one byte of answer
+  arrives within 4 s. Some networks deliver a hello's first segment and never
+  the rest, and such a dial used to wait until its handshake deadline. A
+  server that answers with anything is never retried. The outcome is kept
+  10 minutes per server (address, port and server name), for at most 64:
+  where the short hello worked, later dials send it at once; where it did
+  not help, the dial fails with the stall and later dials send only the
+  configured hello, as before. `xray_core_reset_network` empties it. The
+  retried connection, and the dials started short, lose the post-quantum
+  half of the key exchange, and someone on the path who drops packets can
+  force that. Each retry and each outcome kept writes one debug line. There
+  is no config field, and plain TLS is unchanged. In `xray-transport`, the
+  exhaustive enum `RealityError` gains `ClientHelloUnanswered`. See
+  [REALITY hello fallback](docs/xray-core-differences.md#reality-hello-fallback).
 - `xray_core_reset_network(handle, closed, error)` (ABI 1.18, under
   `CONNECTION_MANAGEMENT`; no new capability bit) resets the network under a
   running core, as sing-box's `resetNetwork` does for a host whose device
