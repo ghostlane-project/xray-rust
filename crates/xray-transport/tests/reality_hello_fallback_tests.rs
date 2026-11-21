@@ -163,6 +163,11 @@ enum Answers {
     OneByte,
     /// Nothing, to a hello it reads to the end.
     Nothing,
+    /// REALITY to the first hello without the hybrid share it reads, and to
+    /// any with the share; nothing to a later hello without it.
+    RealityToTheFirstShortHelloOnly,
+    /// The connection closed, without a byte, on a hello it reads to the end.
+    Closes,
 }
 
 struct Server {
@@ -218,12 +223,25 @@ async fn serve(
     let Some(hello) = ClientHello::parse(&record) else {
         return;
     };
-    hellos
-        .lock()
-        .expect("the server's log")
-        .push(hello.hybrid_share.is_some());
-    let answers = *answers.lock().expect("the server's mode");
+    // The hellos without the hybrid share read so far, this one included.
+    let short_hellos = {
+        let mut hellos = hellos.lock().expect("the server's log");
+        hellos.push(hello.hybrid_share.is_some());
+        hellos.iter().filter(|hybrid| !**hybrid).count()
+    };
+    // What this hello gets.
+    let answers = match *answers.lock().expect("the server's mode") {
+        Answers::RealityToTheFirstShortHelloOnly
+            if hello.hybrid_share.is_none() && short_hellos > 1 =>
+        {
+            Answers::Nothing
+        }
+        Answers::RealityToTheFirstShortHelloOnly => Answers::Reality,
+        answers => answers,
+    };
     let config = match answers {
+        Answers::RealityToTheFirstShortHelloOnly => unreachable!("read as another answer above"),
+        Answers::Closes => return,
         Answers::Nothing => {
             let mut lost = [0u8; 4096];
             while matches!(client.read(&mut lost).await, Ok(read) if read > 0) {}
@@ -755,6 +773,99 @@ async fn where_the_short_hello_does_not_help_the_dial_fails_with_the_stall_and_l
     assert_eq!(client.events(), events, "and nothing new to report");
 }
 
+/// Two dials stall together and retry together; the server answers the
+/// first short hello and never the second. The retry that stalls ends a
+/// window after the one that worked, and its outcome does not undo that
+/// proof: the memory still says the short hello works here, and a third dial
+/// sends it at once.
+#[tokio::test]
+async fn a_retry_that_fails_after_another_worked_leaves_the_short_hello_remembered() {
+    let _turn = TURN.lock().await;
+    forget_everything();
+    let server = Server::spawn(Answers::RealityToTheFirstShortHelloOnly).await;
+    let relay = Relay::spawn(server.addr, Path::DropsTheTail).await;
+    let route = Route::new("burst.reality-hello.test", relay.addr, &server);
+    let client = Client::new(STALL);
+
+    let (one, two) = tokio::join!(client.dial(&route), client.dial(&route));
+    let (connected, failed) = match (one, two) {
+        (Ok(stream), Err(error)) | (Err(error), Ok(stream)) => (stream, error),
+        (one, two) => panic!(
+            "one dial connects and one fails: {:?}, {:?}",
+            one.map(drop),
+            two.map(drop)
+        ),
+    };
+    assert!(is_the_stall(&failed, STALL), "{failed}");
+    assert_carries_bytes_both_ways(connected).await;
+
+    let flights = relay.flights();
+    assert_eq!(flights.len(), 4, "{flights:?}");
+    assert_eq!(
+        flights
+            .iter()
+            .filter(|flight| **flight > FIRST_SEGMENT)
+            .count(),
+        2,
+        "{flights:?}"
+    );
+    assert_eq!(server.hellos(), [false, false]);
+    let mut events = client.events();
+    events.sort_by_key(|(_, event)| matches!(event, RealityHelloEvent::Remembered { .. }));
+    assert_eq!(
+        events,
+        [
+            fallback_used(&route, STALL),
+            fallback_used(&route, STALL),
+            remembered(&route, ShortHelloVerdict::Works)
+        ],
+        "the stalled retry writes nothing over the proof"
+    );
+    assert_eq!(remembered_servers(), 1);
+
+    server.now_answers(Answers::Reality);
+    // A window no test could wait out: had it sent the hybrid hello, this
+    // dial would not end in time.
+    let third = Client::new(Duration::from_secs(60));
+    let stream = third
+        .dial(&route)
+        .await
+        .expect("the short hello connects at once");
+    assert_carries_bytes_both_ways(stream).await;
+    let flights = relay.flights();
+    assert_eq!(flights.len(), 5, "{flights:?}");
+    assert!(flights[4] <= SHORT_FLIGHT_MAX, "{flights:?}");
+    assert!(third.events().is_empty());
+}
+
+/// A retry that ends with neither an answer nor a refusal, here a server that
+/// closes the connection on the short hello, says nothing about the hello:
+/// the dial fails with the stall, nothing is remembered, and the next dial is
+/// watched again.
+#[tokio::test]
+async fn a_retry_that_ends_without_an_answer_or_a_refusal_remembers_nothing() {
+    let _turn = TURN.lock().await;
+    forget_everything();
+    let server = Server::spawn(Answers::Closes).await;
+    let relay = Relay::spawn(server.addr, Path::DropsTheTail).await;
+    let route = Route::new("closed.reality-hello.test", relay.addr, &server);
+    let client = Client::new(STALL);
+
+    let error = failure(client.dial(&route).await);
+    assert!(is_the_stall(&error, STALL), "{error}");
+    assert_eq!(server.hellos(), [false]);
+    assert_eq!(client.events(), [fallback_used(&route, STALL)]);
+    assert_eq!(remembered_servers(), 0);
+
+    let error = failure(client.dial(&route).await);
+    assert!(is_the_stall(&error, STALL), "{error}");
+    let flights = relay.flights();
+    assert_eq!(flights.len(), 4, "{flights:?}");
+    assert!(flights[2] > FIRST_SEGMENT, "watched again: {flights:?}");
+    assert!(flights[3] <= SHORT_FLIGHT_MAX, "{flights:?}");
+    assert_eq!(remembered_servers(), 0);
+}
+
 /// (e) A network reset empties the memory, and the next dial starts with the
 /// hybrid hello again.
 #[tokio::test]
@@ -784,6 +895,38 @@ async fn a_network_reset_forgets_the_server_and_the_hybrid_hello_is_tried_again(
         flights[2] > FIRST_SEGMENT,
         "hybrid first again: {flights:?}"
     );
+    assert!(flights[3] <= SHORT_FLIGHT_MAX, "{flights:?}");
+    assert_eq!(remembered_servers(), 1);
+}
+
+/// (e) A dial under way when the network is reset learnt its outcome on the
+/// old network. It ends as it ends, but writes nothing into the memory the
+/// reset emptied, and the next dial starts with the hybrid hello.
+#[tokio::test]
+async fn a_dial_under_way_at_a_network_reset_remembers_nothing() {
+    let _turn = TURN.lock().await;
+    forget_everything();
+    let server = Server::spawn(Answers::Reality).await;
+    let relay = Relay::spawn(server.addr, Path::DropsTheTail).await;
+    let route = Route::new("moved.reality-hello.test", relay.addr, &server);
+    let client = Client::new(STALL);
+
+    let (dialed, ()) = tokio::join!(client.dial(&route), async {
+        // The hybrid hello is out and waits for its answer: the device moves.
+        eventually("the hybrid hello on the path", || {
+            !relay.flights().is_empty()
+        })
+        .await;
+        client.dialer.network_resets().reset();
+    });
+    drop(dialed.expect("the fallback connects"));
+    assert_eq!(client.events(), [fallback_used(&route, STALL)]);
+    assert_eq!(remembered_servers(), 0);
+
+    drop(client.dial(&route).await.expect("the fallback connects"));
+    let flights = relay.flights();
+    assert_eq!(flights.len(), 4, "{flights:?}");
+    assert!(flights[2] > FIRST_SEGMENT, "hybrid first: {flights:?}");
     assert!(flights[3] <= SHORT_FLIGHT_MAX, "{flights:?}");
     assert_eq!(remembered_servers(), 1);
 }

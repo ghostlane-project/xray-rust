@@ -315,21 +315,36 @@ mod tests {
         assert!(memory.entries.is_empty());
     }
 
+    /// A short hello proven to work is not undone by a retry that failed at
+    /// the same server afterwards, which may have met a passing loss. A proof
+    /// replaces a failure, and a new proof renews the time.
     #[test]
-    fn a_new_outcome_for_a_server_replaces_the_old_one() {
+    fn works_is_kept_against_a_later_failure_and_replaces_one() {
         let mut memory = HelloMemory::new();
         let start = Instant::now();
-        memory.remember(server(1), ShortHelloVerdict::Works, start);
         let later = start + Duration::from_secs(60);
+        memory.remember(server(1), ShortHelloVerdict::Works, start);
         memory.remember(server(1), ShortHelloVerdict::DoesNotHelp, later);
-
         assert_eq!(memory.entries.len(), 1);
         assert_eq!(
-            memory.recall(&server(1), start + REALITY_HELLO_MEMORY_TTL),
-            Some(ShortHelloVerdict::DoesNotHelp),
-            "the new outcome has its own time"
+            memory.recall(&server(1), later),
+            Some(ShortHelloVerdict::Works)
         );
+
+        memory.remember(server(2), ShortHelloVerdict::DoesNotHelp, start);
+        memory.remember(server(2), ShortHelloVerdict::Works, later);
+        memory.remember(server(1), ShortHelloVerdict::Works, later);
+        assert_eq!(memory.entries.len(), 2);
+        for index in [1, 2] {
+            assert_eq!(
+                memory.recall(&server(index), start + REALITY_HELLO_MEMORY_TTL),
+                Some(ShortHelloVerdict::Works),
+                "the new outcome has its own time: {index}"
+            );
+        }
+
         memory.forget(&server(1));
+        memory.forget(&server(2));
         assert!(memory.entries.is_empty());
     }
 
