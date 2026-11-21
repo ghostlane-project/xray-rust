@@ -259,6 +259,7 @@ async fn fake_jicofo(pool: &Pool, offers: bool) -> Fake {
             after_join: after,
             turn: false,
             deflate: false,
+            ..Opts::default()
         },
     )
     .await

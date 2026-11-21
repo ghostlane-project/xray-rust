@@ -7,8 +7,9 @@
 //! services, the room; and once more on docker-jitsi-meet's defaults when the
 //! server refused the guessed domain.
 //!
-//! BOSH, which the library falls back to when the WebSocket does not dial
-//! and config.js names one, is not here (plan §9 W3).
+//! When the WebSocket does not dial and config.js names a BOSH URL, the
+//! login goes over BOSH ([`crate::xmpp::bosh`]), as the library's does
+//! (`conn.go:164-171`).
 
 use std::time::Duration;
 
@@ -25,6 +26,7 @@ use crate::configjs::{
     FALLBACK_CONFIG, FALLBACK_XMPP_DOMAIN, GRACE, MAX_BODY, PAUSE,
 };
 use crate::ice::{convert_ice, IceServer};
+use crate::xmpp::bosh;
 use crate::xmpp::conn::{BoxFut, Conn, ConnConfig, ConnError, FocusInfo, Incoming, Rx, Tx};
 
 /// The WebSocket's read limit (`SetReadLimit(1 << 20)`).
@@ -318,18 +320,27 @@ async fn join_once(cfg: &JoinConfig, fallback: bool) -> (Result<Joined, JoinErro
         None => jc.websocket_url(&cfg.host, &cfg.room),
     };
     let steps = async {
-        let (tx, rx) = dial_ws(&ws_url, &cfg.host, cfg.deflate)
-            .await
-            .map_err(|e| JoinError(format!("xmpp dial: failed to WebSocket dial: {e}")))?;
         let cc = ConnConfig {
             host: cfg.host.clone(),
             room: cfg.room.clone(),
             xmpp_domain: jc.xmpp_domain.clone(),
             muc_domain: jc.muc_domain.clone(),
         };
-        let (conn, incoming) = Conn::login(std::sync::Arc::new(tx), rx, cc, cfg.budget)
-            .await
-            .map_err(|e| JoinError(format!("xmpp dial: {e}")))?;
+        let login = match dial_ws(&ws_url, &cfg.host, cfg.deflate).await {
+            Ok((tx, rx)) => Conn::login(std::sync::Arc::new(tx), rx, cc, cfg.budget).await,
+            Err(e) if jc.bosh.is_empty() => {
+                return Err(JoinError(format!(
+                    "xmpp dial: failed to WebSocket dial: {e}"
+                )));
+            }
+            // The library's order: BOSH when the WebSocket did not dial and
+            // config.js names one.
+            Err(e) => {
+                olc_net::debug!("jitsi: the WebSocket did not dial ({e}); BOSH instead");
+                login_bosh(&jc.bosh, cc, cfg.budget).await
+            }
+        };
+        let (conn, incoming) = login.map_err(|e| JoinError(format!("xmpp dial: {e}")))?;
         let focus = match conn.allocate_focus(cfg.budget).await {
             Ok(f) => f,
             Err(e) => {
@@ -363,6 +374,25 @@ async fn join_once(cfg: &JoinConfig, fallback: bool) -> (Result<Joined, JoinErro
         Err(_) => Err(JoinError("join muc: context deadline exceeded".into())),
     };
     (result, disc)
+}
+
+/// `dialBOSH`: the session at the URL config.js names, and the login over
+/// it. A login that fails ends the session it opened.
+async fn login_bosh(
+    url: &str,
+    cc: ConnConfig,
+    budget: Duration,
+) -> Result<(Conn, mpsc::Receiver<Incoming>), ConnError> {
+    let post = bosh::Http::new(url).map_err(|e| ConnError::Transport(format!("bosh init: {e}")))?;
+    let (tx, rx) = bosh::open(std::sync::Arc::new(post), &cc.xmpp_domain).await?;
+    let tx = std::sync::Arc::new(tx);
+    match Conn::login(tx.clone(), rx, cc, budget).await {
+        Ok(ok) => Ok(ok),
+        Err(e) => {
+            tx.close().await;
+            Err(e)
+        }
+    }
 }
 
 async fn dial_ws(url: &str, host: &str, deflate: bool) -> Result<(WsTx, WsRx), String> {
@@ -437,6 +467,8 @@ pub async fn join_muc(cfg: &JoinConfig) -> Result<Joined, JoinError> {
 pub(crate) mod tests {
     use super::*;
     use crate::stanza;
+    use crate::xmpp::bosh::{Post, REPLY_LIMIT};
+    use crate::xmpp::testing::BoshServer;
     use std::collections::VecDeque;
     use std::net::SocketAddr;
     use std::sync::{Arc, Mutex};
@@ -458,6 +490,12 @@ pub(crate) mod tests {
         pub turn: bool,
         /// Accept permessage-deflate when it is offered.
         pub deflate: bool,
+        /// The upgrade is answered 403: no WebSocket here.
+        pub refuse_ws: bool,
+        /// What serves `/http-bind`; without one it is not there.
+        pub bosh: Option<BoshServer>,
+        /// `/http-bind` answers every request with this status and body.
+        pub bosh_status: Option<(u16, &'static str)>,
     }
 
     impl Default for Opts {
@@ -466,6 +504,9 @@ pub(crate) mod tests {
                 after_join: None,
                 turn: true,
                 deflate: false,
+                refuse_ws: false,
+                bosh: None,
+                bosh_status: None,
             }
         }
     }
@@ -480,6 +521,8 @@ pub(crate) mod tests {
         pub said: Vec<Vec<String>>,
         /// Compressed frames the clients sent.
         pub compressed: usize,
+        /// The request heads of `/http-bind`, in order.
+        pub posts: Vec<String>,
     }
 
     pub(crate) struct Fake {
@@ -488,8 +531,9 @@ pub(crate) mod tests {
     }
 
     /// An HTTP and WebSocket server in one: `/config.js` answered from
-    /// `script` (a 404 once it runs out), `/xmpp-websocket` as a Prosody and
-    /// Jicofo that serve the XMPP domain `serves`.
+    /// `script` (a 404 once it runs out; `ADDR` in a body is the fake's own
+    /// address), `/xmpp-websocket` as a Prosody and Jicofo that serve the
+    /// XMPP domain `serves`, and `/http-bind` when [`Opts::bosh`] serves it.
     pub(crate) async fn fake(script: Vec<Reply>, serves: &'static str) -> Fake {
         fake_with(script, serves, Opts::default()).await
     }
@@ -507,6 +551,7 @@ pub(crate) mod tests {
                 };
                 tokio::spawn(serve(
                     sock,
+                    addr,
                     script.clone(),
                     s2.clone(),
                     serves,
@@ -531,6 +576,7 @@ pub(crate) mod tests {
 
     async fn serve(
         mut sock: TcpStream,
+        addr: SocketAddr,
         script: Arc<Mutex<VecDeque<Reply>>>,
         seen: Arc<Mutex<Seen>>,
         serves: &'static str,
@@ -544,6 +590,7 @@ pub(crate) mod tests {
                 "text/html",
                 "not found".into(),
             ));
+            let body = body.replace("ADDR", &addr.to_string());
             let resp = format!(
                 "HTTP/1.1 {status} X\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
@@ -551,7 +598,46 @@ pub(crate) mod tests {
             let _ = sock.write_all(resp.as_bytes()).await;
             return;
         }
+        if head.starts_with("POST /http-bind") {
+            let Some(bosh) = opts.bosh.clone() else {
+                return;
+            };
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("Content-Length: "))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            let mut body = vec![0u8; len];
+            if sock.read_exact(&mut body).await.is_err() {
+                return;
+            }
+            seen.lock().unwrap().posts.push(head);
+            let body = String::from_utf8_lossy(&body).into_owned();
+            let (status, answer) = match opts.bosh_status {
+                Some((status, answer)) => (status, answer.to_owned()),
+                None => match bosh.post(body, Duration::from_secs(3600)).await {
+                    Ok(answer) => (200, answer),
+                    Err(_) => return,
+                },
+            };
+            let resp = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: text/xml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                answer.len()
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+            let _ = sock.write_all(answer.as_bytes()).await;
+            return;
+        }
         if !head.starts_with("GET /xmpp-websocket") {
+            return;
+        }
+        if opts.refuse_ws {
+            seen.lock().unwrap().upgrades.push(head);
+            let _ = sock
+                .write_all(
+                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
             return;
         }
         let key = head
@@ -910,6 +996,199 @@ pub(crate) mod tests {
             &h["upgrade"],
             &["Accept-Encoding", "Sec-Websocket-Extensions"],
         );
+    }
+
+    /// config.js as docker-jitsi-meet's, and a BOSH URL: the fake's own.
+    const WITH_BOSH: &str = "var config = {};\nconfig.hosts = {};\nconfig.hosts.domain = 'meet.jitsi';\nconfig.hosts.muc = 'muc.meet.jitsi';\nconfig.bosh = 'http://ADDR/http-bind';\n";
+
+    async fn bosh_fake(config: &str, opts: Opts) -> (Fake, BoshServer) {
+        let bosh = BoshServer::new();
+        let f = fake_with(
+            vec![(200, "application/javascript", config.into())],
+            "meet.jitsi",
+            Opts {
+                bosh: Some(bosh.clone()),
+                ..opts
+            },
+        )
+        .await;
+        (f, bosh)
+    }
+
+    fn no_ws() -> Opts {
+        Opts {
+            refuse_ws: true,
+            ..Opts::default()
+        }
+    }
+
+    /// The library's order (`conn.go:148-171`): the WebSocket, and BOSH when
+    /// that does not dial and config.js names one. The join's requests are
+    /// the Go client's (`jitsi/bosh.json`), posted to the URL as config.js
+    /// gives it (no room in it), with Go's Content-Type; the User-Agent is
+    /// the one this client names on config.js and on the WebSocket, where Go
+    /// leaves its HTTP library's own.
+    #[tokio::test]
+    async fn a_websocket_that_does_not_dial_falls_to_the_bosh_config_js_names() {
+        let v = olc_interop::load("jitsi/bosh.json");
+        let (f, bosh) = bosh_fake(WITH_BOSH, no_ws()).await;
+        let j = join_muc(&quick(&f, "web.example")).await.unwrap();
+        assert_eq!(j.conn.nick(), "fedcba98");
+        assert!(!j.fell_back);
+        j.conn.leave_muc_wait(Duration::from_secs(5)).await.unwrap();
+        j.conn.close().await;
+        assert!(bosh.state().terminated);
+
+        let poll = v["poll"].as_str().unwrap();
+        let (bodies, consecutive) = bosh.normalised();
+        assert!(consecutive, "the request ids go up by one");
+        let ours: Vec<&str> = bodies
+            .iter()
+            .map(String::as_str)
+            .filter(|b| {
+                *b != poll
+                    && !b.contains("type=\"unavailable\"")
+                    && !b.contains("type=\"terminate\"")
+            })
+            .collect();
+        let want: Vec<&str> = v["sequence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap())
+            .collect();
+        assert_eq!(ours, want);
+        assert!(bosh.state().max_open <= 2, "{}", bosh.state().max_open);
+
+        let s = f.seen.lock().unwrap();
+        assert_eq!(s.upgrades.len(), 1, "the WebSocket was tried, once");
+        assert!(s.said.is_empty());
+        assert_eq!(s.posts.len(), bodies.len());
+        assert_eq!(v["path"], "/http-bind");
+        assert_eq!(v["header"]["User-Agent"][0], "Go-http-client/1.1");
+        let want_type = v["header"]["Content-Type"][0].as_str().unwrap();
+        for head in &s.posts {
+            let mut lines = head.trim_end().split("\r\n");
+            assert_eq!(lines.next(), Some("POST /http-bind HTTP/1.1"), "{head}");
+            let mut names: Vec<String> = Vec::new();
+            for l in lines {
+                let (n, said) = l.split_once(": ").unwrap();
+                match n.to_ascii_lowercase().as_str() {
+                    "content-type" => assert_eq!(said, want_type),
+                    "user-agent" => assert_eq!(said, BROWSER_USER_AGENT),
+                    "host" => assert_eq!(said, f.addr.to_string()),
+                    _ => {}
+                }
+                names.push(n.to_ascii_lowercase());
+            }
+            names.sort();
+            assert_eq!(
+                names,
+                [
+                    "connection",
+                    "content-length",
+                    "content-type",
+                    "host",
+                    "user-agent"
+                ],
+                "{head}"
+            );
+        }
+    }
+
+    /// Without a BOSH URL in config.js a refused WebSocket is the join's
+    /// failure, in the words it had, and nothing is posted.
+    #[tokio::test]
+    async fn a_websocket_that_does_not_dial_and_no_bosh_named_fails_as_before() {
+        let (f, bosh) = bosh_fake(DOCKER, no_ws()).await;
+        let e = join_muc(&quick(&f, "web.example")).await.unwrap_err();
+        assert!(
+            e.0.starts_with("jitsi join muc: xmpp dial: failed to WebSocket dial: "),
+            "{e}"
+        );
+        assert!(f.seen.lock().unwrap().posts.is_empty());
+        assert!(bosh.state().bodies.is_empty());
+    }
+
+    /// A WebSocket that dials is taken, whatever config.js names.
+    #[tokio::test]
+    async fn a_websocket_that_dials_is_taken_and_bosh_is_left_alone() {
+        let (f, bosh) = bosh_fake(WITH_BOSH, Opts::default()).await;
+        let j = join_muc(&quick(&f, "web.example")).await.unwrap();
+        assert_eq!(j.conn.nick(), "01234567");
+        let s = f.seen.lock().unwrap();
+        assert_eq!(s.upgrades.len(), 1);
+        assert!(s.said[0][0].starts_with("<open "));
+        assert!(s.posts.is_empty());
+        assert!(bosh.state().bodies.is_empty());
+    }
+
+    /// An answer is read up to a megabyte, the WebSocket's limit for a
+    /// stanza, and one byte more is the request's failure.
+    #[tokio::test]
+    async fn a_bosh_answer_is_read_up_to_a_megabyte_and_no_further() {
+        assert_eq!(REPLY_LIMIT, WS_READ_LIMIT);
+        let session = |len: usize| {
+            let head = "<body xmlns='http://jabber.org/protocol/httpbind' xmlns:stream='http://etherx.jabber.org/streams' sid='sid-0001' wait='60' pad='";
+            let tail = "'><stream:features xmlns='jabber:client'><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>ANONYMOUS</mechanism></mechanisms></stream:features></body>";
+            format!("{head}{}{tail}", "p".repeat(len - head.len() - tail.len()))
+        };
+        let (f, bosh) = bosh_fake(WITH_BOSH, no_ws()).await;
+        bosh.state().create = Some(session(REPLY_LIMIT));
+        let j = join_muc(&quick(&f, "web.example")).await.unwrap();
+        j.conn.close().await;
+
+        let (f, bosh) = bosh_fake(WITH_BOSH, no_ws()).await;
+        bosh.state().create = Some(session(REPLY_LIMIT + 1));
+        let e = join_muc(&quick(&f, "web.example")).await.unwrap_err();
+        assert_eq!(
+            e.0,
+            "jitsi join muc: xmpp dial: bosh init: response body too large"
+        );
+        assert_eq!(bosh.state().bodies.len(), 1, "nothing after the refusal");
+    }
+
+    /// An answer other than 200 is the request's failure in Go's words
+    /// (`conn.go:1239-1241`).
+    #[tokio::test]
+    async fn a_bosh_answer_other_than_200_fails_in_go_s_words() {
+        let (f, _bosh) = bosh_fake(
+            WITH_BOSH,
+            Opts {
+                bosh_status: Some((404, "<body type='terminate' condition='item-not-found'/>")),
+                ..no_ws()
+            },
+        )
+        .await;
+        let e = join_muc(&quick(&f, "web.example")).await.unwrap_err();
+        assert_eq!(
+            e.0,
+            "jitsi join muc: xmpp dial: bosh init: bosh: HTTP 404: <body type='terminate' condition='item-not-found'/>"
+        );
+        assert_eq!(f.seen.lock().unwrap().posts.len(), 1);
+    }
+
+    /// A login that fails over BOSH ends the session it opened
+    /// (`dialBOSH`: `_ = bt.Close()`), so nothing is left polling.
+    #[tokio::test]
+    async fn a_login_that_fails_over_bosh_ends_its_session() {
+        let (f, bosh) = bosh_fake(WITH_BOSH, no_ws()).await;
+        bosh.state().create = Some("<body xmlns='http://jabber.org/protocol/httpbind' sid='sid-0001' wait='60'><stream:features xmlns='jabber:client'><mechanisms xmlns='urn:ietf:params:xml:ns:xmpp-sasl'><mechanism>PLAIN</mechanism></mechanisms></stream:features></body>".into());
+        let e = join_muc(&quick(&f, "web.example")).await.unwrap_err();
+        assert_eq!(
+            e.0,
+            "jitsi join muc: xmpp dial: server does not advertise anonymous XMPP login"
+        );
+        for _ in 0..200 {
+            if bosh.state().terminated {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(bosh.state().terminated);
+        let n = bosh.state().bodies.len();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(bosh.state().bodies.len(), n, "no poll after the terminate");
     }
 
     /// PJ3 inside the join: the extension is offered, the fake takes it, and
