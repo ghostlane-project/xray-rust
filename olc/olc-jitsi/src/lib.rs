@@ -20,6 +20,8 @@ pub mod ice;
 pub mod jingle;
 pub mod join;
 pub mod link;
+#[cfg(test)]
+mod live_replay;
 pub mod nick;
 pub mod relaywin;
 pub mod room;

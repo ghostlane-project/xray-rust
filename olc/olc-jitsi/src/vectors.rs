@@ -299,6 +299,80 @@ fn the_accept_is_the_body_go_writes_from_the_answer() {
     );
 }
 
+/// W5's `V live.json`, the offer: a `session-initiate` a real Jicofo sent
+/// (docker-jitsi-meet stable-11248-3, kept as it arrived on the wire), read
+/// and written as SDP, is the SDP the Go engine's pion was given from it.
+/// The fake's offer was written from the shapes the library parses; this one
+/// has what a deployment adds: the group after the contents, a
+/// `bridge-session`, the sources as a `json-message`, a `traceparent`,
+/// `extmap-allow-mixed`, `rtcp-mux` inside the transport, a reflexive
+/// candidate with its base, AV1 and VP9, and H264's three format parameters
+/// in one `parameter`.
+#[test]
+fn a_real_jicofo_s_offer_is_the_sdp_go_gives_its_stack() {
+    use crate::jingle::parse::parse_stanza;
+    use crate::jingle::sdp::{strip_remote_sources, to_sdp};
+    let c = load("jitsi/live.json");
+    let j = parse_stanza(s(&c["initiate_xml"])).unwrap();
+    let got = same_origin(&strip_remote_sources(&to_sdp(&j)));
+    let want = same_origin(s(&c["offer_sdp"]));
+    assert_eq!(
+        got.split("\r\n").collect::<Vec<_>>(),
+        want.split("\r\n").collect::<Vec<_>>()
+    );
+}
+
+/// W5's `V live.json`, what the session keeps of that offer: the session id
+/// and the initiator the `session-accept` must name (the focus's own JID on a
+/// deployment, not the room's), the data section that makes the bridge an
+/// SCTP one, both candidates of each of the three transports (the reflexive
+/// one with its base), and no bridge WebSocket.
+#[test]
+fn a_real_jicofo_s_offer_is_kept_as_the_session_needs_it() {
+    use crate::jingle::parse::{DataChannel, Parsed};
+    let c = load("jitsi/live.json");
+    let p = Parsed::of(s(&c["initiate_xml"]));
+    assert_eq!(p.sid, "8k1vkqbdjoecd");
+    assert_eq!(p.initiator, "focus@auth.meet.jitsi/focus");
+    assert_eq!(
+        p.data_channel,
+        Some(DataChannel {
+            port: "5000".into(),
+            protocol: "webrtc-datachannel".into(),
+        })
+    );
+    assert_eq!(p.colibri_ws, "");
+    let seen: Vec<[&str; 5]> = p
+        .candidates
+        .iter()
+        .map(|c| [&c.kind, &c.ip, &c.port, &c.rel_addr, &c.rel_port].map(String::as_str))
+        .collect();
+    let two = [
+        ["host", "172.18.0.3", "10000", "", ""],
+        ["srflx", "10.1.0.229", "10000", "172.18.0.3", "10000"],
+    ];
+    assert_eq!(seen, [two, two, two].concat());
+    assert!(p.audio_sources.is_empty() && p.video_sources.is_empty());
+    let j = p.jingle.unwrap();
+    let names: Vec<&str> = j.contents.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["audio", "video", "data"]);
+}
+
+/// W5's `V live.json`, the accept: the SDP the Go engine's pion answered that
+/// offer with, written as the `session-accept`'s body, is the body Go's
+/// library wrote from it.
+#[test]
+fn the_accept_of_a_real_offer_is_the_body_go_writes() {
+    use crate::jingle::build::accept_body;
+    let c = load("jitsi/live.json");
+    let got = accept_body(s(&c["local_sdp"]));
+    let want = s(&c["accept_inner"]);
+    assert_eq!(
+        got.replace("><", ">\n<").lines().collect::<Vec<_>>(),
+        want.replace("><", ">\n<").lines().collect::<Vec<_>>()
+    );
+}
+
 /// J10's `V relaywin.json`: the window driven by Go's scripts answers as
 /// Go's does at every step: what a room check says, the marks that went out,
 /// whether the window is on and full.
