@@ -1,0 +1,42 @@
+[package]
+name = "ghostlane-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Ghostlane's one program for the desktops and the command line: a core line, or a room with a core in front of it, run from a session file, with JSON-line events on stdout"
+
+[[bin]]
+name = "ghostlane-engine"
+path = "src/main.rs"
+
+[dependencies]
+# The process's one Tokio runtime and the counting allocator, shared with the
+# olcRTC client when the rooms are built. xray-transport depends on it already.
+ghostlane-runtime = { path = "../ghostlane-runtime" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+xray-config = { path = "../xray-config" }
+xray-core-rs = { path = "../xray-core-rs" }
+xray-transport = { path = "../xray-transport" }
+# The rooms: the olcRTC client behind its app API, and the name of the DTLS
+# the build carries (`version`).
+olc-ffi = { path = "../../olc/olc-ffi" }
+olc-rtc = { path = "../../olc/olc-rtc" }
+
+[target.'cfg(unix)'.dependencies]
+# The file limit at start, and the socket options of the ways out
+# (escape_linux.rs, escape_macos.rs).
+libc.workspace = true
+
+[features]
+default = ["rooms"]
+# The room half of a session and the room one-shots. Not yet a switch: the
+# olc crates are linked whatever it says.
+rooms = []
+# The rooms' DTLS from BoringSSL (olc-ffi's `boring`). Needs cmake and
+# libclang.
+boring = ["olc-ffi/boring"]

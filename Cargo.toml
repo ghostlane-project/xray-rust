@@ -29,6 +29,7 @@ members = [
     "olc/interop/oracle-client",
     "crates/ghostlane-runtime",
     "crates/ghostlane-core",
+    "crates/ghostlane-engine",
 ]
 resolver = "2"
 # `.claude` holds agent worktrees, each a checkout with its own workspace.
