@@ -41,10 +41,13 @@ want='[XMPP_CAPS, JSON_SOURCES, RECEIVE_MULTIPLE_STREAMS, REMB, SOURCE_NAMES, ST
 room='first-[0-9a-f]+@muc\.[^/ ]+/[^ ]+'
 
 # 1. Whom Jicofo asked: the occupant each query by node was addressed to, as
-# Prosody received it (mod_stanza_debug's RECV lines; attributes in any
-# order).
+# Prosody received it (mod_stanza_debug's RECV lines). Prosody writes a
+# stanza's attributes in the order of a Lua table, which is not the same from
+# one start to the next (run 44951689810: node= ahead of xmlns=), so each
+# attribute is read wherever it stands, of the query as of the <iq>.
 asked=$(grep -a -F 'RECV: <iq ' "$prosody" |
-	grep -a -F "disco#info' node='https://jitsi.org/jitsi-meet#" |
+	grep -a -E "<query [^>]*xmlns='http://jabber\.org/protocol/disco#info'" |
+	grep -a -E "<query [^>]*node='https://jitsi\.org/jitsi-meet#" |
 	grep -a -F "type='get'" |
 	sed -n -E "s/.*RECV: <iq ([^>]* )?to='([^']*)'.*/\2/p" || true)
 [ -n "$asked" ] || die "Jicofo asked no participant for its features: nothing joined before the caps hash was known?"

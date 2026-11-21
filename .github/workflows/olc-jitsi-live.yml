@@ -116,6 +116,10 @@ jobs:
         with:
           name: olc-client
           path: ${{ runner.temp }}/bin
+      - name: the reader of what Jicofo made of the Rust client's answer, its own test
+        run: |
+          shellcheck -x -P SCRIPTDIR olc/interop/jitsi-live/first.sh olc/interop/jitsi-live/first.test.sh
+          bash olc/interop/jitsi-live/first.test.sh
       - name: the deployment
         run: bash olc/interop/jitsi-live/deploy.sh up "$RUNNER_TEMP/jitsi-live"
       # The Rust client first of all, alone in a room of its own: on a
