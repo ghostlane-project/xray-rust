@@ -565,7 +565,7 @@ mod tests {
 
     /// A carrier that gathers: it records each write it takes as the bytes
     /// of its slices in order, takes at most `cap` bytes a write, and waits
-    /// while it is closed.
+    /// while it is closed. A `plain` one does not gather.
     #[derive(Default)]
     struct Gatherer {
         writes: Writes,
@@ -577,9 +577,34 @@ mod tests {
         closed: bool,
         cap: Option<usize>,
         waiting: Option<std::task::Waker>,
+        plain: bool,
     }
 
     impl Gatherer {
+        /// A closed carrier that takes one buffer a write, as gRPC's does.
+        fn plain_and_closed() -> Self {
+            let gatherer = Self::default();
+            {
+                let mut state = gatherer.state.lock().unwrap();
+                state.plain = true;
+                state.closed = true;
+            }
+            gatherer
+        }
+
+        /// Opens the carrier and wakes the write that waits on it, as h2's
+        /// connection task does when it grants a stream capacity.
+        fn open(state: &Mutex<GatherState>) {
+            let waiting = {
+                let mut state = state.lock().unwrap();
+                state.closed = false;
+                state.waiting.take()
+            };
+            if let Some(waiting) = waiting {
+                waiting.wake();
+            }
+        }
+
         fn accept(&self, cx: &mut Context<'_>, inputs: &[&[u8]]) -> Poll<io::Result<usize>> {
             let mut state = self.state.lock().unwrap();
             if state.closed {
@@ -626,7 +651,7 @@ mod tests {
             self.accept(cx, &inputs)
         }
         fn is_write_vectored(&self) -> bool {
-            true
+            !self.state.lock().unwrap().plain
         }
         fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
@@ -697,6 +722,93 @@ mod tests {
         assert!(writes.iter().all(|write| write.len() <= 5));
         assert_eq!(writes.concat(), [HEADER, b"first payload"].concat());
         assert_eq!(writes.len(), (HEADER.len() + 13).div_ceil(5));
+    }
+
+    /// A first payload written once to a carrier that cannot take it yet,
+    /// and then only read behind: what a SOCKS inbound does with the bytes it
+    /// sniffed before the relay starts, and what gRPC's carrier is until h2's
+    /// connection task has opened the stream. The write waits with the
+    /// carrier, and once the carrier opens, header and payload leave in one
+    /// write, with no flush and no later write to carry them out.
+    #[tokio::test(start_paused = true)]
+    async fn a_first_payload_leaves_when_its_carrier_opens_without_a_flush() {
+        let gatherer = Gatherer::plain_and_closed();
+        let writes = gatherer.writes.clone();
+        let state = gatherer.state.clone();
+        let mut stream = FirstPayloadDeadline::new(
+            HeldHeader::new(Box::new(gatherer), HEADER),
+            VLESS_FIRST_PAYLOAD_WAIT,
+            flush_header_alone,
+        );
+        let opener = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Gatherer::open(&state);
+        });
+        tokio::time::timeout(STEP, stream.write_all(b"first payload"))
+            .await
+            .unwrap()
+            .unwrap();
+        let mut byte = [0; 1];
+        let read = tokio::time::timeout(VLESS_FIRST_PAYLOAD_WAIT * 2, stream.read(&mut byte)).await;
+        assert!(read.is_err());
+        opener.await.unwrap();
+        assert_eq!(
+            *writes.lock().unwrap(),
+            [[HEADER, b"first payload"].concat()],
+            "the payload left behind the header, once"
+        );
+    }
+
+    /// A first write the carrier did not take is not the stream's: the
+    /// caller may write other bytes in its place, and only those leave.
+    #[test]
+    fn a_first_payload_the_carrier_did_not_take_can_be_replaced() {
+        let gatherer = Gatherer::plain_and_closed();
+        let writes = gatherer.writes.clone();
+        let state = gatherer.state.clone();
+        let mut held = HeldHeader::new(Box::new(gatherer), HEADER);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+
+        let first = Pin::new(&mut held).poll_write(&mut cx, b"given up");
+        assert!(first.is_pending(), "the write waits with the carrier");
+        assert!(writes.lock().unwrap().is_empty());
+
+        Gatherer::open(&state);
+        let second = Pin::new(&mut held).poll_write(&mut cx, b"instead");
+        assert!(matches!(second, Poll::Ready(Ok(7))), "{second:?}");
+        assert_eq!(*writes.lock().unwrap(), [[HEADER, b"instead"].concat()]);
+        assert!(held.pending.is_empty(), "the header's copy is gone");
+    }
+
+    /// Taken a few bytes at a time, a first payload written whole leaves
+    /// behind the header in order, and each write is reported for the
+    /// payload bytes it carried and no more.
+    #[test]
+    fn a_first_payload_taken_in_pieces_is_reported_as_it_leaves() {
+        let gatherer = Gatherer::plain_and_closed();
+        let writes = gatherer.writes.clone();
+        let state = gatherer.state.clone();
+        let mut held = HeldHeader::new(Box::new(gatherer), HEADER);
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        const PAYLOAD: &[u8] = b"first payload";
+
+        assert!(Pin::new(&mut held)
+            .poll_write(&mut cx, PAYLOAD)
+            .is_pending());
+        state.lock().unwrap().cap = Some(5);
+        Gatherer::open(&state);
+        let mut sent = 0;
+        while sent < PAYLOAD.len() {
+            match Pin::new(&mut held).poll_write(&mut cx, &PAYLOAD[sent..]) {
+                Poll::Ready(Ok(len)) => sent += len,
+                other => panic!("the carrier takes every write: {other:?}"),
+            }
+        }
+        assert_eq!(sent, PAYLOAD.len());
+        assert!(held.pending.is_empty(), "the header's copy is gone");
+        let writes = writes.lock().unwrap().clone();
+        assert!(writes.iter().all(|write| write.len() <= 5));
+        assert_eq!(writes.concat(), [HEADER, PAYLOAD].concat());
     }
 
     /// Over a carrier that gathers, Vision's first padded frame leaves
