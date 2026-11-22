@@ -319,7 +319,11 @@ fn recv_original(
     msg.msg_iov = &mut iov;
     msg.msg_iovlen = 1;
     msg.msg_control = control.as_mut_ptr().cast();
-    msg.msg_controllen = mem::size_of_val(&control);
+    // msg_controllen and cmsg_len are size_t on glibc and socklen_t on musl.
+    #[allow(clippy::unnecessary_cast)]
+    {
+        msg.msg_controllen = mem::size_of_val(&control) as _;
+    }
     // SAFETY: every output pointer refers to the live writable allocation above.
     let len = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut msg, libc::MSG_DONTWAIT) };
     if len < 0 {
@@ -343,7 +347,9 @@ fn recv_original(
         while !cmsg.is_null() {
             let header = &*cmsg;
             let size = libc::CMSG_LEN(0) as usize;
-            if header.cmsg_len < size {
+            #[allow(clippy::unnecessary_cast)]
+            let cmsg_len = header.cmsg_len as usize;
+            if cmsg_len < size {
                 break;
             }
             if (header.cmsg_level == libc::IPPROTO_IP && header.cmsg_type == libc::IP_ORIGDSTADDR)
@@ -352,7 +358,7 @@ fn recv_original(
             {
                 destination = Some(decode_address(
                     libc::CMSG_DATA(cmsg).cast(),
-                    header.cmsg_len - size,
+                    cmsg_len - size,
                 )?);
             }
             cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
