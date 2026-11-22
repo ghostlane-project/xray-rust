@@ -513,10 +513,20 @@ async fn tcp_by_name(
     Ok(())
 }
 
-/// A datagram through `proxy` to the UDP echo at `target` and back.
-async fn udp_round_trip(proxy: SocketAddr, target: SocketAddr) -> io::Result<()> {
-    let mut control = greet(proxy, &Login::None).await?;
-    control.write_all(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+/// A datagram through `proxy` to the UDP echo at `target` and back. The
+/// association names the address the datagrams come from: an inbound with a
+/// login pins it there, and refuses one that names no port.
+async fn udp_round_trip(
+    proxy: SocketAddr,
+    login: &Login<'_>,
+    target: SocketAddr,
+) -> io::Result<()> {
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let mut control = greet(proxy, login).await?;
+    let mut associate = vec![5, 3, 0, 1];
+    associate.extend_from_slice(&Ipv4Addr::LOCALHOST.octets());
+    associate.extend_from_slice(&socket.local_addr()?.port().to_be_bytes());
+    control.write_all(&associate).await?;
     let mut reply = [0_u8; 10];
     control.read_exact(&mut reply).await?;
     assert_eq!(reply[..4], [5, 0, 0, 1], "the association, on IPv4");
@@ -530,7 +540,6 @@ async fn udp_round_trip(proxy: SocketAddr, target: SocketAddr) -> io::Result<()>
     let SocketAddr::V4(target) = target else {
         unreachable!("the echo is on IPv4 loopback")
     };
-    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let mut datagram = vec![0, 0, 0, 1];
     datagram.extend_from_slice(&target.ip().octets());
     datagram.extend_from_slice(&target.port().to_be_bytes());
@@ -587,7 +596,7 @@ async fn the_front_carries_tcp_and_a_datagram_to_the_room_and_one_name_direct() 
         "it reached its target without the room"
     );
 
-    timeout(SOON, udp_round_trip(own, echoes.udp))
+    timeout(SOON, udp_round_trip(own, &Login::None, echoes.udp))
         .await
         .expect("UDP by the room: no answer")
         .unwrap();
@@ -602,7 +611,7 @@ async fn the_front_carries_tcp_and_a_datagram_to_the_room_and_one_name_direct() 
 
 /// A LAN inbound beside the session's own: a client with no login, or with
 /// a wrong one, cannot use it, and nothing it asks reaches the room; with
-/// the login, it rides the same rules to the room.
+/// the login, its TCP and its datagrams ride the same rules to the room.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_lan_inbound_refuses_a_client_with_no_login() {
     let echoes = Echoes::start().await;
@@ -657,6 +666,19 @@ async fn a_lan_inbound_refuses_a_client_with_no_login() {
     assert_eq!(
         room.asked(),
         [format!("tcp room.test:{}", echoes.tcp.port())]
+    );
+    timeout(
+        SOON,
+        udp_round_trip(lan, &Login::Password(LAN_USER, LAN_PASS), echoes.udp),
+    )
+    .await
+    .expect("UDP from the LAN: no answer")
+    .unwrap();
+    assert_eq!(
+        room.asked().last(),
+        Some(&format!("udp 127.0.0.1:{}", echoes.udp.port())),
+        "the datagram went by the room: {:?}",
+        room.asked()
     );
     line.stop().await.unwrap();
 }

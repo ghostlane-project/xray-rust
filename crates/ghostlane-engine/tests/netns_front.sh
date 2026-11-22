@@ -458,14 +458,19 @@ def fetch(proxy, host, path, login=None, within=20):
 
 
 def datagram(proxy, host, port, login=None, within=20):
-    """PAYLOAD to host:port through the SOCKS5 proxy's UDP relay: what came back, or why nothing."""
+    """PAYLOAD to host:port through the SOCKS5 proxy's UDP relay: what came back, or why nothing.
+
+    The association names the port the datagrams come from: an inbound with
+    a login pins its association to that port and refuses one that names no
+    port (the core's rule, as only the TCP peer's address is known)."""
     try:
         control = greet(proxy, login, within)
     except (OSError, EOFError, Refused) as error:
         return "%s: %s" % (type(error).__name__, error)
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        control.sendall(b"\x05\x03\x00\x01\x00\x00\x00\x00\x00\x00")
+        udp.bind(("0.0.0.0", 0))
+        control.sendall(b"\x05\x03\x00\x01\x00\x00\x00\x00" + struct.pack(">H", udp.getsockname()[1]))
         code, relay, relay_port = reply(control)
         if code != 0:
             return "UDP ASSOCIATE answered %d" % code
