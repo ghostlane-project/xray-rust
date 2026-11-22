@@ -42,9 +42,13 @@ pub(super) const SHADOWSOCKS_2022_FIRST_PAYLOAD_WAIT: Duration = Duration::ZERO;
 ///
 /// A first payload written vectored to a carrier that gathers goes behind
 /// the header as slices of its own, the same bytes in the same write, and
-/// is not copied: until the carrier takes it, the write waits and nothing
-/// of it is held here. Vision writes its padded frames so. A first payload
-/// written whole is copied behind the header and taken at once, as before.
+/// is not copied. Vision writes its padded frames so. A first payload
+/// written whole is copied behind the header for each try. Either way the
+/// write waits until the carrier takes it and reports only what it took:
+/// a writer that writes once and then waits for an answer, as a sniffing
+/// inbound does with a client's request, never flushes, so a payload held
+/// here would wait for the client to give up. A gRPC carrier cannot take
+/// the first write on a stream its connection has not opened yet.
 pub(super) struct HeldHeader {
     inner: BoxedTransportStream,
     pending: Zeroizing<Vec<u8>>,
@@ -80,6 +84,33 @@ impl HeldHeader {
         // Wipe the header copy as soon as it has been handed over.
         self.pending = Zeroizing::new(Vec::new());
         self.pending_pos = 0;
+    }
+
+    /// The first payload behind what is left of the header, in one write.
+    /// A carrier that cannot take it yet keeps the write waiting, and the
+    /// payload stays the writer's: the next try may differ. The copy is made
+    /// again for each try, the same bytes for the same input, as a carrier
+    /// that frames a write it has started expects.
+    fn poll_write_merged(&mut self, cx: &mut Context<'_>, input: &[u8]) -> Poll<io::Result<usize>> {
+        loop {
+            let header_len = self.pending.len() - self.pending_pos;
+            if header_len == 0 {
+                self.merge_done();
+                return Pin::new(&mut *self.inner).poll_write(cx, input);
+            }
+            let mut merged = Zeroizing::new(Vec::with_capacity(header_len + input.len()));
+            merged.extend_from_slice(&self.pending[self.pending_pos..]);
+            merged.extend_from_slice(input);
+            let written = ready!(Pin::new(&mut *self.inner).poll_write(cx, &merged))?;
+            if written == 0 {
+                return Poll::Ready(Err(io::ErrorKind::WriteZero.into()));
+            }
+            if written > header_len {
+                self.merge_done();
+                return Poll::Ready(Ok(written - header_len));
+            }
+            self.pending_pos += written;
+        }
     }
 
     fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -123,14 +154,7 @@ impl AsyncWrite for HeldHeader {
             return Poll::Ready(Ok(input.len()));
         }
         if !this.merged && !input.is_empty() {
-            this.merged = true;
-            this.pending.extend_from_slice(input);
-            // The payload is owned now; a pending carrier finishes it on the
-            // next write or flush.
-            if let Poll::Ready(Err(error)) = this.poll_drain(cx) {
-                return Poll::Ready(Err(error));
-            }
-            return Poll::Ready(Ok(input.len()));
+            return this.poll_write_merged(cx, input);
         }
         ready!(this.poll_drain(cx))?;
         Pin::new(&mut *this.inner).poll_write(cx, input)
