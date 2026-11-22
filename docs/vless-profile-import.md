@@ -64,7 +64,10 @@ stricter:
 
 - Cleartext VLESS over XHTTP to a public address is refused; over RAW and the
   framed carriers it imports for a private destination.
-- `allowInsecure=1` is refused on every carrier, XHTTP included.
+- `allowInsecure=1` is refused on every carrier, XHTTP included. The SDK
+  importers write `allowInsecure: true` for it on XHTTP with
+  `encryption=none`, and the core then does not check that line's
+  certificate, with a parse warning.
 - TLS gets no default `fp`: Xray-core then uses its own TLS stack, where the
   SDK importers write `chrome`.
 - XHTTP with `alpn=h3` needs the `fm` acknowledgement above.

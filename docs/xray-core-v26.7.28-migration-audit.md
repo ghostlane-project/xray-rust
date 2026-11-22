@@ -155,9 +155,12 @@ summaries.
 `allowInsecure: true` is now a configuration error, and
 `verifyPeerCertInNames` and `echForceQuery` are gone. Target-tag oracle and
 benchmark configs must use a real trust chain or `pinnedPeerCertSha256` and
-must not depend on these fields. xray-rust now rejects canonical
-`allowInsecure: true` at its exact JSON path. Legacy importer output carrying
-that flag is rejected too; there is no implicit host-policy exception.
+must not depend on these fields. xray-rust keeps `allowInsecure: true` only as
+an explicit opt-in: on a VLESS, Trojan, VMess, Hysteria, MASQUE or DNS outbound
+it waives the certificate check, and the parse warns at its exact JSON path,
+naming the outbound and its server. Importer output carrying the flag is taken
+the same way. Elsewhere it is refused at that path, a pin or a verification
+name beside it still verifies, and a config without it verifies as before.
 
 [A CA certificate pin now requires a valid server name](https://github.com/XTLS/Xray-core/commit/64fada32b5b9e6ae064a038fa0e4e2b766499bd5).
 The supported `pinnedPeerCertSha256` slice hashes the whole DER certificate,

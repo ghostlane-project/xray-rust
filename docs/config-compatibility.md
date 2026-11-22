@@ -1088,9 +1088,10 @@ TCP transport to `raw` and XHTTP from `splithttp`; both pairs are accepted alias
 
 - `none`;
 - `tls`, with `serverName`, `fingerprint`, `alpn`, and
-  `pinnedPeerCertSha256` and `verifyPeerCertByName`; `allowInsecure` may be
-  absent, `null`, or `false`, while `true` is a hard error matching Xray-core
-  v26.7.28;
+  `pinnedPeerCertSha256` and `verifyPeerCertByName`; `allowInsecure` absent,
+  `null` or `false` verifies as Xray-core v26.7.28 does, while `true`, which
+  that version refuses, waives the certificate check where the TLS section
+  below says;
 - `reality`, with `serverName`, a supported `fingerprint`, base64url
   `publicKey`, hexadecimal `shortId`, optional `spiderX`, and optional
   `mldsa65Verify`. `spiderX` is the path crawled when the server answers
@@ -1167,9 +1168,15 @@ IP literals match IP SANs rather than DNS SANs.
 
 The TLS slice deliberately does not implement the `fromMitm` sentinel, ECH,
 custom certificate stores, or removed chain/SPKI pin fields. They are rejected
-with a path-aware error instead of being ignored. The programmatic
-`allow_insecure` model field exists only for hermetic local tests and cannot be
-produced by canonical JSON parsing.
+with a path-aware error instead of being ignored. `allowInsecure: true`, which
+Xray-core v26.7.28 refuses, is kept as an explicit opt-in: on a VLESS, Trojan,
+VMess, Hysteria, MASQUE or DNS outbound it waives the certificate check (chain,
+name and dates; the handshake signature is still checked), and the parse warns
+at its path, naming the outbound and its server. It has no effect beside
+`pinnedPeerCertSha256` or `verifyPeerCertByName`, which check the certificate
+instead, and it is refused on Shadowsocks, SOCKS and HTTP outbounds, in an
+XHTTP `downloadSettings` and in a realm mask's `tlsConfig`. REALITY never reads
+it, and the hello's server name and ALPN are the same with it or without it.
 
 ### Freedom outbound
 
