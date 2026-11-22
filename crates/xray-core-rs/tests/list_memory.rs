@@ -147,7 +147,10 @@ fn the_heap_of_81k_names_and_25k_prefixes_read_through_ext() {
     let names_rule = json!({"domain": ["ext:names.dat:blocked"]});
     let prefixes_rule = json!({"ip": ["ext:prefixes.dat:blocked"]});
 
-    let names = load(&fixture.dir, &config(&[names_rule.clone()], false));
+    let names = load(
+        &fixture.dir,
+        &config(std::slice::from_ref(&names_rule), false),
+    );
     report("names in a routing rule", &names, NAMES);
     {
         let rule = &names.parsed.config.routing.rules[0];
@@ -170,7 +173,10 @@ fn the_heap_of_81k_names_and_25k_prefixes_read_through_ext() {
     let names_held = names.held;
     drop(names);
 
-    let prefixes = load(&fixture.dir, &config(&[prefixes_rule.clone()], false));
+    let prefixes = load(
+        &fixture.dir,
+        &config(std::slice::from_ref(&prefixes_rule), false),
+    );
     report("prefixes in a routing rule", &prefixes, PREFIXES);
     {
         let rule = &prefixes.parsed.config.routing.rules[0];
