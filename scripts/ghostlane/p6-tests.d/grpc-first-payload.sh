@@ -75,7 +75,7 @@ official_xray() {
     tmp="$(mktemp -d)"
     servers="$(fetch_xray "$tmp")" || return 1
     out="$tmp/run.log"
-    XRAY_SERVERS="$servers" GRPC_FIRST_PAYLOAD_ROUNDS=6 GRPC_FIRST_PAYLOAD_FLOWS=3 \
+    XRAY_SERVERS="$servers" GRPC_FIRST_PAYLOAD_ROUNDS=50 GRPC_FIRST_PAYLOAD_FLOWS=4 \
         cargo test --locked -p xray-core-rs --test grpc_first_payload_tests -- --ignored --nocapture \
         > "$out" 2>&1 || status=$?
     cat "$out"

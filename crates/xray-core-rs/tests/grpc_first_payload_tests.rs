@@ -32,7 +32,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use xray_config::parse_xray_json;
-use xray_core_rs::Core;
+use xray_core_rs::{Core, RuntimeLogConfig, RuntimeLogger};
 
 const UUID: &str = "11111111-1111-1111-1111-111111111111";
 const SERVICE_NAME: &str = "media/sync";
@@ -113,12 +113,31 @@ async fn flow(socks: SocketAddr, answer: &[u8]) -> Flow {
     if stream.write_all(REQUEST).await.is_err() {
         return Flow::Failed;
     }
+    let written_at = clock();
     let mut read = vec![0; answer.len()];
     match timeout(ANSWER_WITHIN, stream.read_exact(&mut read)).await {
-        Err(_) => Flow::Held,
+        Err(_) => {
+            eprintln!("held: a request written at {written_at} UTC had no answer");
+            Flow::Held
+        }
         Ok(Ok(_)) if read == answer => Flow::Answered,
         Ok(_) => Flow::Failed,
     }
+}
+
+/// The time of day, UTC, as Xray's log writes it on a runner.
+fn clock() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let secs = now.as_secs() % 86_400;
+    format!(
+        "{:02}:{:02}:{:02}.{:06}",
+        secs / 3600,
+        secs / 60 % 60,
+        secs % 60,
+        now.subsec_micros()
+    )
 }
 
 /// The line as the app's builder dumps it for a SOCKS inbound: sniffing with
@@ -159,18 +178,24 @@ fn xhttp(security: Value, mode: &str) -> Value {
     stream
 }
 
-async fn start(config: &Value) -> Core {
-    let parsed = parse_xray_json(&config.to_string())
-        .unwrap_or_else(|error| panic!("{config} must parse: {:?}", error.diagnostics));
-    let mut core = Core::new(parsed.config).expect("the core takes the config");
-    core.start().await.expect("the core starts");
-    core
-}
-
 /// `flows` flows, one after another, through a core of their own: the first
-/// opens its connection, the rest ride it. Returns how each went.
-async fn flows_through_one_core(line: &Value, flows: usize, answer: &[u8]) -> Vec<Flow> {
-    let mut core = start(line).await;
+/// opens its connection, the rest ride it. Returns how each went. With `log`,
+/// the core writes its runtime log there, every severity.
+async fn flows_through_one_core(
+    line: &Value,
+    flows: usize,
+    answer: &[u8],
+    log: Option<&Path>,
+) -> Vec<Flow> {
+    let parsed = parse_xray_json(&line.to_string())
+        .unwrap_or_else(|error| panic!("{line} must parse: {:?}", error.diagnostics));
+    let mut core = Core::new(parsed.config).expect("the core takes the config");
+    if let Some(log) = log {
+        core.set_runtime_logger(
+            RuntimeLogger::new(RuntimeLogConfig::directory(log)).expect("the log opens"),
+        );
+    }
+    core.start().await.expect("the core starts");
     let socks = core
         .inbound_addr(Some("in"))
         .expect("the SOCKS inbound is bound");
@@ -318,7 +343,7 @@ const PAGE: &[u8] = b"page";
 async fn a_request_written_once_is_answered_on_a_current_thread_runtime() {
     let answer = page_response(PAGE);
     let (server, _server) = grpc_vless_server(answer.clone()).await;
-    let outcomes = flows_through_one_core(&line(server, grpc(json!({}))), 3, &answer).await;
+    let outcomes = flows_through_one_core(&line(server, grpc(json!({}))), 3, &answer, None).await;
     assert_eq!(outcomes, [Flow::Answered; 3]);
 }
 
@@ -332,7 +357,7 @@ async fn requests_written_once_are_answered_on_one_connection() {
     let client = line(server, grpc(json!({})));
     let mut outcomes = Vec::new();
     for _ in 0..3 {
-        outcomes.extend(flows_through_one_core(&client, 20, &answer).await);
+        outcomes.extend(flows_through_one_core(&client, 20, &answer, None).await);
     }
     let held = outcomes
         .iter()
@@ -501,17 +526,20 @@ async fn official_server(
             return (server, addr);
         }
         if let Ok(Some(status)) = server.child.try_wait() {
-            panic!("{xray} exited at start ({status}):\n{}", tail(&server.log));
+            panic!(
+                "{xray} exited at start ({status}):\n{}",
+                tail(&server.log, 20)
+            );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("{xray} did not listen:\n{}", tail(&server.log));
+    panic!("{xray} did not listen:\n{}", tail(&server.log, 20));
 }
 
-fn tail(path: &Path) -> String {
+fn tail(path: &Path, lines: usize) -> String {
     let text = std::fs::read_to_string(path).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    lines[lines.len().saturating_sub(20)..].join("\n")
+    let all: Vec<&str> = text.lines().collect();
+    all[all.len().saturating_sub(lines)..].join("\n")
 }
 
 fn count(name: &str, default: usize) -> usize {
@@ -569,12 +597,18 @@ async fn requests_written_once_are_answered_by_official_xray_over_reality() {
             let client = line(addr, client_stream.clone());
             let (mut first, mut later) = ((0, 0), (0, 0));
             let mut other = 0;
-            for _ in 0..rounds {
-                for (at, outcome) in flows_through_one_core(&client, flows, &answer)
-                    .await
-                    .into_iter()
-                    .enumerate()
-                {
+            for round in 0..rounds {
+                let log = dir.join(format!("client-{version}-{name}-{round}"));
+                let outcomes = flows_through_one_core(&client, flows, &answer, Some(&log)).await;
+                if outcomes.iter().all(|outcome| *outcome == Flow::Answered) {
+                    let _ = std::fs::remove_dir_all(&log);
+                } else {
+                    eprintln!(
+                        "{version} {name} round {round}: {outcomes:?}; the client's log (end):\n{}",
+                        tail(&log.join("xray-error.log"), 60)
+                    );
+                }
+                for (at, outcome) in outcomes.into_iter().enumerate() {
                     let tally = if at == 0 { &mut first } else { &mut later };
                     tally.1 += 1;
                     match outcome {
@@ -594,12 +628,22 @@ async fn requests_written_once_are_answered_by_official_xray_over_reality() {
                 later.1
             );
             if first.0 + later.0 + other > 0 {
-                eprintln!("{version} {name} server log (end):\n{}", tail(&server.log));
+                eprintln!(
+                    "{version} {name} server log (end):\n{}",
+                    tail(&server.log, 20)
+                );
                 not_answered.push(format!("{version} {name}"));
             }
         }
     }
-    let _ = std::fs::remove_dir_all(&dir);
+    if not_answered.is_empty() {
+        let _ = std::fs::remove_dir_all(&dir);
+    } else {
+        eprintln!(
+            "the servers' and clients' logs are kept in {}",
+            dir.display()
+        );
+    }
     assert!(
         not_answered.is_empty(),
         "flows were not answered on {not_answered:?}"
