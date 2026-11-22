@@ -22,6 +22,7 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -406,9 +407,27 @@ fn openssl(args: &str) {
     );
 }
 
+/// What a REALITY server borrows its handshake from, and how many of the
+/// handshakes made with it have begun and how many have ended.
+struct Site {
+    addr: SocketAddr,
+    begun: Arc<AtomicUsize>,
+    ended: Arc<AtomicUsize>,
+    _task: Task,
+}
+
+impl Site {
+    /// The handshakes begun so far, and whether every one of them has ended.
+    fn handshakes(&self) -> (usize, bool) {
+        let ended = self.ended.load(Ordering::SeqCst);
+        let begun = self.begun.load(Ordering::SeqCst);
+        (begun, ended == begun)
+    }
+}
+
 /// What a REALITY server borrows its handshake from, as a real site answers:
 /// TLS 1.3, h2 offered, an RSA certificate larger than the server's own.
-async fn reality_site(dir: &Path) -> (SocketAddr, Task) {
+async fn reality_site(dir: &Path) -> Site {
     let file = |name: &str| dir.join(name).to_str().unwrap().to_owned();
     let (key_pem, crt_pem) = (file("site.key.pem"), file("site.crt.pem"));
     let (key_der, crt_der) = (file("site.key.der"), file("site.crt.der"));
@@ -434,13 +453,17 @@ async fn reality_site(dir: &Path) -> (SocketAddr, Task) {
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let (begun, ended) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let counts = (Arc::clone(&begun), Arc::clone(&ended));
     let task = tokio::spawn(async move {
         while let Ok((socket, _)) = listener.accept().await {
             let acceptor = acceptor.clone();
+            counts.0.fetch_add(1, Ordering::SeqCst);
+            let ended = Arc::clone(&counts.1);
             tokio::spawn(async move {
-                let Ok(Ok(mut tls)) =
-                    timeout(Duration::from_secs(15), acceptor.accept(socket)).await
-                else {
+                let accepted = timeout(Duration::from_secs(15), acceptor.accept(socket)).await;
+                ended.fetch_add(1, Ordering::SeqCst);
+                let Ok(Ok(mut tls)) = accepted else {
                     return;
                 };
                 let mut buffer = [0; 4096];
@@ -448,7 +471,12 @@ async fn reality_site(dir: &Path) -> (SocketAddr, Task) {
             });
         }
     });
-    (addr, Task(task))
+    Site {
+        addr,
+        begun,
+        ended,
+        _task: Task(task),
+    }
 }
 
 /// The page the Xray servers' freedom outbound redirects every flow to.
@@ -477,19 +505,20 @@ async fn page_server(answer: Vec<u8>) -> (SocketAddr, Task) {
 }
 
 /// An official Xray server: VLESS over `stream` over REALITY, its freedom
-/// outbound sending every flow to the page.
+/// outbound sending every flow to the page. Returned once it listens and its
+/// REALITY has learnt its target (see [`await_target_learnt`]).
 async fn official_server(
     xray: &str,
     dir: &Path,
     stream: Value,
-    site: SocketAddr,
+    site: &Site,
     page: SocketAddr,
 ) -> (Server, SocketAddr) {
     let port = free_port();
     let mut stream = stream;
     stream["security"] = json!("reality");
     stream["realitySettings"] = json!({
-        "dest": site.to_string(),
+        "dest": site.addr.to_string(),
         "serverNames": [REALITY_SERVER_NAME],
         "privateKey": REALITY_PRIVATE_KEY,
         "shortIds": [REALITY_SHORT_ID]
@@ -511,6 +540,7 @@ async fn official_server(
     });
     let path = dir.join(format!("server-{port}.json"));
     std::fs::write(&path, config.to_string()).unwrap();
+    let (before, _) = site.handshakes();
     let log = dir.join(format!("server-{port}.log"));
     let child = Command::new(xray)
         .args(["run", "-config"])
@@ -523,6 +553,7 @@ async fn official_server(
     let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     for _ in 0..150 {
         if TcpStream::connect(addr).await.is_ok() {
+            await_target_learnt(&server, site, before).await;
             return (server, addr);
         }
         if let Ok(Some(status)) = server.child.try_wait() {
@@ -534,6 +565,44 @@ async fn official_server(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     panic!("{xray} did not listen:\n{}", tail(&server.log, 20));
+}
+
+/// How long a started server may take to learn its target.
+const TARGET_LEARNT_WITHIN: Duration = Duration::from_secs(10);
+
+/// Waits until the REALITY server that `site` serves as a target has learnt
+/// it: until the handshakes it made with `site` since it was started (there
+/// were `before` handshakes then) have all ended.
+///
+/// An official server, as it starts, makes handshakes of its own with its
+/// target, six with this stand-in, which refuses none but whose certificate
+/// they do not accept; the last end about a second later. Over a client
+/// whose REALITY handshake comes before they have ended, the server sends
+/// nothing more for five seconds: no record, so no HTTP/2 SETTINGS either,
+/// though the client wrote and flushed every frame of its flow at once. That
+/// held the first flow of about a third of the runs, the first after a
+/// process started, when this stand-in's first handshakes are slow. It is the
+/// server's start, not the line under test, so the flows wait for it.
+async fn await_target_learnt(server: &Server, site: &Site, before: usize) {
+    let started = tokio::time::Instant::now();
+    loop {
+        let (begun, all_ended) = site.handshakes();
+        if begun > before && all_ended {
+            // Ended for a moment between two of them is not learnt.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            if site.handshakes() == (begun, true) {
+                return;
+            }
+            continue;
+        }
+        assert!(
+            started.elapsed() < TARGET_LEARNT_WITHIN,
+            "the server did not learn its target within {TARGET_LEARNT_WITHIN:?} \
+             ({begun} handshakes begun since it started, all ended: {all_ended}):\n{}",
+            tail(&server.log, 20)
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 fn tail(path: &Path, lines: usize) -> String {
@@ -569,7 +638,7 @@ async fn requests_written_once_are_answered_by_official_xray_over_reality() {
 
     let body: Vec<u8> = (0..64 * 1024).map(|at| (at % 251) as u8).collect();
     let answer = page_response(&body);
-    let (site, _site) = reality_site(&dir).await;
+    let site = reality_site(&dir).await;
     let (page, _page) = page_server(answer.clone()).await;
     let reality = json!({
         "security": "reality",
@@ -593,7 +662,7 @@ async fn requests_written_once_are_answered_by_official_xray_over_reality() {
         let (version, xray) = entry.split_once('=').expect("<version>=<path to xray>");
         for (name, server_stream, client_stream) in &lines {
             let (server, addr) =
-                official_server(xray, &dir, server_stream.clone(), site, page).await;
+                official_server(xray, &dir, server_stream.clone(), &site, page).await;
             let client = line(addr, client_stream.clone());
             let (mut first, mut later) = ((0, 0), (0, 0));
             let mut other = 0;
