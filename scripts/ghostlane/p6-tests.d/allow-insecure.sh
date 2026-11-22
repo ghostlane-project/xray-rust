@@ -11,7 +11,8 @@
 #                      the flag, carried with it, the same server name and
 #                      ALPN either way, a pin or a verification name beside it
 #                      still verifying (xray-transport's allow_insecure_tests);
-#                      the same from a parsed config through a running core,
+#                      the same from a parsed config through a running core
+#                      (VLESS, Trojan and VMess over TCP TLS, Hysteria 2),
 #                      the parse warning naming the outbound and its server,
 #                      and a REALITY line that does not read the flag
 #                      (xray-core-rs's allow_insecure_tests); the Hysteria

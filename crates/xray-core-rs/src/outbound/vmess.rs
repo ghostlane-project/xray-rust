@@ -18,9 +18,6 @@ impl VmessOutbound {
         let OutboundSettings::Vmess(settings) = &config.settings else {
             return Err(CoreError::NoSupportedOutbound);
         };
-        if matches!(&config.stream.security, StreamSecurity::Tls(tls) if tls.allow_insecure) {
-            return Err(CoreError::UnsupportedOutboundSecurity);
-        }
         let carrier = StreamCarrier::new(
             &config.stream,
             &settings.server,

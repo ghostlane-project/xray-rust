@@ -1694,16 +1694,14 @@ impl Parser<'_> {
         let path = format!("$.outbounds[{index}].streamSettings.tlsSettings.allowInsecure");
         let server = match settings {
             OutboundSettings::Vless(vless) => Some((&vless.server, vless.port)),
+            OutboundSettings::Trojan(trojan) => Some((&trojan.server, trojan.port)),
+            OutboundSettings::Vmess(vmess) => Some((&vmess.server, vmess.port)),
             OutboundSettings::Hysteria(hysteria) => Some((&hysteria.server, hysteria.port)),
             OutboundSettings::Masque(masque) => Some((&masque.server, masque.port)),
-            OutboundSettings::Trojan(_)
-            | OutboundSettings::Vmess(_)
-            | OutboundSettings::Shadowsocks2022(_)
+            OutboundSettings::Shadowsocks2022(_)
             | OutboundSettings::Socks(_)
             | OutboundSettings::Http(_) => {
                 let protocol = match settings {
-                    OutboundSettings::Trojan(_) => "trojan",
-                    OutboundSettings::Vmess(_) => "vmess",
                     OutboundSettings::Shadowsocks2022(_) => "shadowsocks",
                     OutboundSettings::Socks(_) => "socks",
                     _ => "http",
