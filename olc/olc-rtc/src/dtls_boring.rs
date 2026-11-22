@@ -166,6 +166,9 @@ pub fn chrome_certificate() -> Result<DtlsCert, boring::error::ErrorStack> {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let day = 24 * 3600;
+    // libc marks time_t deprecated on musl (its width there follows the musl
+    // release); Asn1Time::from_unix takes it as it is.
+    #[allow(deprecated)]
     let at = |secs: u64| libc::time_t::try_from(secs).unwrap_or(libc::time_t::MAX);
     let not_before = Asn1Time::from_unix(at(now.saturating_sub(day)))?;
     let not_after = Asn1Time::from_unix(at(now + 30 * day))?;
