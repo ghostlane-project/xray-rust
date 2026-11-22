@@ -1347,6 +1347,7 @@ dependencies = [
  "ghostlane-runtime",
  "libc",
  "olc-ffi",
+ "olc-net",
  "olc-rtc",
  "serde",
  "serde_json",

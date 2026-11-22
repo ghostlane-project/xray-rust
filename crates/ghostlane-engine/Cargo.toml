@@ -26,6 +26,9 @@ xray-transport = { path = "../xray-transport" }
 # The rooms: the olcRTC client behind its app API, and the name of the DTLS
 # the build carries (`version`).
 olc-ffi = { path = "../../olc/olc-ffi", optional = true }
+# The room's sockets are protected through olc-net's peer-aware setter, so
+# the escape can leave a loopback peer unbound (olc-ffi's setter drops it).
+olc-net = { path = "../../olc/olc-net", optional = true }
 olc-rtc = { path = "../../olc/olc-rtc", optional = true }
 
 [target.'cfg(unix)'.dependencies]
@@ -38,7 +41,7 @@ default = ["rooms"]
 # The room half of a session and the room one-shots. Off, no olc crate is
 # built: the olc crates do not compile for Windows yet, and the engine without
 # rooms is what a Windows build gets first.
-rooms = ["dep:olc-ffi", "dep:olc-rtc"]
+rooms = ["dep:olc-ffi", "dep:olc-net", "dep:olc-rtc"]
 # The rooms' DTLS from BoringSSL (olc-ffi's `boring`); the shipped engine is
 # built with it. Needs cmake and libclang.
 boring = ["rooms", "olc-ffi/boring"]
