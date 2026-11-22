@@ -1,16 +1,16 @@
 //! `allowInsecure: true` from a parsed config, through a running core, to
-//! self-signed servers on loopback: a VLESS line over TCP TLS and a
-//! Hysteria 2 line with no pin are refused without the flag, as before, and
-//! carried with it, and the parse that carries it warns naming the outbound
-//! and its server. A pin beside the flag still verifies, and a REALITY line
-//! never reads the flag.
+//! self-signed servers on loopback: VLESS, Trojan and VMess lines over TCP
+//! TLS and a Hysteria 2 line with no pin are refused without the flag, as
+//! before, and carried with it, and the parse that carries it warns naming
+//! the outbound and its server. A pin beside the flag still verifies, and a
+//! REALITY line never reads the flag.
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha224, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -21,6 +21,7 @@ use xray_core_rs::Core;
 const DEADLINE: Duration = Duration::from_secs(10);
 const UUID: &str = "00010203-0405-0607-0809-0a0b0c0d0e0f";
 const UUID_BYTES: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const PASSWORD: &str = "a loopback trojan password";
 const FLAG: &str = "$.outbounds[0].streamSettings.tlsSettings.allowInsecure";
 
 /// Aborts its task when dropped, so a failed assertion leaves no server.
@@ -78,14 +79,28 @@ fn server_config(
 enum Reached {
     /// The TLS handshake failed: the client refused the certificate.
     Refused,
-    /// A VLESS request with the configured user arrived over TLS.
+    /// The line's request arrived over TLS.
     Request,
 }
 
-/// A VLESS server over TLS on loopback: it reads the request header, answers
-/// it and echoes what follows.
-async fn vless_tls_server(
+/// The line a server on loopback speaks inside its TLS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Line {
+    /// A VLESS request with the configured user, answered; then an echo.
+    Vless,
+    /// A Trojan request with the configured password; then an echo, since
+    /// Trojan answers nothing.
+    Trojan,
+    /// The first 16 bytes of a VMess request, its authentication id, which
+    /// nothing here decrypts: what is tested is the TLS under it.
+    Vmess,
+}
+
+/// A server for `line` over TLS on loopback: it reads the request and, but
+/// for VMess, echoes what follows.
+async fn tls_server(
     identity: &Identity,
+    line: Line,
 ) -> (SocketAddr, mpsc::UnboundedReceiver<Reached>, Task) {
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config(
         identity,
@@ -104,16 +119,24 @@ async fn vless_tls_server(
                     let _ = reached.send(Reached::Refused);
                     return;
                 };
-                if read_vless_request(&mut stream).await.is_err() {
+                let request = match line {
+                    Line::Vless => read_vless_request(&mut stream).await,
+                    Line::Trojan => read_trojan_request(&mut stream).await,
+                    Line::Vmess => stream.read_exact(&mut [0u8; 16]).await.map(|_| ()),
+                };
+                if request.is_err() {
                     return;
                 }
                 let _ = reached.send(Reached::Request);
-                if stream.write_all(&[0, 0]).await.is_err() {
+                if line == Line::Vless && stream.write_all(&[0, 0]).await.is_err() {
                     return;
                 }
                 let mut buffer = [0; 1024];
                 while let Ok(n) = stream.read(&mut buffer).await {
-                    if n == 0 || stream.write_all(&buffer[..n]).await.is_err() {
+                    if n == 0 {
+                        break;
+                    }
+                    if line != Line::Vmess && stream.write_all(&buffer[..n]).await.is_err() {
                         break;
                     }
                 }
@@ -145,6 +168,33 @@ async fn read_vless_request<S: tokio::io::AsyncRead + Unpin>(
     Ok(())
 }
 
+/// Trojan's request: the password's SHA-224 in hex, CRLF, the command, the
+/// address and port as SOCKS writes them, CRLF.
+async fn read_trojan_request<S: tokio::io::AsyncRead + Unpin>(
+    stream: &mut S,
+) -> std::io::Result<()> {
+    let mut token = [0; 56];
+    stream.read_exact(&mut token).await?;
+    let expected: String = Sha224::digest(PASSWORD.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(token[..], *expected.as_bytes(), "the configured password");
+    let mut crlf_command_type = [0; 4];
+    stream.read_exact(&mut crlf_command_type).await?;
+    assert_eq!(crlf_command_type[..3], *b"\r\n\x01", "a TCP request");
+    let length = match crlf_command_type[3] {
+        1 => 4,
+        4 => 16,
+        3 => usize::from(stream.read_u8().await?),
+        other => panic!("Trojan address type {other}"),
+    };
+    let mut address_port_crlf = vec![0; length + 4];
+    stream.read_exact(&mut address_port_crlf).await?;
+    assert!(address_port_crlf.ends_with(b"\r\n"), "the request's CRLF");
+    Ok(())
+}
+
 async fn next(reports: &mut mpsc::UnboundedReceiver<Reached>) -> Reached {
     timeout(DEADLINE, reports.recv())
         .await
@@ -164,6 +214,26 @@ fn vless_line(server: SocketAddr, security: Value) -> Value {
         "outbounds":[{"tag":"proxy","protocol":"vless",
             "settings":{"vnext":[{"address":server.ip().to_string(),"port":server.port(),
                 "users":[{"id":UUID,"encryption":"none"}]}]},
+            "streamSettings":stream}]})
+}
+
+fn trojan_line(server: SocketAddr, security: Value) -> Value {
+    let mut stream = security;
+    stream["network"] = json!("raw");
+    json!({"inbounds":[socks_inbound()],
+        "outbounds":[{"tag":"proxy","protocol":"trojan",
+            "settings":{"address":server.ip().to_string(),"port":server.port(),
+                "password":PASSWORD},
+            "streamSettings":stream}]})
+}
+
+fn vmess_line(server: SocketAddr, security: Value) -> Value {
+    let mut stream = security;
+    stream["network"] = json!("raw");
+    json!({"inbounds":[socks_inbound()],
+        "outbounds":[{"tag":"proxy","protocol":"vmess",
+            "settings":{"address":server.ip().to_string(),"port":server.port(),
+                "id":UUID,"security":"aes-128-gcm"},
             "streamSettings":stream}]})
 }
 
@@ -218,7 +288,7 @@ async fn carried(core: &Core) -> bool {
 #[tokio::test]
 async fn vless_over_tls_is_refused_unless_the_config_waives_the_check() {
     let identity = identity();
-    let (server, mut reports, _server) = vless_tls_server(&identity).await;
+    let (server, mut reports, _server) = tls_server(&identity, Line::Vless).await;
     for fingerprint in [None, Some("unsafe")] {
         for flag in [None, Some(false), Some(true)] {
             let mut settings = json!({"serverName":"localhost"});
@@ -248,7 +318,7 @@ async fn vless_over_tls_is_refused_unless_the_config_waives_the_check() {
 #[tokio::test]
 async fn vless_over_tls_a_pin_beside_the_flag_still_verifies() {
     let identity = identity();
-    let (server, mut reports, _server) = vless_tls_server(&identity).await;
+    let (server, mut reports, _server) = tls_server(&identity, Line::Vless).await;
     for (pin, expected) in [
         (identity.sha256.clone(), Reached::Request),
         ("5a".repeat(32), Reached::Refused),
@@ -265,12 +335,64 @@ async fn vless_over_tls_a_pin_beside_the_flag_still_verifies() {
 }
 
 #[tokio::test]
+async fn trojan_over_tls_is_refused_unless_the_config_waives_the_check() {
+    let identity = identity();
+    let (server, mut reports, _server) = tls_server(&identity, Line::Trojan).await;
+    for flag in [None, Some(false), Some(true)] {
+        let mut settings = json!({"serverName":"localhost"});
+        if let Some(flag) = flag {
+            settings["allowInsecure"] = json!(flag);
+        }
+        let case = format!("allowInsecure {flag:?}");
+        let (mut core, warned) = start(&trojan_line(server, tls(settings))).await;
+        let waived = flag == Some(true);
+        assert_eq!(warned, waived, "{case}: the warning");
+        assert_eq!(carried(&core).await, waived, "{case}: the data");
+        let expected = if waived {
+            Reached::Request
+        } else {
+            Reached::Refused
+        };
+        assert_eq!(next(&mut reports).await, expected, "{case}: the server");
+        core.stop().await.unwrap();
+        while reports.try_recv().is_ok() {}
+    }
+}
+
+#[tokio::test]
+async fn vmess_over_tls_is_refused_unless_the_config_waives_the_check() {
+    let identity = identity();
+    let (server, mut reports, _server) = tls_server(&identity, Line::Vmess).await;
+    for flag in [None, Some(false), Some(true)] {
+        let mut settings = json!({"serverName":"localhost"});
+        if let Some(flag) = flag {
+            settings["allowInsecure"] = json!(flag);
+        }
+        let case = format!("allowInsecure {flag:?}");
+        let (mut core, warned) = start(&vmess_line(server, tls(settings))).await;
+        let waived = flag == Some(true);
+        assert_eq!(warned, waived, "{case}: the warning");
+        // The server answers no VMess, so no data comes back; what the flag
+        // decides is whether the request gets past the certificate.
+        let _flow = poke(&core).await;
+        let expected = if waived {
+            Reached::Request
+        } else {
+            Reached::Refused
+        };
+        assert_eq!(next(&mut reports).await, expected, "{case}: the server");
+        core.stop().await.unwrap();
+        while reports.try_recv().is_ok() {}
+    }
+}
+
+#[tokio::test]
 async fn reality_does_not_read_the_flag() {
     // A REALITY line to a server whose certificate is not REALITY's: the
     // flag, in realitySettings or in a tlsSettings beside it, waives
     // nothing.
     let identity = identity();
-    let (server, mut reports, _server) = vless_tls_server(&identity).await;
+    let (server, mut reports, _server) = tls_server(&identity, Line::Vless).await;
     let reality = json!({"security":"reality",
         "realitySettings":{"serverName":"localhost","fingerprint":"chrome",
             "publicKey":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE","shortId":"02030405",

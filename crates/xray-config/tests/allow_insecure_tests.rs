@@ -17,6 +17,18 @@ fn vless(address: &str, tls: Value) -> Value {
         "streamSettings":{"network":"raw","security":"tls","tlsSettings":tls}}]})
 }
 
+/// The fixture of `protocol` (trojan or vmess) over raw TLS with `tls`.
+fn fixture_over_tls(protocol: &str, tls: Value) -> Value {
+    let mut config: Value = serde_json::from_str(match protocol {
+        "trojan" => include_str!("../../../tests/fixtures/configs/trojan.json"),
+        _ => include_str!("../../../tests/fixtures/configs/vmess.json"),
+    })
+    .unwrap();
+    config["outbounds"][0]["streamSettings"] =
+        json!({"network":"raw","security":"tls","tlsSettings":tls});
+    config
+}
+
 fn hysteria(tls: Value) -> Value {
     let mut config: Value = serde_json::from_str(include_str!(
         "../../../tests/fixtures/configs/hysteria2.json"
@@ -83,6 +95,21 @@ fn the_flag_waives_the_check_and_the_warning_names_the_outbound_and_its_server()
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     }
 
+    // Trojan and VMess over TLS take it as VLESS does.
+    for protocol in ["trojan", "vmess"] {
+        let (tls, diagnostics) = parsed_tls(&fixture_over_tls(
+            protocol,
+            json!({"serverName":"server.example","allowInsecure":true}),
+        ));
+        assert!(tls.allow_insecure, "{protocol}");
+        let message = the_warning(&diagnostics, FLAG);
+        let server = format!("{protocol}.example:443");
+        assert!(
+            message.contains("`proxy`") && message.contains(&server),
+            "{protocol}: {message}"
+        );
+    }
+
     // Hysteria 2 with no pin: its QUIC TLS takes the flag the same way.
     let (tls, diagnostics) = parsed_tls(&hysteria(
         json!({"serverName":"server.example","alpn":["h3"],"allowInsecure":true}),
@@ -119,6 +146,11 @@ fn without_the_flag_the_parse_is_what_it_was() {
         let (parsed, diagnostics) = parsed_tls(&hysteria(tls.clone()));
         assert!(!parsed.allow_insecure, "{tls}");
         assert!(diagnostics.is_empty(), "{tls}: {diagnostics:?}");
+        for protocol in ["trojan", "vmess"] {
+            let (parsed, diagnostics) = parsed_tls(&fixture_over_tls(protocol, tls.clone()));
+            assert!(!parsed.allow_insecure, "{protocol}: {tls}");
+            assert!(diagnostics.is_empty(), "{protocol}: {tls}: {diagnostics:?}");
+        }
     }
     // Anything but a boolean or null is still refused at its path.
     refused_at(&vless("203.0.113.7", json!({"allowInsecure":"yes"})), FLAG);
@@ -154,22 +186,11 @@ fn a_pin_or_a_verification_name_verifies_instead_of_the_flag() {
 fn refused_where_the_core_would_not_honour_it() {
     let insecure = json!({"serverName":"server.example","allowInsecure":true});
     let tls_stream = json!({"network":"raw","security":"tls","tlsSettings":insecure});
-    let mut trojan: Value =
-        serde_json::from_str(include_str!("../../../tests/fixtures/configs/trojan.json")).unwrap();
-    trojan["outbounds"][0]["streamSettings"] = tls_stream.clone();
-    let mut vmess: Value =
-        serde_json::from_str(include_str!("../../../tests/fixtures/configs/vmess.json")).unwrap();
-    vmess["outbounds"][0]["streamSettings"] = tls_stream.clone();
     let socks = json!({"outbounds":[{"tag":"proxy","protocol":"socks",
         "settings":{"address":"socks.example","port":1080},"streamSettings":tls_stream}]});
     let http = json!({"outbounds":[{"tag":"proxy","protocol":"http",
         "settings":{"address":"proxy.example","port":3128},"streamSettings":tls_stream}]});
-    for (name, config) in [
-        ("trojan", trojan),
-        ("vmess", vmess),
-        ("socks", socks),
-        ("http", http),
-    ] {
+    for (name, config) in [("socks", socks), ("http", http)] {
         let message = refused_at(&config, FLAG);
         assert!(message.contains(name), "{name}: {message}");
     }
