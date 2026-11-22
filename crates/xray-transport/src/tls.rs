@@ -1115,21 +1115,19 @@ fn client_config_with_provider(
     verify_peer_cert_by_name: &[String],
     versions: &[&'static rustls::SupportedProtocolVersion],
 ) -> Result<rustls::ClientConfig, TransportError> {
-    if allow_insecure
-        && (!pinned_peer_cert_sha256.is_empty() || !verify_peer_cert_by_name.is_empty())
-    {
-        return Err(TransportError::TlsConfig(
-            "allow_insecure cannot be combined with pinnedPeerCertSha256 or verifyPeerCertByName"
-                .to_owned(),
-        ));
-    }
-    if allow_insecure {
+    // A pin or a verification name checks the certificate itself, so
+    // `allow_insecure` beside one waives nothing: Xray-core's
+    // `VerifyPeerCertificate` ran under `InsecureSkipVerify` as well. Only
+    // with neither does the flag skip the check, and only the certificate's:
+    // `NoCertificateVerification` still checks the handshake signature.
+    let custom = !pinned_peer_cert_sha256.is_empty() || !verify_peer_cert_by_name.is_empty();
+    if allow_insecure && !custom {
         return insecure_rustls_client_config(provider, versions);
     }
     let root_store = rustls::RootCertStore {
         roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
     };
-    if !pinned_peer_cert_sha256.is_empty() || !verify_peer_cert_by_name.is_empty() {
+    if custom {
         return custom_verification_rustls_client_config(
             provider,
             root_store,

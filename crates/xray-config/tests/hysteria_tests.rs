@@ -97,11 +97,6 @@ fn hysteria2_rejects_unsupported_or_inconsistent_settings_without_exposing_auth(
             json!("chrome"),
         ),
         (
-            "/outbounds/0/streamSettings/tlsSettings",
-            "allowInsecure",
-            json!(true),
-        ),
-        (
             "/outbounds/0/streamSettings/hysteriaSettings",
             "up",
             json!(100),

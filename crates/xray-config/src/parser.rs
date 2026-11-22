@@ -1248,6 +1248,7 @@ impl Parser<'_> {
         self.validate_hysteria_pair(&settings, &stream, proxy_settings.is_some(), index);
         self.validate_masque_pair(&settings, &stream, proxy_settings.is_some(), index);
         self.validate_trojan_stream(&settings, &stream, index);
+        self.check_waived_verification(outbound, index, &settings, &stream);
 
         // Xray v26.7.28 applies this policy only to its simplified top-level
         // VLESS settings. Its legacy `vnext` path bypasses that validation.

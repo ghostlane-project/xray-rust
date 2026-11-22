@@ -108,6 +108,10 @@ pub enum ConnectorConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TlsClientConfig {
     pub server_name: String,
+    /// Skips the certificate check (chain, name, dates) while the handshake
+    /// signature is still checked, unless a pin or a verification name is
+    /// set, which then checks the certificate instead. The ClientHello is
+    /// the same either way.
     pub allow_insecure: bool,
     /// SHA-256 hashes of complete DER-encoded peer certificates. A matching
     /// leaf is accepted directly; a matching presented CA becomes the sole

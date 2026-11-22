@@ -2921,8 +2921,12 @@ pub struct TlsSettings {
     /// comma-separated `verifyPeerCertByName` setting. Any one matching DNS
     /// or IP SAN is sufficient; this list is independent of the TLS SNI.
     pub verify_peer_cert_by_name: Vec<String>,
-    /// Programmatic-only escape hatch retained for local test fixtures. The
-    /// canonical Xray JSON parser rejects `allowInsecure: true`.
+    /// `allowInsecure: true`: the certificate is not checked (its chain,
+    /// name and dates; the handshake signature still is). The parser sets
+    /// it only on an outbound's own TLS whose core honours it, warning
+    /// naming the outbound and its server, and never beside a pin or a
+    /// verification name, which check the certificate instead. Xray-core
+    /// removed the field; a config that does not set it verifies as before.
     pub allow_insecure: bool,
     /// `tlsSettings.alpn`, verbatim.
     pub alpn: Vec<String>,

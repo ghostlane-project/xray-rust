@@ -28,9 +28,8 @@ impl TrojanOutbound {
         if settings.level > 255 {
             return Err(CoreError::NoSupportedOutbound);
         }
-        if (config.stream.security == StreamSecurity::None
-            && !settings.server.is_xray_plaintext_server_exempt())
-            || matches!(&config.stream.security, StreamSecurity::Tls(tls) if tls.allow_insecure)
+        if config.stream.security == StreamSecurity::None
+            && !settings.server.is_xray_plaintext_server_exempt()
         {
             return Err(CoreError::UnsupportedOutboundSecurity);
         }

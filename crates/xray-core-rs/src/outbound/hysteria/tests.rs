@@ -45,8 +45,8 @@ fn typed_hysteria_contract_is_checked_before_runtime_start() {
             0 => config.stream.network = Network::Tcp,
             1 => config.stream.security = StreamSecurity::None,
             2 => {
-                if let StreamSecurity::Tls(tls) = &mut config.stream.security {
-                    tls.allow_insecure = true;
+                if let StreamTransport::Hysteria(auth) = &mut config.stream.transport {
+                    auth.auth = zeroize::Zeroizing::new("x".repeat(4097));
                 }
             }
             3 => {
@@ -83,6 +83,29 @@ fn typed_hysteria_contract_is_checked_before_runtime_start() {
             "typed invalid config must fail before start"
         );
     }
+}
+
+/// `allowInsecure` with no pin reaches the QUIC client's TLS; a pin goes
+/// with it, and the transport lets the pin verify.
+#[test]
+fn allow_insecure_reaches_the_quic_client_config() {
+    let mut config = configured();
+    if let StreamSecurity::Tls(tls) = &mut config.stream.security {
+        tls.allow_insecure = true;
+    }
+    let outbound = HysteriaOutbound::new(&config).expect("the flag is taken");
+    assert!(outbound.inner.tls.allow_insecure);
+    assert!(outbound.inner.tls.pinned_peer_cert_sha256.is_empty());
+
+    if let StreamSecurity::Tls(tls) = &mut config.stream.security {
+        tls.pinned_peer_cert_sha256 = vec![[0x5a; 32]];
+    }
+    let outbound = HysteriaOutbound::new(&config).expect("a pin beside it is taken");
+    assert_eq!(outbound.inner.tls.pinned_peer_cert_sha256, vec![[0x5a; 32]]);
+
+    // Without the flag the QUIC client verifies as it always did.
+    let outbound = HysteriaOutbound::new(&configured()).unwrap();
+    assert!(!outbound.inner.tls.allow_insecure);
 }
 
 #[test]

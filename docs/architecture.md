@@ -38,7 +38,9 @@ flowchart LR
 
 1. JSON is parsed into `CoreConfig`.
 2. Unsupported modeled fields become path-aware errors; removed
-   security-sensitive choices such as `allowInsecure: true` fail closed.
+   security-sensitive choices fail closed, except `allowInsecure: true`, which
+   a VLESS, Trojan, VMess, Hysteria, MASQUE or DNS outbound takes as an
+   explicit opt-in with a warning naming the outbound and its server.
 3. `geosite` and `geoip` references are resolved during parsing from configured
    search directories.
 4. `Core` builds the DNS resolver, immutable outbound graph and shared outbound

@@ -1612,16 +1612,20 @@ fn parsed_config_tls_shape_and_pin_reach_transport_config() {
 }
 
 #[test]
-fn parsed_apple_xhttp_tls_allow_insecure_fails_closed() {
+fn parsed_apple_xhttp_tls_allow_insecure_reaches_the_transport_with_its_warning() {
     let raw = include_str!("../../../tests/fixtures/configs/vless_xhttp_tls_importer.json");
-    let error = match parse_xray_json(raw) {
-        Ok(_) => panic!("legacy allowInsecure must not reach a dial-ready TLS transport"),
-        Err(error) => error,
-    };
-    assert!(error.diagnostics.iter().any(|diagnostic| {
+    let parsed = parse_xray_json(raw).expect("allowInsecure=true is taken on VLESS");
+    assert!(parsed.diagnostics.iter().any(|diagnostic| {
         diagnostic.path.as_deref()
             == Some("$.outbounds[0].streamSettings.tlsSettings.allowInsecure")
+            && diagnostic.severity == xray_config::DiagnosticSeverity::Warning
     }));
+    let selected = compile_vless_tcp_outbound_one_shot(&parsed.config).unwrap();
+    let xray_transport::ConnectorConfig::Tls(connector) = selected.transport() else {
+        panic!("expected TLS connector");
+    };
+    assert!(connector.allow_insecure);
+    assert!(connector.pinned_peer_cert_sha256.is_empty());
 }
 
 #[test]

@@ -150,12 +150,9 @@ fn parses_mobile_vless_xhttp_packet_up_legacy_extra_fixture() {
 }
 
 #[test]
-fn rejects_apple_importer_tls_allow_insecure_fail_closed() {
+fn apple_importer_tls_allow_insecure_is_taken_with_a_warning() {
     let raw = include_str!("../../../tests/fixtures/configs/vless_xhttp_tls_importer.json");
-    assert_parse_error_path(
-        raw,
-        "$.outbounds[0].streamSettings.tlsSettings.allowInsecure",
-    );
+    assert_allow_insecure_warned(raw, "remote.example:443");
 }
 
 #[test]
@@ -2255,13 +2252,10 @@ fn rejects_outbound_proxy_settings_with_empty_tag() {
 }
 
 #[test]
-fn rejects_tls_allow_insecure_true_with_path() {
+fn tls_allow_insecure_true_is_taken_with_a_warning_at_its_path() {
     let raw = raw_with_tls_settings(r#""serverName": "server.example", "allowInsecure": true"#);
 
-    assert_parse_error_path(
-        &raw,
-        "$.outbounds[0].streamSettings.tlsSettings.allowInsecure",
-    );
+    assert_allow_insecure_warned(&raw, "server.example:443");
 }
 
 #[test]
@@ -7451,7 +7445,7 @@ fn vless_raw_with_reality_settings(reality_settings: &str) -> String {
 }
 
 #[test]
-fn allow_insecure_tls_is_a_hard_error() {
+fn allow_insecure_tls_is_taken_and_warned_about() {
     let raw = r#"{
         "inbounds": [
             {
@@ -7484,9 +7478,36 @@ fn allow_insecure_tls_is_a_hard_error() {
         ]
     }"#;
 
-    assert_parse_error_path(
-        raw,
-        "$.outbounds[0].streamSettings.tlsSettings.allowInsecure",
+    assert_allow_insecure_warned(raw, "example.com:443");
+}
+
+/// `allowInsecure: true` on the first outbound, a VLESS one tagged `proxy`
+/// reaching `server`: taken, with one warning at its path naming both.
+fn assert_allow_insecure_warned(raw: &str, server: &str) {
+    let parsed = parse_xray_json(raw).expect("allowInsecure=true is taken on VLESS");
+    let StreamSecurity::Tls(tls) = &parsed.config.outbounds[0].stream.security else {
+        panic!("expected TLS security");
+    };
+    assert!(tls.allow_insecure);
+    let warnings: Vec<_> = parsed
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic.path.as_deref()
+                == Some("$.outbounds[0].streamSettings.tlsSettings.allowInsecure")
+        })
+        .collect();
+    assert_eq!(warnings.len(), 1, "{:?}", parsed.diagnostics);
+    assert_eq!(warnings[0].severity, DiagnosticSeverity::Warning);
+    assert!(
+        warnings[0].message.contains("`proxy`"),
+        "{}",
+        warnings[0].message
+    );
+    assert!(
+        warnings[0].message.contains(server),
+        "{}",
+        warnings[0].message
     );
 }
 

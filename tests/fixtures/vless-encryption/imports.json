@@ -3398,7 +3398,7 @@
           }
         }
       },
-      "rustAccepted": false,
+      "rustAccepted": true,
       "errorParameter": "allowInsecure"
     },
     {

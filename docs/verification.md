@@ -384,7 +384,7 @@ are:
 | Share-link security and ALPN | Imported security fields | Runtime HTTP version | Live matrix ids |
 | --- | --- | --- | --- |
 | `security=none` | no security settings | H1 | `h1-none-*` |
-| `security=tls&alpn=http/1.1` | `sni`, `fp`, `alpn`; `allowInsecure=true` is rejected by canonical parsing | H1 | `h1-tls-*` |
+| `security=tls&alpn=http/1.1` | `sni`, `fp`, `alpn`, `allowInsecure`; with `allowInsecure=true` the certificate is not checked and the parse warns | H1 | `h1-tls-*` |
 | `security=tls` with absent `alpn`, `h2`, or any non-special list | same TLS fields | H2 | `h2-tls-*` |
 | `security=tls&alpn=h3` as the exact one-element list | same TLS fields | H3 over QUIC/UDP | `h3-tls-*` |
 | `security=reality` | `sni`, `fp`, `pbk`, `sid`, `spx`, `pqv` | H2 | `h2-reality-*` |
@@ -416,8 +416,10 @@ canonical Xray JSON also supports comma-separated `verifyPeerCertByName` with
 ORed DNS/IP SAN checks independent of SNI. The Apple importer still rejects a
 non-empty `vcn` because it has no explicit host-policy seam; ECH remains
 fail-closed in both paths. An explicitly empty share parameter is treated as
-absent. Canonical `allowInsecure: true`, including
-legacy importer output, is rejected. XHTTP with a Vision flow requires VLESS
+absent. Canonical `allowInsecure: true`, including the importer's output for
+a link's `allowInsecure=1`, waives the certificate check of that line, and the
+parse warns naming the outbound and its server; a pin or `verifyPeerCertByName`
+beside it still verifies. XHTTP with a Vision flow requires VLESS
 encryption. Swift/Kotlin importers also project raw TLS (with or without
 Vision), WS/HTTPUpgrade with TLS, and gRPC with TLS or REALITY; on those
 non-raw carriers Vision and `security=none` require VLESS encryption. The importer also retains its

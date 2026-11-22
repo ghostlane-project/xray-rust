@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use xray_config::{parse_xray_json, OutboundSettings};
+use xray_config::{parse_xray_json, DiagnosticSeverity, OutboundSettings};
 
 fn profile(settings: Value) -> Value {
     json!({"outbounds":[{"protocol":"trojan","settings":settings,"streamSettings":{"security":"tls","tlsSettings":{"serverName":"example.test"}}}]})
@@ -79,6 +79,14 @@ fn plaintext_policy_applies_after_both_settings_forms_are_normalized() {
         };
         let mut value = profile(settings);
         value["outbounds"][0]["streamSettings"]["tlsSettings"]["allowInsecure"] = json!(true);
-        assert!(parse_xray_json(&value.to_string()).is_err());
+        // Both forms reach the TLS policy normalized: the flag is taken and
+        // the warning names the server.
+        let parsed = parse_xray_json(&value.to_string()).expect("Trojan takes allowInsecure");
+        assert!(parsed.diagnostics.iter().any(|diagnostic| {
+            diagnostic.path.as_deref()
+                == Some("$.outbounds[0].streamSettings.tlsSettings.allowInsecure")
+                && diagnostic.severity == DiagnosticSeverity::Warning
+                && diagnostic.message.contains("example.test:443")
+        }));
     }
 }

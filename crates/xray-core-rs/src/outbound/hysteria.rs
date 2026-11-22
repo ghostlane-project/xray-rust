@@ -73,7 +73,6 @@ impl HysteriaOutbound {
         if config.stream.tcp_fragment.is_some()
             || config.stream.network != Network::Udp
             || config.proxy_settings.is_some()
-            || tls.allow_insecure
             || tls.fingerprint.is_some()
             || (!tls.alpn.is_empty() && tls.alpn != ["h3"])
             || server.port == 0
@@ -199,9 +198,12 @@ impl HysteriaOutbound {
                     server.port,
                     RoutingNetwork::Udp,
                 ),
+                // `allowInsecure` waives the certificate check of a server
+                // with no pin, as the parser warned; a pin beside it still
+                // verifies (the transport's rule).
                 tls: TlsClientConfig {
                     server_name,
-                    allow_insecure: false,
+                    allow_insecure: tls.allow_insecure,
                     pinned_peer_cert_sha256: tls.pinned_peer_cert_sha256.clone(),
                     verify_peer_cert_by_name: tls.verify_peer_cert_by_name.clone(),
                     alpn: vec!["h3".into()],
