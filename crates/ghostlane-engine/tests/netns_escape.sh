@@ -13,7 +13,8 @@
 #           tun0, a dummy device standing for the tunnel: table 51820 is
 #           `default dev tun0`, and `ip rule pref 1000 lookup 51820` sends
 #           every socket that is not bound into it. tun0 counts what it is
-#           given and drops it. No IPv6.
+#           given and drops it. No IPv6. On its loopback, a second
+#           interop-pipe hub (127.0.0.1:7001), the client's own.
 #   world   w0 10.231.0.1/24, and on its loopback the far side, all fakes
 #           in this script: a DNS server (10.232.0.53) that answers
 #           line.test, hub.test and origin.test, and every other name with
@@ -31,12 +32,16 @@
 #      world; a fetch by address and one by name through it;
 #   2. a room on the `none` carrier, its hub dialed by name: the name is
 #      asked of the room's DNS server, and the hub sees the join;
-#   3. a room on a fake carrier (`jitsi`, a room link on a name of the fake
+#   3. a room on the `none` carrier whose hub is on the client's loopback
+#      (tcp://127.0.0.1:7001): the room's dial to it is left unbound, so the
+#      hub sees the join (bound to out0, the dial would leave by out0 and
+#      never arrive);
+#   4. a room on a fake carrier (`jitsi`, a room link on a name of the fake
 #      DNS): the carrier's name is asked, and its signalling's TLS hello
 #      reaches the fake carrier from out0;
-#   4. the one-shots: `probe` through the line, `olc-check` of the `none`
+#   5. the one-shots: `probe` through the line, `olc-check` of the `none`
 #      room, each one line;
-#   5. a session that names an interface that is not there ends with a
+#   6. a session that names an interface that is not there ends with a
 #      `bind` failure.
 #
 # And the control, without which the cases prove nothing: the line without
@@ -287,6 +292,7 @@ else:
         "origin": (("10.232.0.30", 80), origin),
         "vless": (("10.232.0.10", 443), vless),
         "hub": (("10.232.0.20", 7000), hub),
+        "hub-loopback": (("127.0.0.1", 7001), hub),
         "carrier": (("10.232.0.40", 443), carrier),
     }[MODE]
     tcp(address, handle)
@@ -309,6 +315,21 @@ for service in dns origin vless hub carrier; do
         exit 1
     }
 done
+
+# The client's own hub, on its loopback.
+: > "$scratch/hub-loopback.log"
+in_client python3 -I "$scratch/world.py" hub-loopback "$scratch/hub-loopback.log" \
+    2>> "$scratch/world-errors.log" &
+pids+=("$!")
+for _ in $(seq 1 100); do
+    grep -qx ready "$scratch/hub-loopback.log" && break
+    sleep 0.1
+done
+grep -qx ready "$scratch/hub-loopback.log" || {
+    echo "the client's loopback hub did not start" >&2
+    cat "$scratch/world-errors.log" >&2 || true
+    exit 1
+}
 
 cat > "$scratch/cases.py" <<'PY'
 # The cases, run in the client namespace as root; the engine runs as the user.
@@ -557,7 +578,21 @@ quiet_tun(before, "none room")
 if not ended_well(engine, status, "none room"):
     engine.show()
 
-# 3. A room on a fake carrier: its name, then its signalling's TLS.
+# 3. A room on the `none` carrier whose hub is on the client's loopback: the
+# dial to it is not bound, or it would leave by out0 and never arrive.
+before = sent()
+engine = Engine("run", "--session", session("loopback-room", room("none", "tcp://127.0.0.1:7001/f4b-loopback")))
+joined = wait_for(lambda: [entry for entry in world("hub-loopback")
+                           if entry[:2] == ["join", "127.0.0.1"] and "f4b-loopback" in entry], 20)
+check(bool(joined), "loopback room: the hub on 127.0.0.1 saw the join")
+engine.until(lambda event: False, 1)
+bound_first(engine, "loopback room")
+status = engine.stop()
+quiet_tun(before, "loopback room")
+if not ended_well(engine, status, "loopback room") or not joined:
+    engine.show()
+
+# 4. A room on a fake carrier: its name, then its signalling's TLS.
 before = sent()
 engine = Engine("run", "--session", session("carrier-room", room("jitsi", "https://meet.carrier.test/f4b-netns")))
 hello = wait_for(lambda: from_out0("carrier", "hello", "meet.carrier.test"), 30)
@@ -573,7 +608,7 @@ if not check(last.get("event") == "ended", "fake carrier: the run ended with `en
 if not hello:
     engine.show()
 
-# 4. The one-shots, bound: one line each, nothing in the tunnel.
+# 5. The one-shots, bound: one line each, nothing in the tunnel.
 before = sent()
 engine, status = answer("probe", "--session", session("probe", line(21082, True)),
                         "--url", "http://10.232.0.30/", "--timeout-ms", "8000")
@@ -591,7 +626,7 @@ if not check(status == 1 and len(lines) == 1 and lines[0].get("event") == "olc_c
 check(len(from_out0("hub", "join", "f4b-check")) > joins, "olc-check: it joined from out0")
 quiet_tun(before, "one-shots")
 
-# 5. An interface that is not there.
+# 6. An interface that is not there.
 body = line(21083, True)
 body["bind"] = {"interface": "eth9"}
 engine, status = answer("run", "--session", session("no-interface", body))
@@ -613,7 +648,7 @@ status=0
 in_client python3 -I "$scratch/cases.py" "$scratch/ghostlane-engine" "$scratch" "$uid" "$gid" || status=$?
 if [ "$status" != 0 ]; then
     echo "== what the world saw"
-    for service in dns origin vless hub carrier; do
+    for service in dns origin vless hub carrier hub-loopback; do
         echo "-- $service"
         cat "$scratch/$service.log"
     done
