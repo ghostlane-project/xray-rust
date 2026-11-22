@@ -15,11 +15,11 @@
 #           every socket that is not bound into it. tun0 counts what it is
 #           given and drops it. No IPv6.
 #   world   w0 10.231.0.1/24, and on its loopback the far side, all fakes
-#           in this script: a DNS server (198.18.0.53) that answers
+#           in this script: a DNS server (10.232.0.53) that answers
 #           line.test, hub.test and origin.test, and every other name with
 #           the fake carrier's address; a VLESS server over plain TCP
-#           (198.18.0.10:443); an interop-pipe hub (198.18.0.20:7000); an
-#           HTTP origin (198.18.0.30:80); and a fake carrier (198.18.0.40:443)
+#           (10.232.0.10:443); an interop-pipe hub (10.232.0.20:7000); an
+#           HTTP origin (10.232.0.30:80); and a fake carrier (10.232.0.40:443)
 #           that records the TLS ClientHello it is sent and closes.
 #
 # A socket bound to out0 is routed by out0's routes alone, so it reaches the
@@ -102,13 +102,13 @@ in_world ip link set lo up
 in_world ip addr add 10.231.0.1/24 dev w0
 in_world ip link set w0 up
 for host in 10 20 30 40 53; do
-    in_world ip addr add "198.18.0.$host/32" dev lo
+    in_world ip addr add "10.232.0.$host/32" dev lo
 done
 
 # The system resolver of the client namespace is the fake one too, so that a
 # lookup the engine does not bind goes into tun0 and is counted, not lost.
 mkdir -p "/etc/netns/$client"
-echo "nameserver 198.18.0.53" > "/etc/netns/$client/resolv.conf"
+echo "nameserver 10.232.0.53" > "/etc/netns/$client/resolv.conf"
 
 # The engine, where its user can run it.
 cp "$engine_in" "$scratch/ghostlane-engine"
@@ -119,8 +119,8 @@ cat > "$scratch/world.py" <<'PY'
 import socket, struct, sys, threading
 
 MODE, LOG = sys.argv[1], sys.argv[2]
-NAMES = {"line.test": "198.18.0.10", "hub.test": "198.18.0.20", "origin.test": "198.18.0.30"}
-CARRIER = "198.18.0.40"
+NAMES = {"line.test": "10.232.0.10", "hub.test": "10.232.0.20", "origin.test": "10.232.0.30"}
+CARRIER = "10.232.0.40"
 USER = bytes(range(16))
 lock = threading.Lock()
 
@@ -177,7 +177,7 @@ def guarded(handle, conn, peer):
 
 def dns():
     server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    server.bind(("198.18.0.53", 53))
+    server.bind(("10.232.0.53", 53))
     log("ready")
     while True:
         query, peer = server.recvfrom(4096)
@@ -284,10 +284,10 @@ if MODE == "dns":
     dns()
 else:
     address, handle = {
-        "origin": (("198.18.0.30", 80), origin),
-        "vless": (("198.18.0.10", 443), vless),
-        "hub": (("198.18.0.20", 7000), hub),
-        "carrier": (("198.18.0.40", 443), carrier),
+        "origin": (("10.232.0.30", 80), origin),
+        "vless": (("10.232.0.10", 443), vless),
+        "hub": (("10.232.0.20", 7000), hub),
+        "carrier": (("10.232.0.40", 443), carrier),
     }[MODE]
     tcp(address, handle)
 PY
@@ -468,7 +468,7 @@ def line(port, bound):
                 "tag": "proxy",
                 "protocol": "vless",
                 "settings": {"vnext": [{
-                    "address": "198.18.0.10",
+                    "address": "10.232.0.10",
                     "port": 443,
                     "users": [{"id": USER, "encryption": "none"}],
                 }]},
@@ -482,7 +482,7 @@ def line(port, bound):
 
 
 def room(provider, link, bound=True):
-    body = {"room": {"provider": provider, "rooms": [link], "key": KEY, "dns": "198.18.0.53:53"}}
+    body = {"room": {"provider": provider, "rooms": [link], "key": KEY, "dns": "10.232.0.53:53"}}
     if bound:
         body["bind"] = BIND
     return body
@@ -520,7 +520,7 @@ before = sent()
 engine = Engine("run", "--session", session("line-unbound", line(21081, False)))
 ready = engine.until(lambda event: event.get("event") == "ready", 20)
 check(ready is not None, "control: the unbound line is ready")
-got = socks_fetch(21081, "198.18.0.30", 80, 4) if ready else None
+got = socks_fetch(21081, "10.232.0.30", 80, 4) if ready else None
 check(not got or not got.startswith(b"HTTP/1.1 200"), "control: without `bind` the line cannot fetch")
 check(sent() > before, "control: without `bind` the line's sockets went into the tunnel")
 status = engine.stop()
@@ -533,7 +533,7 @@ engine = Engine("run", "--session", session("line", line(21080, True)))
 ready = engine.until(lambda event: event.get("event") == "ready", 20)
 check(ready is not None, "line: ready")
 bound_first(engine, "line")
-got = socks_fetch(21080, "198.18.0.30", 80, 10) if ready else None
+got = socks_fetch(21080, "10.232.0.30", 80, 10) if ready else None
 check(bool(got) and got.startswith(b"HTTP/1.1 200") and got.endswith(b"the world says hello\n"),
       "line: a fetch by address through the line")
 got = socks_fetch(21080, "origin.test", 80, 10) if ready else None
@@ -576,7 +576,7 @@ if not hello:
 # 4. The one-shots, bound: one line each, nothing in the tunnel.
 before = sent()
 engine, status = answer("probe", "--session", session("probe", line(21082, True)),
-                        "--url", "http://198.18.0.30/", "--timeout-ms", "8000")
+                        "--url", "http://10.232.0.30/", "--timeout-ms", "8000")
 lines = engine.events
 if not check(status == 0 and len(lines) == 1 and lines[0].get("event") == "probe" and lines[0].get("ok") is True,
              "probe: one line, a yes, through the bound line"):
