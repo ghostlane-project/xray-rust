@@ -23,7 +23,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use ghostlane_engine::events::{EndReason, Event, FailureCode};
+use ghostlane_engine::events::{Event, FailureCode};
 use serde_json::{json, Value};
 
 const ENGINE: &str = env!("CARGO_BIN_EXE_ghostlane-engine");
@@ -199,19 +199,6 @@ impl Drop for Engine {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-    }
-}
-
-/// The last line of a run, which must be `ended`.
-#[cfg(feature = "rooms")]
-fn last_ended(lines: &[Event]) -> (EndReason, Option<FailureCode>, Option<String>) {
-    match lines.last() {
-        Some(Event::Ended {
-            reason,
-            code,
-            message,
-        }) => (*reason, *code, message.clone()),
-        other => panic!("the last line is not `ended`: {other:?}"),
     }
 }
 
@@ -484,7 +471,19 @@ fn probe_refuses_what_it_cannot_ask() {
 #[cfg(feature = "rooms")]
 mod room {
     use super::*;
-    use ghostlane_engine::events::{Severity, Source};
+    use ghostlane_engine::events::{EndReason, Severity, Source};
+
+    /// The last line of a run, which must be `ended`.
+    fn last_ended(lines: &[Event]) -> (EndReason, Option<FailureCode>, Option<String>) {
+        match lines.last() {
+            Some(Event::Ended {
+                reason,
+                code,
+                message,
+            }) => (*reason, *code, message.clone()),
+            other => panic!("the last line is not `ended`: {other:?}"),
+        }
+    }
 
     /// What the hub does with a participant once its JOIN is read.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
