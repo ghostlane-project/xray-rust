@@ -1254,8 +1254,8 @@
     },
     {
       "name": "insecure-tls",
-      "accepted": false,
-      "errorPath": "$.outbounds[0].streamSettings.tlsSettings.allowInsecure",
+      "accepted": true,
+      "warningPath": "$.outbounds[0].streamSettings.tlsSettings.allowInsecure",
       "base": "transport-chain",
       "set": {
         "/outbounds": [

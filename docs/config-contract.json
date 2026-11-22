@@ -1406,7 +1406,7 @@
         "servers"
       ],
       "id": "SOCKS_OUTBOUND",
-      "notes": "One flattened server or exactly one servers entry; mixing forms is rejected. user and pass are both absent (no authentication) or both strings of 1..255 UTF-8 bytes (RFC 1929); credentials are redacted. Level 0..255; email is type-checked and ignored. TCP CONNECT only over raw/tcp with none or TLS security; no Mux or UDP. Without TLS the credentials travel in cleartext."
+      "notes": "One flattened server or exactly one servers entry; mixing forms is rejected. user and pass are both absent (no authentication) or both strings of 1..255 UTF-8 bytes (RFC 1929); credentials are redacted. Level 0..255; email is type-checked and ignored. TCP uses CONNECT and UDP uses UDP ASSOCIATE, as in Xray-core: the control connection takes any stream transport and its TLS or REALITY, and the datagrams go on a plain UDP socket to the relay the server names. No Mux. Without TLS the credentials travel in cleartext."
     },
     {
       "context": "$.outbounds[].settings.servers[0] (socks)",
@@ -1468,7 +1468,7 @@
         "enableSessionResumption"
       ],
       "id": "TLS",
-      "notes": "allowInsecure=true is rejected. fromMitm is unsupported. Fingerprints, certificate pins and name constraints use parser validation. enableSessionResumption is a boolean with no effect on a uTLS-shaped handshake, which never resumes here or in Xray-core; with fingerprint unsafe, and on QUIC, rustls resumes sessions whatever its value."
+      "notes": "allowInsecure=true, which Xray-core removed, waives the certificate check (chain, name and dates; the handshake signature is still checked) of a VLESS, Hysteria, MASQUE or DNS outbound, and the parser warns naming the outbound and its server. It has no effect beside pinnedPeerCertSha256 or verifyPeerCertByName, which check the certificate instead, and it is refused on Trojan, VMess, Shadowsocks, SOCKS and HTTP outbounds, in an XHTTP downloadSettings and in a realm mask's tlsConfig. The server name and ALPN a hello offers are the same with it or without it. fromMitm is unsupported. Fingerprints, certificate pins and name constraints use parser validation. enableSessionResumption is a boolean with no effect on a uTLS-shaped handshake, which never resumes here or in Xray-core; with fingerprint unsafe, and on QUIC, rustls resumes sessions whatever its value."
     },
     {
       "context": "$.outbounds[].settings (wireguard)",

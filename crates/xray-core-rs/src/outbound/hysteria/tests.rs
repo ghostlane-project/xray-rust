@@ -45,8 +45,8 @@ fn typed_hysteria_contract_is_checked_before_runtime_start() {
             0 => config.stream.network = Network::Tcp,
             1 => config.stream.security = StreamSecurity::None,
             2 => {
-                if let StreamSecurity::Tls(tls) = &mut config.stream.security {
-                    tls.allow_insecure = true;
+                if let StreamTransport::Hysteria(auth) = &mut config.stream.transport {
+                    auth.auth = zeroize::Zeroizing::new("x".repeat(4097));
                 }
             }
             3 => {

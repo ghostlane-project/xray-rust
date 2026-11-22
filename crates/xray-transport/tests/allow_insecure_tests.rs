@@ -301,10 +301,9 @@ fn hysteria_echo(identity: &Identity) -> HysteriaEcho {
 }
 
 async fn serve_hysteria(connection: quinn::Connection) {
-    let Ok(mut http3) = h3::server::Connection::<_, Bytes>::new(h3_quinn::Connection::new(
-        connection.clone(),
-    ))
-    .await
+    let Ok(mut http3) =
+        h3::server::Connection::<_, Bytes>::new(h3_quinn::Connection::new(connection.clone()))
+            .await
     else {
         return;
     };
@@ -352,7 +351,11 @@ async fn serve_hysteria(connection: quinn::Connection) {
     drop(http3);
 }
 
-fn hysteria_config(server: &HysteriaEcho, tls: TlsClientConfig, chrome_parrot: bool) -> HysteriaConfig {
+fn hysteria_config(
+    server: &HysteriaEcho,
+    tls: TlsClientConfig,
+    chrome_parrot: bool,
+) -> HysteriaConfig {
     let mut config = HysteriaConfig::new(server.address, tls, AUTH.into());
     config.quic.chrome_parrot = chrome_parrot;
     config
@@ -402,24 +405,25 @@ async fn hysteria_refuses_a_self_signed_server_without_the_flag_and_carries_it_w
     let mut server = hysteria_echo(&identity);
     let connector = TlsConnector::system().unwrap();
     for chrome_parrot in [false, true] {
+        let strict = hysteria_config(&server, quic_client(false), chrome_parrot);
         assert_eq!(
-            echo_over_hysteria(
-                &connector,
-                hysteria_config(&server, quic_client(false), chrome_parrot)
-            )
-            .await,
+            echo_over_hysteria(&connector, strict).await,
             Err(HysteriaError::Connect),
             "chrome parrot {chrome_parrot}: the system roots refuse the server"
         );
-        assert!(!handshake(&mut server).await, "chrome parrot {chrome_parrot}");
+        assert!(
+            !handshake(&mut server).await,
+            "chrome parrot {chrome_parrot}"
+        );
 
-        echo_over_hysteria(
-            &connector,
-            hysteria_config(&server, quic_client(true), chrome_parrot),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("chrome parrot {chrome_parrot}: the flag carries: {error}"));
-        assert!(handshake(&mut server).await, "chrome parrot {chrome_parrot}");
+        let waived = hysteria_config(&server, quic_client(true), chrome_parrot);
+        if let Err(error) = echo_over_hysteria(&connector, waived).await {
+            panic!("chrome parrot {chrome_parrot}: the flag carries: {error}");
+        }
+        assert!(
+            handshake(&mut server).await,
+            "chrome parrot {chrome_parrot}"
+        );
     }
 }
 

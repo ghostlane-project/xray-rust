@@ -84,7 +84,9 @@ enum Reached {
 
 /// A VLESS server over TLS on loopback: it reads the request header, answers
 /// it and echoes what follows.
-async fn vless_tls_server(identity: &Identity) -> (SocketAddr, mpsc::UnboundedReceiver<Reached>, Task) {
+async fn vless_tls_server(
+    identity: &Identity,
+) -> (SocketAddr, mpsc::UnboundedReceiver<Reached>, Task) {
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_config(
         identity,
         rustls::ALL_VERSIONS,
@@ -121,7 +123,9 @@ async fn vless_tls_server(identity: &Identity) -> (SocketAddr, mpsc::UnboundedRe
     (address, reports, task)
 }
 
-async fn read_vless_request<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> std::io::Result<()> {
+async fn read_vless_request<S: tokio::io::AsyncRead + Unpin>(
+    stream: &mut S,
+) -> std::io::Result<()> {
     let mut head = [0; 18];
     stream.read_exact(&mut head).await?;
     assert_eq!(head[0], 0, "VLESS version");
@@ -204,7 +208,11 @@ async fn carried(core: &Core) -> bool {
         stream.read_exact(&mut back).await.ok()?;
         Some(&back == b"through the core")
     };
-    timeout(DEADLINE, attempt).await.ok().flatten().unwrap_or(false)
+    timeout(DEADLINE, attempt)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false)
 }
 
 #[tokio::test]
@@ -245,7 +253,8 @@ async fn vless_over_tls_a_pin_beside_the_flag_still_verifies() {
         (identity.sha256.clone(), Reached::Request),
         ("5a".repeat(32), Reached::Refused),
     ] {
-        let settings = json!({"serverName":"localhost","allowInsecure":true,"pinnedPeerCertSha256":pin});
+        let settings =
+            json!({"serverName":"localhost","allowInsecure":true,"pinnedPeerCertSha256":pin});
         let (mut core, warned) = start(&vless_line(server, tls(settings))).await;
         assert!(!warned, "the pin verifies, so nothing is waived");
         assert_eq!(carried(&core).await, expected == Reached::Request);
@@ -325,9 +334,10 @@ fn quic_server(identity: &Identity) -> QuicServer {
 }
 
 fn hysteria_line(server: SocketAddr, tls_settings: Value, chrome_parrot: bool) -> Value {
-    let mut config: Value =
-        serde_json::from_str(include_str!("../../../tests/fixtures/configs/hysteria2.json"))
-            .unwrap();
+    let mut config: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/configs/hysteria2.json"
+    ))
+    .unwrap();
     config["inbounds"] = json!([socks_inbound()]);
     config["outbounds"][0]["settings"]["address"] = json!(server.ip().to_string());
     config["outbounds"][0]["settings"]["port"] = json!(server.port());
@@ -378,7 +388,11 @@ async fn hysteria_without_a_pin_is_refused_unless_the_config_waives_the_check() 
             // flag decides is whether the QUIC handshake gets past the
             // certificate.
             let _flow = poke(&core).await;
-            assert_eq!(quic_handshake(&mut server).await, waived, "{case}: the handshake");
+            assert_eq!(
+                quic_handshake(&mut server).await,
+                waived,
+                "{case}: the handshake"
+            );
             core.stop().await.unwrap();
             while server.handshakes.try_recv().is_ok() {}
         }

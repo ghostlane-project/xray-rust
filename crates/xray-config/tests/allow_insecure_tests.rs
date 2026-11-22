@@ -4,9 +4,7 @@
 //! name verifies instead, REALITY never reads it, and a config without it
 //! parses exactly as before.
 use serde_json::{json, Value};
-use xray_config::{
-    parse_xray_json, Diagnostic, DiagnosticSeverity, StreamSecurity, TlsSettings,
-};
+use xray_config::{parse_xray_json, Diagnostic, DiagnosticSeverity, StreamSecurity, TlsSettings};
 
 const FLAG: &str = "$.outbounds[0].streamSettings.tlsSettings.allowInsecure";
 const UUID: &str = "00010203-0405-0607-0809-0a0b0c0d0e0f";
@@ -20,9 +18,10 @@ fn vless(address: &str, tls: Value) -> Value {
 }
 
 fn hysteria(tls: Value) -> Value {
-    let mut config: Value =
-        serde_json::from_str(include_str!("../../../tests/fixtures/configs/hysteria2.json"))
-            .unwrap();
+    let mut config: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/configs/hysteria2.json"
+    ))
+    .unwrap();
     config["outbounds"][0]["streamSettings"]["tlsSettings"] = tls;
     config
 }
@@ -57,7 +56,12 @@ fn refused_at(config: &Value, path: &str) -> String {
         .iter()
         .filter(|d| d.path.as_deref() == Some(path) && d.severity == DiagnosticSeverity::Error)
         .collect();
-    assert_eq!(found.len(), 1, "one error at {path}: {:?}", error.diagnostics);
+    assert_eq!(
+        found.len(),
+        1,
+        "one error at {path}: {:?}",
+        error.diagnostics
+    );
     found[0].message.clone()
 }
 
@@ -85,11 +89,17 @@ fn the_flag_waives_the_check_and_the_warning_names_the_outbound_and_its_server()
     ));
     assert!(tls.allow_insecure);
     let message = the_warning(&diagnostics, FLAG);
-    assert!(message.contains("`proxy`") && message.contains("server.example:443"), "{message}");
+    assert!(
+        message.contains("`proxy`") && message.contains("server.example:443"),
+        "{message}"
+    );
 
     // An outbound with no tag is named by its place.
     let mut untagged = vless("203.0.113.7", json!({"allowInsecure":true}));
-    untagged["outbounds"][0].as_object_mut().unwrap().remove("tag");
+    untagged["outbounds"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("tag");
     let (_, diagnostics) = parsed_tls(&untagged);
     let message = the_warning(&diagnostics, FLAG);
     assert!(message.contains("outbound 0 "), "{message}");
@@ -111,10 +121,7 @@ fn without_the_flag_the_parse_is_what_it_was() {
         assert!(diagnostics.is_empty(), "{tls}: {diagnostics:?}");
     }
     // Anything but a boolean or null is still refused at its path.
-    refused_at(
-        &vless("203.0.113.7", json!({"allowInsecure":"yes"})),
-        FLAG,
-    );
+    refused_at(&vless("203.0.113.7", json!({"allowInsecure":"yes"})), FLAG);
     refused_at(&vless("203.0.113.7", json!({"allowInsecure":1})), FLAG);
 }
 
@@ -125,7 +132,9 @@ fn a_pin_or_a_verification_name_verifies_instead_of_the_flag() {
             "203.0.113.7",
             json!({"allowInsecure":true,"pinnedPeerCertSha256":PIN}),
         ),
-        hysteria(json!({"serverName":"server.example","allowInsecure":true,"pinnedPeerCertSha256":PIN})),
+        hysteria(
+            json!({"serverName":"server.example","allowInsecure":true,"pinnedPeerCertSha256":PIN}),
+        ),
     ] {
         let (tls, diagnostics) = parsed_tls(&config);
         assert!(!tls.allow_insecure, "the pin verifies: {config}");

@@ -1549,9 +1549,17 @@ impl Parser<'_> {
             "tls" => {
                 let tls_settings = stream.and_then(|stream| stream.get("tlsSettings"));
                 let path = format!("$.outbounds[{index}].streamSettings.tlsSettings");
-                Some(StreamSecurity::Tls(
-                    self.parse_tls_object(tls_settings, &path),
-                ))
+                // The core refuses a download leg that does not verify, so
+                // the parser does too; an outbound's own TLS takes the flag,
+                // and `check_waived_verification` judges it by protocol.
+                let refusal = self.parsing_xhttp_download.then_some(
+                    "allowInsecure is not honoured in downloadSettings: the download leg always verifies its certificate; pin it with pinnedPeerCertSha256",
+                );
+                Some(StreamSecurity::Tls(self.parse_tls_object_with(
+                    tls_settings,
+                    &path,
+                    refusal,
+                )))
             }
             "reality" => self
                 .parse_reality_settings(stream, index)
@@ -1575,26 +1583,46 @@ impl Parser<'_> {
         }
     }
 
-    /// A TLS settings object at `path`, as Xray-core's `TLSConfig` reads it:
-    /// `streamSettings.tlsSettings`, or a mask's `tlsConfig`.
+    /// A TLS settings object at `path`, as Xray-core's `TLSConfig` reads it,
+    /// where `allowInsecure: true` is refused: a mask's `tlsConfig`, which
+    /// reaches a rendezvous rather than a link's server.
     pub(super) fn parse_tls_object(
         &mut self,
         tls_settings: Option<&Value>,
         path: &str,
     ) -> TlsSettings {
+        self.parse_tls_object_with(
+            tls_settings,
+            path,
+            Some("allowInsecure=true was removed by Xray; use pinnedPeerCertSha256 instead"),
+        )
+    }
+
+    /// A TLS settings object at `path`. `allowInsecure: true` is refused
+    /// with `insecure_refusal` when one is given, and otherwise taken: it
+    /// waives the certificate check unless a pin or a verification name is
+    /// there to check it instead, in which case the model does not carry it
+    /// (Xray-core's `VerifyPeerCertificate` ran under `InsecureSkipVerify`
+    /// too).
+    fn parse_tls_object_with(
+        &mut self,
+        tls_settings: Option<&Value>,
+        path: &str,
+        insecure_refusal: Option<&str>,
+    ) -> TlsSettings {
         self.validate_tls_settings(tls_settings, path);
         let allow_insecure_path = format!("{path}.allowInsecure");
         let allow_insecure = match tls_settings.and_then(|settings| settings.get("allowInsecure")) {
             None | Some(Value::Null) | Some(Value::Bool(false)) => false,
-            Some(Value::Bool(true)) => {
-                self.error(
-                    allow_insecure_path,
-                    "allowInsecure=true was removed by Xray; use pinnedPeerCertSha256 instead",
-                );
-                // Never let a rejected canonical config carry an
-                // insecure verifier into a partially built model.
-                false
-            }
+            Some(Value::Bool(true)) => match insecure_refusal {
+                None => true,
+                Some(refusal) => {
+                    self.error(allow_insecure_path, refusal);
+                    // Never let a rejected canonical config carry an
+                    // insecure verifier into a partially built model.
+                    false
+                }
+            },
             Some(_) => {
                 self.error(
                     allow_insecure_path,
@@ -1605,6 +1633,9 @@ impl Parser<'_> {
         };
         let pinned_peer_cert_sha256 = self.parse_tls_pinned_peer_cert_sha256(tls_settings, path);
         let verify_peer_cert_by_name = self.parse_tls_verify_peer_cert_by_name(tls_settings, path);
+        let allow_insecure = allow_insecure
+            && pinned_peer_cert_sha256.is_empty()
+            && verify_peer_cert_by_name.is_empty();
         // An absent fingerprint normalizes to chrome, matching Xray's
         // GetFingerprint(""): shaping is the default, not an opt-in.
         let raw_fingerprint = tls_settings
@@ -1642,6 +1673,69 @@ impl Parser<'_> {
             allow_insecure,
             alpn,
         }
+    }
+
+    /// `allowInsecure: true` that reached an outbound's own TLS, with no
+    /// pin or verification name to check the certificate instead. Refused
+    /// on the outbounds whose core refuses it; elsewhere a warning, which
+    /// the embedding hands on (a `warning` event, the FFI's config
+    /// warnings), naming the outbound and its server, since nothing checks
+    /// who answers there.
+    pub(super) fn check_waived_verification(
+        &mut self,
+        outbound: &Value,
+        index: usize,
+        settings: &OutboundSettings,
+        stream: &StreamSettings,
+    ) {
+        if !matches!(&stream.security, StreamSecurity::Tls(tls) if tls.allow_insecure) {
+            return;
+        }
+        let path = format!("$.outbounds[{index}].streamSettings.tlsSettings.allowInsecure");
+        let server = match settings {
+            OutboundSettings::Vless(vless) => Some((&vless.server, vless.port)),
+            OutboundSettings::Hysteria(hysteria) => Some((&hysteria.server, hysteria.port)),
+            OutboundSettings::Masque(masque) => Some((&masque.server, masque.port)),
+            OutboundSettings::Trojan(_)
+            | OutboundSettings::Vmess(_)
+            | OutboundSettings::Shadowsocks2022(_)
+            | OutboundSettings::Socks(_)
+            | OutboundSettings::Http(_) => {
+                let protocol = match settings {
+                    OutboundSettings::Trojan(_) => "trojan",
+                    OutboundSettings::Vmess(_) => "vmess",
+                    OutboundSettings::Shadowsocks2022(_) => "shadowsocks",
+                    OutboundSettings::Socks(_) => "socks",
+                    _ => "http",
+                };
+                self.error(
+                    path,
+                    format!("allowInsecure is not honoured on a {protocol} outbound: it always verifies its certificate; pin it with pinnedPeerCertSha256"),
+                );
+                return;
+            }
+            // Its TLS reaches the DNS server a query is sent to.
+            OutboundSettings::Dns(_) => None,
+            // No TLS client reads the stream's security here.
+            OutboundSettings::Freedom(_)
+            | OutboundSettings::Wireguard(_)
+            | OutboundSettings::Blackhole(_)
+            | OutboundSettings::Loopback(_) => return,
+        };
+        let name = match outbound.get("tag").and_then(Value::as_str) {
+            Some(tag) if !tag.is_empty() => format!("`{tag}`"),
+            _ => index.to_string(),
+        };
+        let server = match server {
+            Some((TargetAddr::Ip(IpAddr::V6(ip)), port)) => format!("[{ip}]:{port}"),
+            Some((TargetAddr::Ip(ip), port)) => format!("{ip}:{port}"),
+            Some((TargetAddr::Domain(domain), port)) => format!("{domain}:{port}"),
+            None => "the DNS servers it queries".to_owned(),
+        };
+        self.warning(
+            path,
+            format!("outbound {name} does not check the certificate of {server} (allowInsecure), so anyone on the path can pose as that server"),
+        );
     }
 
     pub(super) fn validate_stream_settings_compatibility(&mut self, stream: &Value, index: usize) {
