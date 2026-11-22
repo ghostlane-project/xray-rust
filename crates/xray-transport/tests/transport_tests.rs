@@ -425,14 +425,14 @@ mod transport_tests {
     }
 
     #[test]
-    fn tls_pins_cannot_be_combined_with_allow_insecure_or_a_prebuilt_config() {
+    fn tls_pins_outrank_allow_insecure_and_cannot_be_combined_with_a_prebuilt_config() {
+        // A pin beside `allow_insecure` verifies instead of it (Xray-core's
+        // `VerifyPeerCertificate` under `InsecureSkipVerify`); the handshake
+        // against a server is in allow_insecure_tests.
         let mut config = pinned_tls_config("server.test", [0x11; 32]);
         config.allow_insecure = true;
         let system = TlsConnector::system().expect("system TLS connector");
-        assert!(matches!(
-            system.client_config_for(&config),
-            Err(TransportError::TlsConfig(_))
-        ));
+        assert!(system.client_config_for(&config).is_ok());
 
         config.allow_insecure = false;
         let (prebuilt, _) = tls_test_configs();
@@ -450,10 +450,7 @@ mod transport_tests {
             Err(TransportError::TlsConfig(_))
         ));
         verification_names.allow_insecure = true;
-        assert!(matches!(
-            system.client_config_for(&verification_names),
-            Err(TransportError::TlsConfig(_))
-        ));
+        assert!(system.client_config_for(&verification_names).is_ok());
     }
 
     #[tokio::test]
