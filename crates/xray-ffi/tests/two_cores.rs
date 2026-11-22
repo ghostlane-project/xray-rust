@@ -214,7 +214,11 @@ fn two_running_cores_keep_their_own_inbound_and_protector_and_one_budget() {
     let capacity = 4 * 1024 * 1024;
     xray_transport::set_byte_budget(Some(xray_transport::ByteBudgetSettings { capacity, floor }));
     xray_transport::reset_byte_budget_peak();
-    assert_eq!(xray_transport::byte_budget_usage().peak, 0, "a fresh budget");
+    assert_eq!(
+        xray_transport::byte_budget_usage().peak,
+        0,
+        "a fresh budget"
+    );
 
     let (core_a, port_a) = started(&CALLS_A);
     let (core_b, port_b) = started(&CALLS_B);
