@@ -25,8 +25,8 @@
 //!    start with it and do not pay the stall; when the time is up the
 //!    configured hello is tried again. Where it did not help (it stalled as
 //!    well, or the server's answer failed REALITY's verification: a server
-//!    from Xray-core v26.10.21 on hands a hello without the hybrid share to
-//!    its camouflage target), the dial fails with the stall as its error and
+//!    from Xray-core v26.9.9 on (REALITY 8cdf7bf) hands a hello without the
+//!    hybrid share to its camouflage target), the dial fails with the stall as its error and
 //!    later dials send only the configured hello, unwatched, exactly as
 //!    before. A retry that ends any other way (a reset, a close, a failed
 //!    connect) fails the dial with the stall and is not remembered: it says
@@ -96,7 +96,7 @@ pub const REALITY_HELLO_MEMORY_CAPACITY: usize = 64;
 /// beside GREASE is X25519, so its hello is a third the size of the hybrid
 /// one and fits one segment with room to spare. It is one of the names the
 /// config parser already takes for REALITY, and REALITY servers older than
-/// Xray-core v26.10.21 accept it.
+/// Xray-core v26.9.9 (REALITY 8cdf7bf) accept it.
 pub const REALITY_SHORT_HELLO_FINGERPRINT: &str = "hellochrome_120";
 
 /// What is remembered of the short hello at one server.
