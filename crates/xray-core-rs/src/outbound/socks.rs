@@ -152,7 +152,7 @@ impl SocksOutbound {
                 .filter(|candidate| candidate.is_ipv4() == ipv4)
                 .collect();
             // A host without this family (e.g. no IPv6) falls through to the next one.
-            let socket = match bind_relay_socket(ipv4, &relay_dialer) {
+            let socket = match bind_relay_socket(ipv4, family.first().copied(), &relay_dialer) {
                 Ok(socket) => socket,
                 Err(error) => {
                     last_error = Some(error.into());
@@ -236,10 +236,25 @@ impl SocksOutbound {
 
 /// Binds and protects the relay socket before any network I/O, like the
 /// other native UDP outbounds.
-fn bind_relay_socket(ipv4: bool, dialer: &TransportDialer) -> io::Result<UdpSocket> {
+///
+/// The relay is named only by the server's reply, which needs the socket's
+/// port first, so the protector is told the SOCKS server the socket is
+/// opened for: the family's first candidate, the address the control
+/// connection tries first. Servers put the relay on their own host
+/// (Xray-core's, a room's SOCKS port on loopback); a relay elsewhere is
+/// reached from a socket protected for the server.
+fn bind_relay_socket(
+    ipv4: bool,
+    server: Option<SocketAddr>,
+    dialer: &TransportDialer,
+) -> io::Result<UdpSocket> {
     let socket = std::net::UdpSocket::bind(if ipv4 { "0.0.0.0:0" } else { "[::]:0" })?;
-    xray_transport::protect_std_udp_socket(&socket, dialer.socket_protector())
-        .map_err(io::Error::other)?;
+    let protector = dialer.socket_protector();
+    match server {
+        Some(server) => xray_transport::protect_std_udp_socket_to(&socket, server, protector),
+        None => xray_transport::protect_std_udp_socket(&socket, protector),
+    }
+    .map_err(io::Error::other)?;
     socket.set_nonblocking(true)?;
     UdpSocket::from_std(socket)
 }
@@ -414,6 +429,152 @@ mod tests {
         assert_eq!(record, [0x16], "a TLS handshake record opens it");
         drop(control);
         assert!(association.await.unwrap().is_some());
+    }
+
+    /// What a protector was handed: the socket's type, and the peer it was
+    /// told when it was told one.
+    #[cfg(unix)]
+    #[derive(Default)]
+    struct Handed(Mutex<Vec<(socket2::Type, Option<SocketAddr>)>>);
+
+    #[cfg(unix)]
+    impl Handed {
+        fn record(
+            &self,
+            socket: xray_transport::SocketHandle,
+            peer: Option<SocketAddr>,
+        ) -> io::Result<()> {
+            use std::os::fd::BorrowedFd;
+            // SAFETY: the socket stays open for this call.
+            let fd = unsafe { BorrowedFd::borrow_raw(socket.raw() as std::os::fd::RawFd) };
+            let kind = socket2::SockRef::from(&fd).r#type()?;
+            self.0.lock().unwrap().push((kind, peer));
+            Ok(())
+        }
+
+        fn seen(&self) -> Vec<(socket2::Type, Option<SocketAddr>)> {
+            self.0.lock().unwrap().clone()
+        }
+    }
+
+    /// A protector of today's kind, which implements only `protect`.
+    #[cfg(unix)]
+    struct ProtectOnly(Handed);
+
+    #[cfg(unix)]
+    impl xray_transport::SocketProtector for ProtectOnly {
+        fn protect(&self, socket: xray_transport::SocketHandle) -> io::Result<()> {
+            self.0.record(socket, None)
+        }
+    }
+
+    /// A protector that is told the peer.
+    #[cfg(unix)]
+    struct PeerAware(Handed);
+
+    #[cfg(unix)]
+    impl xray_transport::SocketProtector for PeerAware {
+        fn protect(&self, socket: xray_transport::SocketHandle) -> io::Result<()> {
+            self.0.record(socket, None)
+        }
+
+        fn protect_to(
+            &self,
+            socket: xray_transport::SocketHandle,
+            peer: SocketAddr,
+        ) -> io::Result<()> {
+            self.0.record(socket, Some(peer))
+        }
+    }
+
+    /// Plays a SOCKS5 server with no login for one UDP ASSOCIATE: its relay
+    /// is on loopback, where `listener` is. Holds the control connection and
+    /// the relay until it is aborted.
+    #[cfg(unix)]
+    async fn one_association(listener: tokio::net::TcpListener) {
+        use tokio::io::AsyncWriteExt;
+        let (mut control, _) = listener.accept().await.unwrap();
+        let mut greeting = [0; 3];
+        control.read_exact(&mut greeting).await.unwrap();
+        assert_eq!(greeting, [5, 1, 0]);
+        control.write_all(&[5, 0]).await.unwrap();
+        let mut request = [0; 4 + 4 + 2];
+        control.read_exact(&mut request).await.unwrap();
+        assert_eq!(request[..4], [5, 3, 0, 1], "an IPv4 association");
+        let relay = tokio::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let mut reply = vec![5, 0, 0, 1, 127, 0, 0, 1];
+        reply.extend_from_slice(&relay.local_addr().unwrap().port().to_be_bytes());
+        control.write_all(&reply).await.unwrap();
+        std::future::pending::<()>().await;
+    }
+
+    /// One association through a SOCKS server on loopback, with `protector`
+    /// as the platform's: the server's address.
+    #[cfg(unix)]
+    async fn associate_with(protector: Arc<dyn xray_transport::SocketProtector>) -> SocketAddr {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let server = listener.local_addr().unwrap();
+        let held = tokio::spawn(one_association(listener));
+        let raw = json!({"outbounds":[{"protocol":"socks",
+            "settings":{"address":"127.0.0.1","port":server.port()}}]});
+        let config = xray_config::parse_xray_json(&raw.to_string())
+            .unwrap()
+            .config
+            .outbounds
+            .remove(0);
+        let socks = SocksOutbound::new(&config).unwrap();
+        let target = Target::new(
+            RoutingTargetAddr::Ip(Ipv4Addr::LOCALHOST.into()),
+            53,
+            RoutingNetwork::Udp,
+        );
+        let dialer = TransportDialer::system()
+            .unwrap()
+            .with_socket_protector(protector);
+        let session = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            socks.open_udp(&target, &NoDns, &dialer),
+        )
+        .await
+        .expect("the association opens")
+        .unwrap_or_else(|error| panic!("{error:?}"));
+        drop(session);
+        held.abort();
+        server
+    }
+
+    /// The relay socket is made before the association names the relay, so
+    /// the protector is told the SOCKS server it is opened for, as it is told
+    /// for the control connection.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_relay_socket_is_protected_for_the_socks_server() {
+        let protector = Arc::new(PeerAware(Handed::default()));
+        let server = associate_with(protector.clone()).await;
+        assert_eq!(
+            protector.0.seen(),
+            [
+                (socket2::Type::DGRAM, Some(server)),
+                (socket2::Type::STREAM, Some(server)),
+            ]
+        );
+    }
+
+    /// A protector that implements only `protect` is handed the same two
+    /// sockets as before, in the same order.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_protector_with_only_protect_is_handed_the_association_as_before() {
+        let protector = Arc::new(ProtectOnly(Handed::default()));
+        associate_with(protector.clone()).await;
+        assert_eq!(
+            protector.0.seen(),
+            [(socket2::Type::DGRAM, None), (socket2::Type::STREAM, None)]
+        );
     }
 
     /// The datagrams would leave beside the chain, so no transport opens one.

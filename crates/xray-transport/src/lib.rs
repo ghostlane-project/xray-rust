@@ -429,8 +429,25 @@ impl SocketHandle {
     }
 }
 
+/// The platform's hold on the sockets a dialer opens: each one is handed to
+/// it after it is made and before it connects or sends (Android's
+/// `VpnService.protect`, the iOS extension's interface pin, a desktop's
+/// binding to the physical interface).
 pub trait SocketProtector: Send + Sync {
+    /// Protects `socket`, whose peer the opener does not know or does not
+    /// say.
     fn protect(&self, socket: SocketHandle) -> io::Result<()>;
+
+    /// Protects `socket`, which will connect or send to `peer`: the address
+    /// a TCP socket connects to, or the server a UDP socket is opened for.
+    /// The openers that know the peer call this one instead of
+    /// [`Self::protect`]; by default it is [`Self::protect`], so a protector
+    /// that does not need the peer is handed every socket as before, once
+    /// each and in the same order.
+    fn protect_to(&self, socket: SocketHandle, peer: SocketAddr) -> io::Result<()> {
+        let _ = peer;
+        self.protect(socket)
+    }
 
     /// Whether TCP sockets ask for Multipath TCP, as Go's
     /// `Dialer.SetMultipathTCP(true)` does for `sockopt.tcpMptcp`.
@@ -626,7 +643,7 @@ pub async fn connect_tcp_stream(
             .map_err(TransportError::Tcp)?;
 
             socket_protector
-                .protect(SocketHandle::from_tcp_socket(&socket))
+                .protect_to(SocketHandle::from_tcp_socket(&socket), addr)
                 .map_err(TransportError::SocketProtection)?;
 
             socket.connect(addr).await.map_err(TransportError::Tcp)?
@@ -653,7 +670,7 @@ async fn connect_multipath_tcp_stream(
     )?;
     socket.set_nonblocking(true)?;
     let socket = TcpSocket::from_std_stream(std::net::TcpStream::from(socket));
-    socket_protector.protect(SocketHandle::from_tcp_socket(&socket))?;
+    socket_protector.protect_to(SocketHandle::from_tcp_socket(&socket), addr)?;
     let stream = socket.connect(addr).await?;
     stream.set_nodelay(true)?;
     Ok(stream)
@@ -692,6 +709,36 @@ pub fn protect_udp_socket(
             .map_err(TransportError::SocketProtection)?;
     }
 
+    Ok(())
+}
+
+/// [`protect_std_udp_socket`] for a socket opened for `peer`: the protector
+/// is told it ([`SocketProtector::protect_to`]).
+pub fn protect_std_udp_socket_to(
+    socket: &StdUdpSocket,
+    peer: SocketAddr,
+    socket_protector: Option<&dyn SocketProtector>,
+) -> Result<(), TransportError> {
+    if let Some(protector) = socket_protector {
+        protector
+            .protect_to(SocketHandle::from_std_udp_socket(socket), peer)
+            .map_err(TransportError::SocketProtection)?;
+    }
+    Ok(())
+}
+
+/// [`protect_udp_socket`] for a socket opened for `peer`: the protector is
+/// told it ([`SocketProtector::protect_to`]).
+pub fn protect_udp_socket_to(
+    socket: &UdpSocket,
+    peer: SocketAddr,
+    socket_protector: Option<&dyn SocketProtector>,
+) -> Result<(), TransportError> {
+    if let Some(protector) = socket_protector {
+        protector
+            .protect_to(SocketHandle::from_udp_socket(socket), peer)
+            .map_err(TransportError::SocketProtection)?;
+    }
     Ok(())
 }
 
