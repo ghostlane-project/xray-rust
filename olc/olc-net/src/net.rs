@@ -5,7 +5,10 @@
 //! host's protector first ([`set_protector`]: Android's
 //! `VpnService.protect`, the iOS extension's interface pin), so the engine's
 //! own traffic never loops into the tunnel it carries. A protector that
-//! refuses a socket fails the dial with Go's words.
+//! refuses a socket fails the dial with Go's words. A protector installed
+//! with [`set_peer_protector`] is told, beside the socket, the address a TCP
+//! socket dials ([`protect_to`]); one installed with [`set_protector`] is
+//! handed every socket as before.
 //!
 //! Names are looked up by the [`crate::resolver`] ring when one is set, else
 //! by the system.
@@ -22,13 +25,24 @@ use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 /// (`protect.SetProtector`).
 pub type Protector = Arc<dyn Fn(RawFd) -> bool + Send + Sync>;
 
-static PROTECTOR: RwLock<Option<Protector>> = RwLock::new(None);
+/// A [`Protector`] that is also told where the socket goes: the address a
+/// TCP socket dials, `None` where the engine does not know it (a UDP socket,
+/// bound before its peers are known).
+pub type PeerProtector = Arc<dyn Fn(RawFd, Option<SocketAddr>) -> bool + Send + Sync>;
+
+static PROTECTOR: RwLock<Option<PeerProtector>> = RwLock::new(None);
 
 /// Go's dial timeout for the engine's own connections (`defaultDialTimeout`).
 pub const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Installs the protector; `None` removes it.
 pub fn set_protector(p: Option<Protector>) {
+    set_peer_protector(p.map(|p| -> PeerProtector { Arc::new(move |fd, _peer| p(fd)) }));
+}
+
+/// Installs a protector that is told the peer; `None` removes it. It takes
+/// the place of one installed with [`set_protector`].
+pub fn set_peer_protector(p: Option<PeerProtector>) {
     *PROTECTOR.write().unwrap_or_else(PoisonError::into_inner) = p;
 }
 
@@ -45,12 +59,24 @@ pub fn has_protector() -> bool {
 /// # Errors
 /// `protect: socket protector rejected the socket`.
 pub fn protect(fd: RawFd) -> io::Result<()> {
+    protect_peer(fd, None)
+}
+
+/// [`protect`] for a socket that will connect or send to `peer`.
+///
+/// # Errors
+/// As [`protect`].
+pub fn protect_to(fd: RawFd, peer: SocketAddr) -> io::Result<()> {
+    protect_peer(fd, Some(peer))
+}
+
+fn protect_peer(fd: RawFd, peer: Option<SocketAddr>) -> io::Result<()> {
     let p = PROTECTOR
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .clone();
     match p {
-        Some(p) if !p(fd) => Err(io::Error::new(
+        Some(p) if !p(fd, peer) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "protect: socket protector rejected the socket",
         )),

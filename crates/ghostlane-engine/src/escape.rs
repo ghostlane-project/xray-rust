@@ -9,6 +9,7 @@
 //! [`Escape::core_protector`], the room through [`Escape::bind`].
 
 use std::io;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use xray_transport::{SocketHandle, SocketProtector};
@@ -48,10 +49,18 @@ impl Escape {
         events.emit(&Event::Bound {
             interface: bind.interface.clone(),
         });
-        Ok(Self {
-            interface: bind.interface.clone(),
+        Ok(Self::with_binder(bind.interface.clone(), binder))
+    }
+
+    /// A way out by `interface` over `binder`: what [`Self::open`] makes of
+    /// the system's binder, and what a test makes of a stand-in. Prints
+    /// nothing.
+    #[must_use]
+    pub fn with_binder(interface: impl Into<String>, binder: Arc<dyn Binder>) -> Self {
+        Self {
+            interface: interface.into(),
             binder,
-        })
+        }
     }
 
     /// The interface's name.
@@ -60,11 +69,13 @@ impl Escape {
         &self.interface
     }
 
-    /// Binds one socket of the room half.
+    /// Binds one socket of the room half, which will connect or send to
+    /// `peer` when the opener knows it.
     ///
     /// # Errors
     /// The system's refusal.
-    pub fn bind(&self, socket: RawSocket) -> io::Result<()> {
+    pub fn bind(&self, socket: RawSocket, peer: Option<SocketAddr>) -> io::Result<()> {
+        let _ = peer;
         self.binder.bind(socket)
     }
 
