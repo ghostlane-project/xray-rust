@@ -5,17 +5,23 @@
 #
 #   host            on Linux only (the ubuntu leg; it needs passwordless sudo,
 #                   which GitHub's ubuntu runners have):
-#                   1. builds the engine as shipped, with the rooms and
-#                      BoringSSL;
-#                   2. reads the built program's symbol table: it must define
+#                   1. builds the engine with the rooms and BoringSSL, and
+#                      reads the built program's symbol table: it must define
 #                      BoringSSL's SSL_CTX_new and DTLS_method (AWS-LC, which
 #                      the core links as well, prefixes its symbols and has
-#                      no DTLS_method);
+#                      no DTLS_method). The debug build: the release profile
+#                      strips the table;
+#                   2. builds it again in the release profile, as it ships;
 #                   3. runs crates/ghostlane-engine/tests/netns_escape.sh as
-#                      root: in a network namespace whose default route is a
-#                      tunnel, every socket of the engine but loopback's
-#                      leaves by the interface the session names, for a line,
-#                      a `none` room and a room on a fake carrier.
+#                      root on the release build: in a network namespace
+#                      whose default route is a tunnel, every socket of the
+#                      engine but loopback's leaves by the interface the
+#                      session names, for a line, a `none` room and a room on
+#                      a fake carrier. Not the debug build: its frames
+#                      overflow the runtime's 512 KiB worker stack on the
+#                      fake carrier's join (ghostlane-runtime's
+#                      WORKER_STACK), so a debug engine cannot join a real
+#                      carrier's room.
 #                   A runner where no namespace can be made fails the step:
 #                   it is not skipped. Other systems have nothing to run.
 #   windows-report  nothing: the engine binds no socket on Windows yet.
@@ -28,6 +34,7 @@ summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
 export CARGO_TERM_COLOR=never
 
 engine="${CARGO_TARGET_DIR:-target}/debug/ghostlane-engine"
+shipped="${CARGO_TARGET_DIR:-target}/release/ghostlane-engine"
 bad=0
 boring="not read"
 escape="not run"
@@ -57,12 +64,20 @@ if [ "$bad" = 0 ]; then
 fi
 
 if [ "$bad" = 0 ]; then
+    echo "== netns-escape: build the engine as it ships (release), with rooms and BoringSSL"
+    if ! cargo build --locked --release -p ghostlane-engine --features boring; then
+        echo "FAILED: the release engine does not build" >&2
+        bad=1
+    fi
+fi
+
+if [ "$bad" = 0 ]; then
     echo "== netns-escape: every socket but loopback's leaves by the named interface"
     if ! sudo -n true; then
         escape="no passwordless sudo on this runner: no namespace can be made"
         echo "FAILED: $escape" >&2
         bad=1
-    elif sudo -n bash crates/ghostlane-engine/tests/netns_escape.sh "$engine"; then
+    elif sudo -n bash crates/ghostlane-engine/tests/netns_escape.sh "$shipped"; then
         escape="every case passed"
         echo "ok: the namespace test"
     else
@@ -76,6 +91,6 @@ fi
     echo "### ghostlane-engine: bound sockets on Linux"
     echo
     echo "- BoringSSL: $boring."
-    echo "- The namespace test: $escape."
+    echo "- The namespace test, on the release build: $escape."
 } >> "$summary"
 exit "$bad"
