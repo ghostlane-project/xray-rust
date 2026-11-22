@@ -643,7 +643,7 @@ pub async fn connect_tcp_stream(
             .map_err(TransportError::Tcp)?;
 
             socket_protector
-                .protect(SocketHandle::from_tcp_socket(&socket))
+                .protect_to(SocketHandle::from_tcp_socket(&socket), addr)
                 .map_err(TransportError::SocketProtection)?;
 
             socket.connect(addr).await.map_err(TransportError::Tcp)?
@@ -670,7 +670,7 @@ async fn connect_multipath_tcp_stream(
     )?;
     socket.set_nonblocking(true)?;
     let socket = TcpSocket::from_std_stream(std::net::TcpStream::from(socket));
-    socket_protector.protect(SocketHandle::from_tcp_socket(&socket))?;
+    socket_protector.protect_to(SocketHandle::from_tcp_socket(&socket), addr)?;
     let stream = socket.connect(addr).await?;
     stream.set_nodelay(true)?;
     Ok(stream)

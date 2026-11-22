@@ -17,7 +17,7 @@
     allow(dead_code)
 )]
 
-use std::{fmt, io, sync::Arc};
+use std::{fmt, io, net::SocketAddr, sync::Arc};
 
 use crate::{SocketHandle, SocketProtector};
 
@@ -65,6 +65,8 @@ pub struct CustomSocketOption {
 pub type SocketOptionsReport = Arc<dyn Fn(&io::Error) + Send + Sync>;
 
 /// Protects a socket with the platform's protector, then applies `options`.
+/// The peer a socket is opened for reaches the platform's protector as it
+/// was told ([`SocketProtector::protect_to`]).
 pub struct SocketOptionsProtector {
     inner: Option<Arc<dyn SocketProtector>>,
     options: Arc<SocketOptions>,
@@ -100,6 +102,13 @@ impl SocketProtector for SocketOptionsProtector {
     fn protect(&self, socket: SocketHandle) -> io::Result<()> {
         if let Some(inner) = &self.inner {
             inner.protect(socket)?;
+        }
+        self.options.apply(socket, self.report.as_deref())
+    }
+
+    fn protect_to(&self, socket: SocketHandle, peer: SocketAddr) -> io::Result<()> {
+        if let Some(inner) = &self.inner {
+            inner.protect_to(socket, peer)?;
         }
         self.options.apply(socket, self.report.as_deref())
     }

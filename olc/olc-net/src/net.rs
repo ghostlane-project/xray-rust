@@ -101,7 +101,7 @@ fn tcp_socket(addr: SocketAddr, send_buffer: Option<u32>) -> io::Result<TcpSocke
     } else {
         TcpSocket::new_v6()?
     };
-    protect(socket.as_raw_fd())?;
+    protect_to(socket.as_raw_fd(), addr)?;
     if let Some(n) = send_buffer {
         socket.set_send_buffer_size(n)?;
     }

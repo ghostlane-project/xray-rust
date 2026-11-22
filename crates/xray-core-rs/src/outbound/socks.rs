@@ -152,7 +152,7 @@ impl SocksOutbound {
                 .filter(|candidate| candidate.is_ipv4() == ipv4)
                 .collect();
             // A host without this family (e.g. no IPv6) falls through to the next one.
-            let socket = match bind_relay_socket(ipv4, &relay_dialer) {
+            let socket = match bind_relay_socket(ipv4, family.first().copied(), &relay_dialer) {
                 Ok(socket) => socket,
                 Err(error) => {
                     last_error = Some(error.into());
@@ -236,10 +236,25 @@ impl SocksOutbound {
 
 /// Binds and protects the relay socket before any network I/O, like the
 /// other native UDP outbounds.
-fn bind_relay_socket(ipv4: bool, dialer: &TransportDialer) -> io::Result<UdpSocket> {
+///
+/// The relay is named only by the server's reply, which needs the socket's
+/// port first, so the protector is told the SOCKS server the socket is
+/// opened for: the family's first candidate, the address the control
+/// connection tries first. Servers put the relay on their own host
+/// (Xray-core's, a room's SOCKS port on loopback); a relay elsewhere is
+/// reached from a socket protected for the server.
+fn bind_relay_socket(
+    ipv4: bool,
+    server: Option<SocketAddr>,
+    dialer: &TransportDialer,
+) -> io::Result<UdpSocket> {
     let socket = std::net::UdpSocket::bind(if ipv4 { "0.0.0.0:0" } else { "[::]:0" })?;
-    xray_transport::protect_std_udp_socket(&socket, dialer.socket_protector())
-        .map_err(io::Error::other)?;
+    let protector = dialer.socket_protector();
+    match server {
+        Some(server) => xray_transport::protect_std_udp_socket_to(&socket, server, protector),
+        None => xray_transport::protect_std_udp_socket(&socket, protector),
+    }
+    .map_err(io::Error::other)?;
     socket.set_nonblocking(true)?;
     UdpSocket::from_std(socket)
 }
