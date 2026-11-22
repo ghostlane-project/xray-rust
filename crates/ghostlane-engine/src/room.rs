@@ -31,8 +31,9 @@
 //! which `ready` prints. Every other field is the setter of the same name and
 //! keeps the runtime's default when absent. A field not listed is refused.
 //!
-//! The room's sockets go through the session's way out (`bind`): olc-ffi's
-//! protector is the escape's [`Escape::bind`](crate::escape::Escape::bind).
+//! The room's sockets go through the session's way out (`bind`): olc-net's
+//! protector is the escape's [`Escape::bind`](crate::escape::Escape::bind),
+//! told the address a TCP socket dials, so a dial to loopback is not bound.
 //! Its log lines are `log` events of the room, its sessions
 //! `session_opened`.
 
@@ -135,10 +136,12 @@ pub(crate) fn ask(
 mod carried {
     use std::collections::HashSet;
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+    use std::os::fd::RawFd;
     use std::sync::Arc;
     use std::time::Duration;
 
-    use olc_ffi::{LogWriter, OlcrtcError, OlcrtcRuntime, SessionListener, SocketProtector};
+    use olc_ffi::{LogWriter, OlcrtcError, OlcrtcRuntime, SessionListener};
+    use olc_net::net::{set_peer_protector, PeerProtector};
     use serde_json::{Map, Value};
 
     use super::Room;
@@ -549,43 +552,33 @@ mod carried {
         })
     }
 
-    /// Room sockets leave by the session's way out. Through olc-ffi's
-    /// protector, which is not told the peer: every socket of the room is
-    /// bound, a TCP dial to loopback as well. olc-net's peer-aware protector
-    /// (`olc_net::net::set_peer_protector` over [`Escape::bind`] with the
-    /// peer) would leave a loopback dial alone, as the core's does; the
-    /// engine cannot name olc-net yet (it is not among its dependencies).
-    fn protect_through(runtime: &OlcrtcRuntime, escape: Option<Escape>, events: &Events) {
-        let protector = escape.map(|escape| -> Arc<dyn SocketProtector> {
-            Arc::new(RoomProtector {
-                escape,
-                events: events.clone(),
+    /// Room sockets leave by the session's way out, through olc-net's
+    /// protector, which is told the address a TCP socket dials: the escape
+    /// leaves a dial to loopback (a hub on this machine) unbound, as the
+    /// core's protector does, and binds every other socket, a UDP socket
+    /// (whose peers are not known when it is opened) among them. It is the
+    /// process's one protector, as olc-ffi's setter would install it; a
+    /// session without a way out removes it.
+    fn protect_through(escape: Option<Escape>, events: &Events) {
+        let protector = escape.map(|escape| -> PeerProtector {
+            let events = events.clone();
+            Arc::new(move |fd: RawFd, peer: Option<SocketAddr>| {
+                match escape.bind(i64::from(fd), peer) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        events.log(
+                            Level::Warning,
+                            format!(
+                                "a socket of the room could not be bound to `{}`: {error}",
+                                escape.interface()
+                            ),
+                        );
+                        false
+                    }
+                }
             })
         });
-        runtime.set_protector(protector);
-    }
-
-    struct RoomProtector {
-        escape: Escape,
-        events: Events,
-    }
-
-    impl SocketProtector for RoomProtector {
-        fn protect(&self, fd: i64) -> bool {
-            match self.escape.bind(fd, None) {
-                Ok(()) => true,
-                Err(error) => {
-                    self.events.log(
-                        Level::Warning,
-                        format!(
-                            "a socket of the room could not be bound to `{}`: {error}",
-                            self.escape.interface()
-                        ),
-                    );
-                    false
-                }
-            }
-        }
+        set_peer_protector(protector);
     }
 
     /// The room's log lines, as `log` events: one per line, without the
@@ -668,7 +661,7 @@ mod carried {
                 message: remark.message,
             });
         }
-        protect_through(&runtime, ctx.escape.clone(), &ctx.events);
+        protect_through(ctx.escape.clone(), &ctx.events);
         olc_ffi::set_log_writer(Some(Arc::new(RoomLog(ctx.events.clone()))));
         runtime.set_session_listener(Some(Arc::new(Opened(ctx.events.clone()))));
         runtime.start().map_err(|error| {
@@ -765,7 +758,7 @@ mod carried {
         let Prepared { half, runtime, .. } = prepare(spec, false)?;
         let quiet = Events::to(Box::new(std::io::sink()));
         let escape = bind.map(|bind| Escape::open(bind, &quiet)).transpose()?;
-        protect_through(&runtime, escape, &quiet);
+        protect_through(escape, &quiet);
         let millis = i64::try_from(timeout.as_millis()).unwrap_or(i64::MAX);
         let (fps, batch) = half.vp8.unwrap_or((0, 0));
         let first = half.rooms[0].clone();
