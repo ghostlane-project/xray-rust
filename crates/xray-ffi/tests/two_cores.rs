@@ -117,6 +117,41 @@ fn spawn_server(stop: Arc<AtomicBool>) -> SocketAddr {
     addr
 }
 
+/// Accepts connections and never reads them, so what a relay sends into one
+/// stays in the relay's buffers.
+fn spawn_sink(stop: Arc<AtomicBool>) -> SocketAddr {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    thread::spawn(move || {
+        let mut held = Vec::new();
+        while !stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _)) => held.push(stream),
+                Err(_) => thread::sleep(Duration::from_millis(10)),
+            }
+        }
+    });
+    addr
+}
+
+/// Writes into `client` until the pipe is full (a write times out), so the
+/// relay behind it holds what it could not pass on.
+fn fill(client: &mut TcpStream) -> usize {
+    client
+        .set_write_timeout(Some(Duration::from_millis(400)))
+        .unwrap();
+    let chunk = vec![0xa5_u8; 64 * 1024];
+    let mut sent = 0;
+    while sent < 64 * 1024 * 1024 {
+        match client.write(&chunk) {
+            Ok(n) => sent += n,
+            Err(_) => break,
+        }
+    }
+    sent
+}
+
 /// A SOCKS5 CONNECT to `target` through the inbound on `port`.
 fn socks_connect(port: u16, target: SocketAddr) -> TcpStream {
     let SocketAddr::V4(target) = target else {
@@ -179,6 +214,7 @@ fn two_running_cores_keep_their_own_inbound_and_protector_and_one_budget() {
     let capacity = 4 * 1024 * 1024;
     xray_transport::set_byte_budget(Some(xray_transport::ByteBudgetSettings { capacity, floor }));
     xray_transport::reset_byte_budget_peak();
+    assert_eq!(xray_transport::byte_budget_usage().peak, 0, "a fresh budget");
 
     let (core_a, port_a) = started(&CALLS_A);
     let (core_b, port_b) = started(&CALLS_B);
@@ -213,13 +249,43 @@ fn two_running_cores_keep_their_own_inbound_and_protector_and_one_budget() {
         "B's dials never reach A's protector"
     );
 
+    // B's relay and A's relay took from the process budget (the peak was
+    // reset before the cores started, so only these flows could raise it).
     let usage = xray_transport::byte_budget_usage();
-    assert_eq!(usage.capacity, capacity, "both cores read the one budget");
+    assert_eq!(usage.capacity, capacity);
+    assert!(
+        usage.peak > 0,
+        "the relays of the two cores took nothing from the process budget"
+    );
     assert!(
         usage.peak <= capacity,
         "peak {} beyond the budget {capacity}",
         usage.peak
     );
+
+    // Both cores hold bytes at once: A's flow is stuck against a server that
+    // reads nothing, so A's relay keeps what it was given; then B runs a
+    // probe and a flow beside it, and the one budget carries both.
+    let sink = spawn_sink(stop.clone());
+    let mut stuck_a = socks_connect(port_a, sink);
+    let sent = fill(&mut stuck_a);
+    assert!(sent > 0);
+    thread::sleep(Duration::from_millis(300));
+    let held_by_a = xray_transport::byte_budget_usage().in_use;
+    assert!(held_by_a > 0, "A's stuck relay holds nothing of the budget");
+    assert!(held_by_a <= capacity);
+    xray_transport::reset_byte_budget_peak();
+    probe(core_b, server);
+    let mut flow_b2 = socks_connect(port_b, server);
+    echo(&mut flow_b2, &big);
+    let both = xray_transport::byte_budget_usage();
+    assert!(
+        both.peak > held_by_a && both.peak <= capacity,
+        "B took nothing beside A, or went past the budget: peak {} outside ({held_by_a}, {capacity}]",
+        both.peak
+    );
+    drop(flow_b2);
+    drop(stuck_a);
 
     // Stopping B leaves A running and passing traffic.
     let mut err = std::ptr::null_mut();
