@@ -1,12 +1,22 @@
 //! The way out on macOS: a socket leaves by the interface the session
-//! names (`IP_BOUND_IF` and `IPV6_BOUND_IF`).
+//! names (`IP_BOUND_IF` and `IPV6_BOUND_IF`, set by the interface's index).
 //!
-//! Not built yet: a session that names an interface is refused.
+//! The index is read once, when the way out opens, so an interface that is
+//! not there is refused at the start. Routing then looks only at the routes
+//! of that interface: a default route through a tunnel, which every other
+//! socket follows, is passed over. The option is the one for the socket's
+//! family, IPv4 or IPv6; binding a socket again to the same interface is
+//! harmless, so no socket is asked what it is bound to first. Loopback
+//! sockets never get here (`escape.rs` leaves them out). The session's
+//! `bind` holds the interface alone on macOS.
 
+use std::ffi::CString;
+use std::io;
+use std::os::fd::RawFd;
 use std::sync::Arc;
 
-use crate::escape::Binder;
-use crate::events::Events;
+use crate::escape::{Binder, RawSocket};
+use crate::events::{Events, FailureCode};
 use crate::session::Bind;
 use crate::Failure;
 
@@ -17,10 +27,87 @@ use crate::Failure;
 /// `bind` when the interface cannot be used.
 pub fn open(bind: &Bind, events: &Events) -> Result<Arc<dyn Binder>, Failure> {
     let _ = events;
-    Err(Failure::unsupported(format!(
-        "binding sockets to `{}` is not built for macOS yet",
-        bind.interface
-    )))
+    let refused = |message: String| Failure::new(FailureCode::Bind, message);
+    if let Some(field) = bind.more.keys().next() {
+        return Err(refused(format!("`bind.{field}` is not read on macOS")));
+    }
+    let interface = &bind.interface;
+    let name = CString::new(interface.as_str())
+        .ok()
+        .filter(|name| !name.as_bytes().is_empty() && name.as_bytes().len() < libc::IFNAMSIZ)
+        .ok_or_else(|| refused(format!("`{interface}` is not an interface name")))?;
+    // SAFETY: `name` is a NUL-terminated string that outlives the call.
+    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
+    if index == 0 {
+        return Err(refused(format!("interface `{interface}` does not exist")));
+    }
+    Ok(Arc::new(IndexBinder {
+        interface: interface.clone(),
+        index,
+    }))
+}
+
+struct IndexBinder {
+    interface: String,
+    index: libc::c_uint,
+}
+
+/// The family of `fd`, as an unbound socket still reports it.
+fn family_of(fd: RawFd) -> io::Result<libc::c_int> {
+    // SAFETY: an all-zero sockaddr_storage is a valid value to write into.
+    let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+    let mut length = libc::socklen_t::try_from(std::mem::size_of::<libc::sockaddr_storage>())
+        .map_err(|_| io::Error::other("sockaddr_storage is too long"))?;
+    // SAFETY: `storage` and `length` are valid for writes of `length` bytes
+    // and a socklen_t, as getsockname asks.
+    let status = unsafe {
+        libc::getsockname(
+            fd,
+            std::ptr::from_mut(&mut storage).cast::<libc::sockaddr>(),
+            &mut length,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(libc::c_int::from(storage.ss_family))
+}
+
+impl Binder for IndexBinder {
+    fn bind(&self, socket: RawSocket) -> io::Result<()> {
+        let fd = RawFd::try_from(socket)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "not a file descriptor"))?;
+        let (level, option) = match family_of(fd)? {
+            libc::AF_INET => (libc::IPPROTO_IP, libc::IP_BOUND_IF),
+            libc::AF_INET6 => (libc::IPPROTO_IPV6, libc::IPV6_BOUND_IF),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a socket that is neither IPv4 nor IPv6",
+                ))
+            }
+        };
+        let length = libc::socklen_t::try_from(std::mem::size_of::<libc::c_uint>())
+            .map_err(|_| io::Error::other("c_uint is too long"))?;
+        // SAFETY: `self.index` is valid for reads of `length` bytes.
+        let status = unsafe {
+            libc::setsockopt(
+                fd,
+                level,
+                option,
+                std::ptr::from_ref(&self.index).cast(),
+                length,
+            )
+        };
+        if status != 0 {
+            let error = io::Error::last_os_error();
+            return Err(io::Error::new(
+                error.kind(),
+                format!("binding to `{}`: {error}", self.interface),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -31,10 +118,6 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use serde_json::{json, Map};
-
-    use std::io;
-
-    use crate::events::{Events, FailureCode};
 
     use super::*;
 
@@ -148,13 +231,21 @@ mod tests {
             .collect()
     }
 
-    /// The interface the system's default route leaves by.
+    /// The interface the system's default route leaves by. `route`'s answer
+    /// goes through a file: `events.rs` is the only source that may name the
+    /// standard output, and a source test holds it to that.
     fn default_interface() -> String {
-        let output = Command::new("route")
-            .args(["-n", "get", "default"])
-            .output()
-            .expect("route runs");
-        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let file = std::env::temp_dir().join(format!("escape-macos-route-{}", std::process::id()));
+        let status = Command::new("sh")
+            .arg("-c")
+            .arg("route -n get default > \"$1\"")
+            .arg("sh")
+            .arg(&file)
+            .status()
+            .expect("sh runs");
+        assert!(status.success(), "route -n get default: {status}");
+        let text = std::fs::read_to_string(&file).expect("route's answer");
+        let _ = std::fs::remove_file(&file);
         text.lines()
             .find_map(|line| line.trim().strip_prefix("interface:"))
             .map(|name| name.trim().to_owned())
