@@ -212,7 +212,32 @@ pub fn split_host_port(s: &str) -> io::Result<(&str, u16)> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    // The handle a protector sees is the socket's own, on both OSes.
+    #[cfg(unix)]
+    fn test_handle(socket: &impl std::os::fd::AsRawFd) -> RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(socket)
+    }
+    #[cfg(windows)]
+    fn test_handle(socket: &impl std::os::windows::io::AsRawSocket) -> RawFd {
+        std::os::windows::io::AsRawSocket::as_raw_socket(socket) as RawFd
+    }
+
+    #[test]
+    fn a_protector_is_handed_the_sockets_raw_handle() {
+        let seen = Arc::new(Mutex::new(None));
+        let record = Arc::clone(&seen);
+        set_protector(Some(Arc::new(move |handle| {
+            *record.lock().unwrap() = Some(handle);
+            true
+        })));
+        let socket = tcp_socket("127.0.0.1:9".parse().unwrap(), None).unwrap();
+        set_protector(None);
+        assert_eq!(*seen.lock().unwrap(), Some(test_handle(&socket)));
+    }
 
     #[test]
     fn a_send_buffer_bound_is_set_on_the_socket_before_it_dials() {

@@ -99,4 +99,11 @@ mod tests {
         assert_eq!(after, nofile_limits().unwrap());
         assert_eq!(after.soft, after.hard, "{after:?}");
     }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn no_file_limits_without_getrlimit() {
+        assert_eq!(nofile_limits(), None);
+        assert_eq!(raise_nofile_limit(), None);
+    }
 }

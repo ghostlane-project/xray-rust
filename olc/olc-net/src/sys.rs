@@ -25,4 +25,10 @@ mod tests {
         assert!(if_index("lo").or_else(|| if_index("lo0")).is_some());
         assert_eq!(if_index("no-such-interface0"), None);
     }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_named_zone_has_no_index_without_if_nametoindex() {
+        assert_eq!(if_index("no-such-interface0"), None);
+    }
 }
