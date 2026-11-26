@@ -1,0 +1,745 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/vkcalls/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/vkcalls/answer.go:141-213 (ShapeAnswer)",
+  "internal/engine/vkcalls/answer.go:229-290 (shapeSection), 293-302 (codecLines), 306-332 (videoPublishOf)",
+  "internal/engine/vkcalls/answer.go:88-106 (splitSections: the 1 MiB bound), 108-139 (ShapeState)",
+  "internal/engine/vkcalls/answer_test.go:12-98 (fixtureOffer, fixtureNative)",
+  "internal/engine/vkcalls/negotiate_test.go:24-75, 251-308 (pionOffer, offerWithPeer, liveShapeOffer)"
+ ],
+ "cases": {
+  "note": "ShapeAnswer(offer, native, state), twice on one state made of session_id, Version 0 and audio_ssrc (the SSRC of every audio publish slot here, so nothing is drawn at random). An answer's lines are joined with CRLF and no line end follows the last.",
+  "text": "An offer or a native answer is: the text of the table named by base, or the text sdp; then with lf every CRLF made a bare LF; then each edit replacing the first old by new; then with tail one more line, a= and tail times the letter x and CRLF.",
+  "bound": 1048576,
+  "session_id": 1234567890123456789,
+  "audio_ssrc": {
+   "2": 1234567890
+  },
+  "fresh_session_id_range": [
+   1000000000000000000,
+   1800000000000000000
+  ],
+  "fresh_audio_ssrc_range": [
+   1000000000,
+   2000000000
+  ],
+  "offers": {
+   "fixture": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+   "live": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=mid:1\r\na=sendrecv\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 98 99 102 103 104\r\nc=IN IP4 0.0.0.0\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:102 red/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:104 ulpfec/90000\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708139 cname:pat-5\r\na=ssrc:2463708139 msid:pat-5 video-pat-5\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=ssrc:2463708140 cname:pat-6\r\na=ssrc:2463708140 msid:pat-6 video-pat-6\r\n",
+   "peer_after": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\n",
+   "peer_ahead": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=ssrc:2463708140 cname:guest\r\na=ssrc:2463708140 msid:guest video-guest\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n",
+   "pion": "v=0\r\no=- 1790552099500 1790552100511 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=ice-lite\r\na=msid-semantic: WMS *\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=candidate:1 1 udp 1 192.0.2.1 43210 typ host\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=fingerprint:sha-256 32:16:0D:10:FC:A1:F1:04:43:F5:22:01:9B:2E:53:38\r\na=setup:actpass\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\na=ssrc:2463708138 cname:audio-mix\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=ice-pwd:GZU7Kw3Sq1YSJxrABCtRTGhms\r\na=mid:1\r\na=sendrecv\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l recv\r\na=simulcast:recv l\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:QcK1avCrgDjn21p\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=ssrc:2463708139 cname:pat\r\na=ssrc:2463708139 msid:pat video-pat\r\n"
+  },
+  "natives": {
+   "fixture": "v=0\r\no=- 123 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=mid:0\r\na=recvonly\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=mid:3\r\na=sendonly\r\na=msid:proofkit video\r\na=ssrc:3842537998 cname:proofkit\r\n",
+   "no_msid": "v=0\r\no=- 123 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=mid:0\r\na=recvonly\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=mid:3\r\na=sendonly\r\na=ssrc:3842537998 cname:proofkit\r\n",
+   "pion_msid": "v=0\r\no=- 123 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=mid:0\r\na=recvonly\r\nm=video 9 UDP/TLS/RTP/SAVPF 100\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=mid:3\r\na=sendonly\r\na=msid:olcrtc-1a2b3c4d vp8channel-5e6f7a8b\r\na=ssrc:3842537998 cname:olcrtc-1a2b3c4d\r\n"
+  },
+  "cases": [
+   {
+    "name": "the answer test's offer and native",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2799,
+    "second_sha256": "114363b4f1248ef26ca1f3f2267cba552d23538bac128c8559a938b132e11772",
+    "version_after": 4
+   },
+   {
+    "name": "the offer completed for a WebRTC stack",
+    "offer": {
+     "base": "pion"
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2999,
+    "second_sha256": "7b94333f7289524fc481954c30e76150b745a23b76e1d49aa315553a7f89ce6e",
+    "version_after": 4
+   },
+   {
+    "name": "a participant's section behind the publish slot",
+    "offer": {
+     "base": "peer_after"
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 3645,
+    "second_sha256": "e5c31ae91cc2dcdddfe416ea034367493bb990e03c3124485256ed70572e9ab9",
+    "version_after": 4
+   },
+   {
+    "name": "a participant's section ahead of the publish slot",
+    "offer": {
+     "base": "peer_ahead"
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5 6\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 96 97 102 103\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:96 VP8/90000\r\na=rtcp-fb:96 nack\r\na=rtpmap:97 rtx/90000\r\na=fmtp:97 apt=96\r\na=rtpmap:102 H264/90000\r\na=rtcp-fb:102 nack\r\na=fmtp:102 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 104\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:104 H264/90000\r\na=fmtp:104 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 3645,
+    "second_sha256": "606c53726830f40197fc47f9b3371607d2a38624603479869f2e18deaa96137b",
+    "version_after": 4
+   },
+   {
+    "name": "the live numbering",
+    "offer": {
+     "base": "live"
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 98 99 102 103 104\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:102 red/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:104 ulpfec/90000\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 3706,
+    "second_sha256": "8b8e8e29517369ec1f7ef7cd943d9cc690c93b883774896a67059f68ca80be32",
+    "version_after": 4
+   },
+   {
+    "name": "the engine's own msid and cname",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "pion_msid"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS olcrtc-1a2b3c4d\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:olcrtc-1a2b3c4d 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:olcrtc-1a2b3c4d\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:olcrtc-1a2b3c4d vp8channel-5e6f7a8b\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2841,
+    "second_sha256": "24053d986bf2cb92b893fedc3ec2cfb1e821a3918fd7e66c6be81aca388dc7b3",
+    "version_after": 4
+   },
+   {
+    "name": "the engine's own msid and cname, the live numbering",
+    "offer": {
+     "base": "live"
+    },
+    "native": {
+     "base": "pion_msid"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=msid-semantic: WMS olcrtc-1a2b3c4d\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 98 99 102 103 104\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=sendonly\r\na=msid:olcrtc-1a2b3c4d vp8channel-5e6f7a8b\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:102 red/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:104 ulpfec/90000\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 3734,
+    "second_sha256": "225cf0fe27c582d57a40310cf5e92e59570db5d6022116f165371dfbc3828e67",
+    "version_after": 4
+   },
+   {
+    "name": "a native answer with no msid line",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "no_msid"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2799,
+    "second_sha256": "114363b4f1248ef26ca1f3f2267cba552d23538bac128c8559a938b132e11772",
+    "version_after": 4
+   },
+   {
+    "name": "a native answer with no msid line, the live numbering",
+    "offer": {
+     "base": "live"
+    },
+    "native": {
+     "base": "no_msid"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 98 99 102 103 104\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:102 red/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:104 ulpfec/90000\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 3706,
+    "second_sha256": "8b8e8e29517369ec1f7ef7cd943d9cc690c93b883774896a67059f68ca80be32",
+    "version_after": 4
+   },
+   {
+    "name": "an msid line of one word is no msid line",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=msid:proofkit video",
+       "new": "a=msid:proofkit"
+      }
+     ]
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2799,
+    "second_sha256": "114363b4f1248ef26ca1f3f2267cba552d23538bac128c8559a938b132e11772",
+    "version_after": 4
+   },
+   {
+    "name": "bare line feeds in both",
+    "offer": {
+     "base": "fixture",
+     "lf": true
+    },
+    "native": {
+     "base": "fixture",
+     "lf": true
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2799,
+    "second_sha256": "114363b4f1248ef26ca1f3f2267cba552d23538bac128c8559a938b132e11772",
+    "version_after": 4
+   },
+   {
+    "name": "empty lines in the offer",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=ice-lite\r\n",
+       "new": "a=ice-lite\r\n\r\n"
+      },
+      {
+       "old": "a=mid:3\r\n",
+       "new": "\r\na=mid:3\r\n\r\n"
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2799,
+    "second_sha256": "114363b4f1248ef26ca1f3f2267cba552d23538bac128c8559a938b132e11772",
+    "version_after": 4
+   },
+   {
+    "name": "no line end behind the offer's last line",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "video-pat\r\n",
+       "new": "video-pat"
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2799,
+    "second_sha256": "114363b4f1248ef26ca1f3f2267cba552d23538bac128c8559a938b132e11772",
+    "version_after": 4
+   },
+   {
+    "name": "the first credentials of the native answer are taken",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=mid:3\r\n",
+       "new": "a=mid:3\r\na=ice-ufrag:second\r\na=ice-pwd:secondsecond\r\na=fingerprint:sha-256 00:11\r\n"
+      }
+     ]
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2799,
+    "second_sha256": "114363b4f1248ef26ca1f3f2267cba552d23538bac128c8559a938b132e11772",
+    "version_after": 4
+   },
+   {
+    "name": "a credential line with a space behind it is passed over",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=ice-ufrag:KdfaZFqRLOnUhmUW\r\n",
+       "new": "a=ice-ufrag:KdfaZFqRLOnUhmUW \r\n"
+      },
+      {
+       "old": "a=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=mid:3",
+       "new": "a=ice-ufrag:second\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=mid:3"
+      }
+     ]
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:second\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:second\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:second\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:second\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:second\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2749,
+    "second_sha256": "25b7f59af4f1e439610bd24ddb8c704d5086741722a81beb9a329e22dc3a3cca",
+    "version_after": 4
+   },
+   {
+    "name": "the first cname of the publish section is taken",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=ssrc:3842537998 cname:proofkit\r\n",
+       "new": "a=ssrc:1 msid:proofkit video\r\na=ssrc:2 cname:first\r\na=ssrc:3 cname:second\r\n"
+      }
+     ]
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:first\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2796,
+    "second_sha256": "f01ed2c403868b46037d7b1a8069b13c7620dd3addb383f585a2e2b7a23d040d",
+    "version_after": 4
+   },
+   {
+    "name": "a second receive-only video section is a publish slot too",
+    "offer": {
+     "base": "live",
+     "edits": [
+      {
+       "old": "a=sendonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000",
+       "new": "a=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000"
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 3 5 6\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101 98 99 102 103 104\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=extmap:14 urn:ietf:params:rtp-hdrext:sdes:mid\r\na=extmap:10 urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:102 red/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:104 ulpfec/90000\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101 98 99 104 105 106\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:6\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rtpmap:101 rtx/90000\r\na=fmtp:101 apt=100\r\na=rtpmap:98 H264/90000\r\na=fmtp:98 packetization-mode=1;level-asymmetry-allowed=1;profile-level-id=42e034\r\na=rtpmap:99 rtx/90000\r\na=fmtp:99 apt=98\r\na=rtpmap:104 red/90000\r\na=rtpmap:105 rtx/90000\r\na=fmtp:105 apt=104\r\na=rtpmap:106 ulpfec/90000",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 3959,
+    "second_sha256": "1584ad7ca035dceeed385295723ba4dcbd9eb68041d49542bf874d65fc0b6633",
+    "version_after": 4
+   },
+   {
+    "name": "an offer of exactly the bound, its CRLFs counted as one byte",
+    "offer": {
+     "base": "fixture",
+     "tail": 1046651
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2799,
+    "second_sha256": "114363b4f1248ef26ca1f3f2267cba552d23538bac128c8559a938b132e11772",
+    "version_after": 4
+   },
+   {
+    "name": "a native answer of exactly the bound",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "tail": 1048066
+    },
+    "answer": "v=0\r\no=- 1234567890123456789 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\na=group:BUNDLE 0 1 2 3 5\r\na=msid-semantic: WMS proofkit\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:0\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=rtcp-fb:111 transport-cc\r\na=fmtp:111 useinbandfec=1;minptime=10\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\nc=IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:1\r\na=sctp-port:5000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:2\r\na=extmap:1 urn:ietf:params:rtp-hdrext:ssrc-audio-level\r\na=sendonly\r\na=msid:proofkit 2-audio\r\na=rtcp-mux\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 useinbandfec=1;minptime=10;maxaveragebitrate=64000\r\na=ssrc:1234567890 cname:proofkit\r\nm=video 9 UDP/TLS/RTP/SAVPF 102 103 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:3\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=sendonly\r\na=msid:proofkit video\r\na=rtcp-mux\r\na=rtpmap:102 VP9/90000\r\na=rtcp-fb:102 transport-cc\r\na=rtpmap:103 rtx/90000\r\na=fmtp:103 apt=102\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack\r\na=rtcp-fb:100 nack pli\r\na=rid:l send max-width=320;max-height=180;max-fps=15;max-br=180000\r\na=rid:m send max-width=640;max-height=360;max-fps=20;max-br=500000\r\na=rid:h send max-width=1280;max-height=720;max-fps=20;max-br=1200000\r\na=simulcast:send l;m;h\r\nm=video 9 UDP/TLS/RTP/SAVPF 100 101\r\nc=IN IP4 0.0.0.0\r\na=rtcp:9 IN IP4 0.0.0.0\r\na=ice-ufrag:KdfaZFqRLOnUhmUW\r\na=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\na=ice-options:trickle\r\na=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\na=setup:active\r\na=mid:5\r\na=extmap:4 http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01\r\na=extmap:3 http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time\r\na=recvonly\r\na=rtcp-mux\r\na=rtpmap:100 VP8/90000\r\na=rtcp-fb:100 nack",
+    "second_o": "o=- 1234567890123456789 4 IN IP4 127.0.0.1",
+    "second_len": 2799,
+    "second_sha256": "114363b4f1248ef26ca1f3f2267cba552d23538bac128c8559a938b132e11772",
+    "version_after": 4
+   },
+   {
+    "name": "a native answer with nothing in it",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "sdp": "v=0"
+    },
+    "is": "ErrShapeNoCrypto",
+    "error": "vkcalls: native answer carries no ICE/DTLS fields",
+    "version_after": 0
+   },
+   {
+    "name": "no ufrag",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=ice-ufrag:KdfaZFqRLOnUhmUW\r\n",
+       "new": ""
+      },
+      {
+       "old": "a=ice-ufrag:KdfaZFqRLOnUhmUW\r\n",
+       "new": ""
+      }
+     ]
+    },
+    "is": "ErrShapeNoCrypto",
+    "error": "vkcalls: native answer carries no ICE/DTLS fields",
+    "version_after": 0
+   },
+   {
+    "name": "no password",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\n",
+       "new": ""
+      },
+      {
+       "old": "a=ice-pwd:WTugXtAYkOEfiYMfOWDCKNNQNhVqAkoc\r\n",
+       "new": ""
+      }
+     ]
+    },
+    "is": "ErrShapeNoCrypto",
+    "error": "vkcalls: native answer carries no ICE/DTLS fields",
+    "version_after": 0
+   },
+   {
+    "name": "no fingerprint",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\n",
+       "new": ""
+      },
+      {
+       "old": "a=fingerprint:sha-256 BC:92:07:E6:13:23:65:25:C2:FE:85:A0:9D:EE:46:CA\r\n",
+       "new": ""
+      }
+     ]
+    },
+    "is": "ErrShapeNoCrypto",
+    "error": "vkcalls: native answer carries no ICE/DTLS fields",
+    "version_after": 0
+   },
+   {
+    "name": "an empty ufrag",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=ice-ufrag:KdfaZFqRLOnUhmUW\r\n",
+       "new": "a=ice-ufrag:\r\n"
+      },
+      {
+       "old": "a=ice-ufrag:KdfaZFqRLOnUhmUW\r\n",
+       "new": "a=ice-ufrag:\r\n"
+      }
+     ]
+    },
+    "is": "ErrShapeNoCrypto",
+    "error": "vkcalls: native answer carries no ICE/DTLS fields",
+    "version_after": 0
+   },
+   {
+    "name": "no cname line in the publish section",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=ssrc:3842537998 cname:proofkit\r\n",
+       "new": ""
+      }
+     ]
+    },
+    "is": "ErrShapeNoPublish",
+    "error": "vkcalls: native answer declares no video publish section",
+    "version_after": 0
+   },
+   {
+    "name": "the cname line in another section only",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=ssrc:3842537998 cname:proofkit\r\n",
+       "new": ""
+      },
+      {
+       "old": "a=mid:0\r\n",
+       "new": "a=mid:0\r\na=ssrc:3842537998 cname:proofkit\r\n"
+      }
+     ]
+    },
+    "is": "ErrShapeNoPublish",
+    "error": "vkcalls: native answer declares no video publish section",
+    "version_after": 0
+   },
+   {
+    "name": "no send-only video section in the native answer",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=sendonly",
+       "new": "a=sendrecv"
+      }
+     ]
+    },
+    "is": "ErrShapeNoPublish",
+    "error": "vkcalls: native answer declares no video publish section",
+    "version_after": 0
+   },
+   {
+    "name": "an SSRC past 32 bits",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=ssrc:3842537998 cname",
+       "new": "a=ssrc:4294967296 cname"
+      }
+     ]
+    },
+    "is": "ErrShapeNoPublish",
+    "error": "vkcalls: native answer declares no video publish section",
+    "version_after": 0
+   },
+   {
+    "name": "no BUNDLE group",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=group:BUNDLE 0 1 2 3 5\r\n",
+       "new": ""
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeBundle",
+    "error": "vkcalls: offer without a BUNDLE group",
+    "version_after": 0
+   },
+   {
+    "name": "a BUNDLE group with nothing behind it",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=group:BUNDLE 0 1 2 3 5\r\n",
+       "new": "a=group:BUNDLE\r\n"
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeBundle",
+    "error": "vkcalls: offer without a BUNDLE group",
+    "version_after": 0
+   },
+   {
+    "name": "the first section has no mid",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=mid:0\r\n",
+       "new": ""
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeSectionWithoutMID",
+    "error": "vkcalls: offer section without a=mid",
+    "version_after": 2
+   },
+   {
+    "name": "the data section has no mid",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=mid:1\r\n",
+       "new": ""
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeSectionWithoutMID",
+    "error": "vkcalls: offer section without a=mid",
+    "version_after": 2
+   },
+   {
+    "name": "a mid with a space",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=mid:3\r\n",
+       "new": "a=mid:3 4\r\n"
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeSectionWithoutMID",
+    "error": "vkcalls: offer section without a=mid",
+    "version_after": 2
+   },
+   {
+    "name": "a video section both ways",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=recvonly\r\na=rtcp-mux\r\na=rtpmap:102",
+       "new": "a=sendrecv\r\na=rtcp-mux\r\na=rtpmap:102"
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeDirection",
+    "error": "vkcalls: offer section with unsupported direction: mid 3",
+    "version_after": 2
+   },
+   {
+    "name": "an inactive audio section",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=sendonly\r\n",
+       "new": "a=inactive\r\n"
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeDirection",
+    "error": "vkcalls: offer section with unsupported direction: mid 0",
+    "version_after": 2
+   },
+   {
+    "name": "a video section with no direction",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=recvonly\r\na=rtcp-mux\r\na=rtpmap:102",
+       "new": "a=rtcp-mux\r\na=rtpmap:102"
+      }
+     ]
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeDirection",
+    "error": "vkcalls: offer section with unsupported direction: mid 3",
+    "version_after": 2
+   },
+   {
+    "name": "an offer one byte past the bound",
+    "offer": {
+     "base": "fixture",
+     "tail": 1046652
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeSDPTooLarge",
+    "error": "vkcalls: SDP exceeds size bound",
+    "version_after": 0
+   },
+   {
+    "name": "a native answer one byte past the bound",
+    "offer": {
+     "base": "fixture"
+    },
+    "native": {
+     "base": "fixture",
+     "tail": 1048067
+    },
+    "is": "ErrShapeSDPTooLarge",
+    "error": "vkcalls: SDP exceeds size bound",
+    "version_after": 0
+   },
+   {
+    "name": "no native credentials is said before no BUNDLE group",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=group:BUNDLE 0 1 2 3 5\r\n",
+       "new": ""
+      }
+     ]
+    },
+    "native": {
+     "sdp": "v=0"
+    },
+    "is": "ErrShapeNoCrypto",
+    "error": "vkcalls: native answer carries no ICE/DTLS fields",
+    "version_after": 0
+   },
+   {
+    "name": "no BUNDLE group is said before an offer past the bound",
+    "offer": {
+     "base": "fixture",
+     "edits": [
+      {
+       "old": "a=group:BUNDLE 0 1 2 3 5\r\n",
+       "new": ""
+      }
+     ],
+     "tail": 1046715
+    },
+    "native": {
+     "base": "fixture"
+    },
+    "is": "ErrShapeBundle",
+    "error": "vkcalls: offer without a BUNDLE group",
+    "version_after": 0
+   }
+  ]
+ }
+}

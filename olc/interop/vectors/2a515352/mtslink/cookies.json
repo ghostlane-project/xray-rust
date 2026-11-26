@@ -1,0 +1,185 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/auth/mtslink/zz_vectors_test.go",
+ "sources": [
+  "internal/auth/mtslink/api.go:175-180 (every Set-Cookie with a name and a value, through http.Response.Cookies)",
+  "internal/auth/mtslink/api.go:229-236 (joined with \"; \"; none is an incomplete reply)"
+ ],
+ "cases": [
+  {
+   "name": "as the service sets them",
+   "set_cookie": [
+    "access=eyJguest.access; Path=/; Domain=.mts-link.ru; Secure; HttpOnly; SameSite=None",
+    "refresh=6074c7a91c56476840728cab1c1b42f5; Path=/; Domain=.mts-link.ru; Secure; HttpOnly; SameSite=None",
+    "sessionId=529e1f7db49244b0; Path=/; Domain=.mts-link.ru; Secure; HttpOnly; SameSite=None"
+   ],
+   "cookie": "access=eyJguest.access; refresh=6074c7a91c56476840728cab1c1b42f5; sessionId=529e1f7db49244b0"
+  },
+  {
+   "name": "no attributes",
+   "set_cookie": [
+    "a=1",
+    "b=2"
+   ],
+   "cookie": "a=1; b=2"
+  },
+  {
+   "name": "an empty value is skipped",
+   "set_cookie": [
+    "a=1; Path=/",
+    "b=; Path=/",
+    "c=3"
+   ],
+   "cookie": "a=1; c=3"
+  },
+  {
+   "name": "a quoted value loses its quotes",
+   "set_cookie": [
+    "a=\"q\"; Path=/"
+   ],
+   "cookie": "a=q"
+  },
+  {
+   "name": "a quoted empty value",
+   "set_cookie": [
+    "a=\"\"",
+    "b=2"
+   ],
+   "cookie": "b=2"
+  },
+  {
+   "name": "one quote",
+   "set_cookie": [
+    "a=\"q",
+    "b=2"
+   ],
+   "cookie": "b=2"
+  },
+  {
+   "name": "a quote inside",
+   "set_cookie": [
+    "a=q\"r",
+    "b=2"
+   ],
+   "cookie": "b=2"
+  },
+  {
+   "name": "a name set twice is sent twice",
+   "set_cookie": [
+    "a=1",
+    "a=2"
+   ],
+   "cookie": "a=1; a=2"
+  },
+  {
+   "name": "names differ by case",
+   "set_cookie": [
+    "A=1",
+    "a=2"
+   ],
+   "cookie": "A=1; a=2"
+  },
+  {
+   "name": "a space inside a value",
+   "set_cookie": [
+    "a=b c",
+    "b=2"
+   ],
+   "cookie": "a=b c; b=2"
+  },
+  {
+   "name": "a space inside a quoted value",
+   "set_cookie": [
+    "a=\"b c\"",
+    "b=2"
+   ],
+   "cookie": "a=b c; b=2"
+  },
+  {
+   "name": "a comma inside a value",
+   "set_cookie": [
+    "a=b,c",
+    "b=2"
+   ],
+   "cookie": "a=b,c; b=2"
+  },
+  {
+   "name": "a backslash inside a value",
+   "set_cookie": [
+    "a=b\\c",
+    "b=2"
+   ],
+   "cookie": "b=2"
+  },
+  {
+   "name": "an equals sign inside a value",
+   "set_cookie": [
+    "a=1=2"
+   ],
+   "cookie": "a=1=2"
+  },
+  {
+   "name": "a name that is no token",
+   "set_cookie": [
+    "bad name=1",
+    "b=2"
+   ],
+   "cookie": "b=2"
+  },
+  {
+   "name": "no name",
+   "set_cookie": [
+    "=v",
+    "b=2"
+   ],
+   "cookie": "b=2"
+  },
+  {
+   "name": "no equals sign",
+   "set_cookie": [
+    "novalue",
+    "b=2"
+   ],
+   "cookie": "b=2"
+  },
+  {
+   "name": "a value that is not ASCII",
+   "set_cookie": [
+    "a=é",
+    "b=2"
+   ],
+   "cookie": "b=2"
+  },
+  {
+   "name": "spaces around the pair",
+   "set_cookie": [
+    "  a=1  ; Path=/",
+    "b = 2"
+   ],
+   "cookie": "a=1; b= 2"
+  },
+  {
+   "name": "an attribute only",
+   "set_cookie": [
+    "; Path=/",
+    "b=2"
+   ],
+   "cookie": "b=2"
+  },
+  {
+   "name": "nothing kept",
+   "set_cookie": [
+    "a=; Path=/",
+    "novalue"
+   ],
+   "cookie": "",
+   "error": "guestlogin: mtslink: incomplete reply"
+  },
+  {
+   "name": "no Set-Cookie at all",
+   "set_cookie": [],
+   "cookie": "",
+   "error": "guestlogin: mtslink: incomplete reply"
+  }
+ ]
+}

@@ -1,0 +1,10 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/transport/vp8channel/zz_vectors_test.go TestZZVectors",
+ "sources": [
+  "internal/transport/vp8channel/transport.go:56-57"
+ ],
+ "cases": {
+  "max_payload_size": 61440
+ }
+}

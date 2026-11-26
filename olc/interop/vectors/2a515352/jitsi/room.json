@@ -1,0 +1,202 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/auth/jitsi/zz_vectors_test.go",
+ "sources": [
+  "internal/auth/jitsi/jitsi.go:75-95 (parseRoomURL)",
+  "internal/auth/jitsi/jitsi_test.go (TestParseRoomURL)"
+ ],
+ "cases": [
+  {
+   "raw": "https://meet.systemli.org/myroom",
+   "host": "meet.systemli.org",
+   "room": "myroom",
+   "error": ""
+  },
+  {
+   "raw": "http://meet.example/myroom",
+   "host": "meet.example",
+   "room": "myroom",
+   "error": ""
+  },
+  {
+   "raw": "meet.example.com/myroom",
+   "host": "meet.example.com",
+   "room": "myroom",
+   "error": ""
+  },
+  {
+   "raw": "https://meet.example/myroom/",
+   "host": "meet.example",
+   "room": "myroom",
+   "error": ""
+  },
+  {
+   "raw": "//meet.example/myroom",
+   "host": "meet.example",
+   "room": "myroom",
+   "error": ""
+  },
+  {
+   "raw": "https://meet.example/MyRoom",
+   "host": "meet.example",
+   "room": "MyRoom",
+   "error": ""
+  },
+  {
+   "raw": "",
+   "host": "",
+   "room": "",
+   "error": "required"
+  },
+  {
+   "raw": "meet.example.com",
+   "host": "",
+   "room": "",
+   "error": "invalid"
+  },
+  {
+   "raw": "https://meet.example/",
+   "host": "",
+   "room": "",
+   "error": "invalid"
+  },
+  {
+   "raw": "https://",
+   "host": "",
+   "room": "",
+   "error": "invalid"
+  },
+  {
+   "raw": "   ",
+   "host": "",
+   "room": "",
+   "error": "required"
+  },
+  {
+   "raw": "  https://meet.example/a/b//  ",
+   "host": "meet.example",
+   "room": "a/b",
+   "error": ""
+  },
+  {
+   "raw": "/meet.example/room",
+   "host": "meet.example",
+   "room": "room",
+   "error": ""
+  },
+  {
+   "raw": "https:///room",
+   "host": "",
+   "room": "",
+   "error": "invalid"
+  },
+  {
+   "raw": "https://meet.example//",
+   "host": "",
+   "room": "",
+   "error": "invalid"
+  },
+  {
+   "raw": "https://meet.example/ / ",
+   "host": "meet.example",
+   "room": " ",
+   "error": ""
+  },
+  {
+   "raw": "https://meet.example/room?x=1#frag",
+   "host": "meet.example",
+   "room": "room?x=1#frag",
+   "error": ""
+  },
+  {
+   "raw": "https://user:pw@meet.example/room",
+   "host": "user:pw@meet.example",
+   "room": "room",
+   "error": ""
+  },
+  {
+   "raw": "https://meet.example:8443/room",
+   "host": "meet.example:8443",
+   "room": "room",
+   "error": ""
+  },
+  {
+   "raw": "https://meet.example/jitsi/room",
+   "host": "meet.example",
+   "room": "jitsi/room",
+   "error": ""
+  },
+  {
+   "raw": "://meet.example/room",
+   "host": "meet.example",
+   "room": "room",
+   "error": ""
+  },
+  {
+   "raw": "a://b://c/d",
+   "host": "b:",
+   "room": "c/d",
+   "error": ""
+  },
+  {
+   "raw": "\t\n meet.example/room \r\n",
+   "host": "meet.example",
+   "room": "room",
+   "error": ""
+  },
+  {
+   "raw": "meet.example/ room with spaces ",
+   "host": "meet.example",
+   "room": " room with spaces",
+   "error": ""
+  },
+  {
+   "raw": "https:// meet.example/room",
+   "host": "meet.example",
+   "room": "room",
+   "error": ""
+  },
+  {
+   "raw": "https://meet.example/éè",
+   "host": "meet.example",
+   "room": "éè",
+   "error": ""
+  },
+  {
+   "raw": "/",
+   "host": "",
+   "room": "",
+   "error": "invalid"
+  },
+  {
+   "raw": "//",
+   "host": "",
+   "room": "",
+   "error": "invalid"
+  },
+  {
+   "raw": "///",
+   "host": "",
+   "room": "",
+   "error": "invalid"
+  },
+  {
+   "raw": "a/b",
+   "host": "a",
+   "room": "b",
+   "error": ""
+  },
+  {
+   "raw": "/a/b",
+   "host": "a",
+   "room": "b",
+   "error": ""
+  },
+  {
+   "raw": "a//b",
+   "host": "a",
+   "room": "b",
+   "error": ""
+  }
+ ]
+}

@@ -796,4 +796,55 @@ mod carried {
             Err(error) => Ok(Err(error.to_string())),
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use serde_json::json;
+
+        // The interop fakes name their engine and credentials in the room
+        // half; a real carrier's session names none of them. The seam is
+        // read-only until a room starts, so no network is needed here.
+        fn fake_room() -> serde_json::Value {
+            json!({
+                "version": 1,
+                "room": {
+                    "provider": "none",
+                    "transport": "datachannel",
+                    "rooms": ["ws://127.0.0.1:9/connector"],
+                    "key": "6b".repeat(32),
+                    "engine": "salutejazz",
+                    "token": "password",
+                    "room_id": "roomcode",
+                    "engine_extra": {"gateway": "http://127.0.0.1:9", "conferenceId": "conf"},
+                    "ice_transport_policy": "relay",
+                    "dns": "127.0.0.1:53"
+                }
+            })
+        }
+
+        #[test]
+        fn a_fake_carrier_room_reads_its_engine_and_credentials() {
+            let spec = fake_room();
+            let findings = check(spec.get("room").unwrap());
+            let errors: Vec<_> = findings
+                .iter()
+                .filter(|found| found.severity == Severity::Error)
+                .map(|found| found.message.clone())
+                .collect();
+            assert!(errors.is_empty(), "the interop seam was refused: {errors:?}");
+        }
+
+        #[test]
+        fn a_plain_none_room_needs_none_of_the_interop_fields() {
+            let spec = json!({
+                "provider": "none",
+                "transport": "datachannel",
+                "rooms": ["tcp://127.0.0.1:7000/room"],
+                "key": "6b".repeat(32)
+            });
+            let findings = check(&spec);
+            assert!(findings.iter().all(|found| found.severity != Severity::Error));
+        }
+    }
 }

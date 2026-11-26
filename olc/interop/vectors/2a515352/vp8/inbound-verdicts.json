@@ -1,0 +1,478 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/transport/vp8channel/zz_vectors_wire_test.go TestZZVectors",
+ "sources": [
+  "internal/transport/vp8channel/inbound.go:11-102",
+  "internal/transport/vp8channel/control.go:96-120",
+  "internal/transport/vp8channel/datagram.go:115-137",
+  "internal/transport/vp8channel/transport.go:438-457"
+ ],
+ "cases": {
+  "cases": [
+   {
+    "effects": {
+     "peer_seen": false,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56d",
+    "name": "short",
+    "scenario": "fresh"
+   },
+   {
+    "effects": {
+     "peer_seen": false,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56cb901203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "bad_crc",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": false,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fcc87d8df500000200000001008382e35b01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "foreign_token",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": false,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc0000000000000200000001002f06562501203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "token_zero",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": false,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000010000000000303a2e5601203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "loopback_data",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": false,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e380000100000000006301ab8c01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "loopback_control",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000999eebfcc5101203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "dst_other",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3000002008000099903e67a6a01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "dst_other_control_epoch",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 1,
+     "control": 0,
+     "datagrams": 0,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3000002008000010042ecdb8201203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "data_to_our_control_epoch",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3800002008000010011d75e58",
+    "name": "control_keepalive",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e38000020000000000e595d922",
+    "name": "control_keepalive_broadcast",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e38000020000000000e595d92201203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "control_broadcast",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e38000020000000100fc8ee86301203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "control_to_our_data_epoch",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 1,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3800002008000010011d75e5801203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "control_before_confirmation",
+    "scenario": "fresh"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 2,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3800002008000010011d75e584f4c4b42002201203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90002c0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cf0f1afd7d",
+    "name": "control_batch",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 1,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e38000030080000100da8b8dfd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "control_from_another_epoch",
+    "scenario": "fresh"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 1,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db94f4c5544756470",
+    "name": "datagram",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 1,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000000b6ae5cf84f4c5544756470",
+    "name": "datagram_broadcast",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3000003000000010064e9be1c4f4c5544756470",
+    "name": "datagram_other_src",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db94f4c5544756470",
+    "name": "datagram_before_confirmation",
+    "scenario": "fresh"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 2,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db94f4c554200054f4c55446100054f4c554462",
+    "name": "datagram_batch",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 1,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db94f4c554200054f4c5544610003726177",
+    "name": "datagram_batch_one_bare",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 1,
+     "control": 0,
+     "datagrams": 0,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db94f4c5542000561",
+    "name": "datagram_batch_truncated",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3000003000000010064e9be1c4f4c554200054f4c554461",
+    "name": "datagram_batch_other_src",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000000b6ae5cf801203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "data_before_confirmation",
+    "scenario": "fresh"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": true
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3000003000000010064e9be1c01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "data_other_epoch_unhealthy",
+    "scenario": "unhealthy"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3000003000000010064e9be1c01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "data_other_epoch_unhealthy_recent",
+    "scenario": "unhealthy_recent"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e3000003000000010064e9be1c01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "data_other_epoch_healthy",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": false,
+     "restart": true
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000000000000100e27dccb201203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "data_src_zero",
+    "scenario": "unhealthy"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 0,
+     "control": 0,
+     "datagrams": 0,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db9",
+    "name": "data_keepalive",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 1,
+     "control": 0,
+     "datagrams": 0,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db901203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "data",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 1,
+     "control": 0,
+     "datagrams": 0,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000000b6ae5cf801203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90",
+    "name": "data_broadcast",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 3,
+     "control": 0,
+     "datagrams": 0,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db94f4c4b42002201203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f90002c0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cf0f1afd7d000e032241607f9ebddc001f594efdc4",
+    "name": "data_batch",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 1,
+     "control": 0,
+     "datagrams": 0,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db94f4c4b42002201203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f9000000221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cf0f1afd7d",
+    "name": "data_batch_bad_entry",
+    "scenario": "confirmed"
+   },
+   {
+    "effects": {
+     "peer_seen": true,
+     "data": 1,
+     "control": 0,
+     "datagrams": 0,
+     "touched": true,
+     "restart": false
+    },
+    "frame": "3001009d012a10001000004708858588998488fc6718e9e30000020000000100afb56db901203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f3173655749372ab5f6f",
+    "name": "data_bad_kcp_crc",
+    "scenario": "confirmed"
+   }
+  ],
+  "channel": "vectors",
+  "local_epoch": 256,
+  "peer_epoch": 512,
+  "scenarios": {
+   "confirmed": "the peer confirmed, its last frame an hour ago, the link healthy",
+   "fresh": "no peer confirmed, the link healthy",
+   "unhealthy": "the peer confirmed, its last frame an hour ago, the link unhealthy",
+   "unhealthy_recent": "the peer confirmed just now, the link unhealthy"
+  }
+ }
+}

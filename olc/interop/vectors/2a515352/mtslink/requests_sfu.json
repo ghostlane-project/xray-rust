@@ -1,0 +1,102 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/mtslink/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/mtslink/signal.go:66-87 (the join)",
+  "internal/engine/mtslink/signal.go:130-154 (the pin)",
+  "internal/engine/mtslink/signal.go:156-178 (the take-back)",
+  "internal/engine/mtslink/mtslink.go:375-397 (Connect)",
+  "internal/engine/mtslink/mtslink_test.go:45-198 (the fake SFU)",
+  "internal/protect/protect.go:93-113 (the HTTP client)"
+ ],
+ "cases": {
+  "note": "Every request of Session.Connect as Go's net/http wrote it on a plain-HTTP loopback connection, read by TCP listeners in front of the fake SFU: header lines in wire order, HTTP/1.1. A flow's requests are the SFU's first, then the gateway's. Close makes no request. Over TLS the client offers h2 too, and h2 keeps no header order between requests; that wire is not here.",
+  "masked": {
+   "\u003cgateway\u003e": "the host:port of the listener Extra's gateway names",
+   "\u003coffer-length\u003e": "the offer's length in bytes, decimal",
+   "\u003coffer.sdp\u003e": "the offer as posted: offer.sdp with its names replaced by that join's values",
+   "\u003csfu\u003e": "the host:port of the listener the join URL names"
+  },
+  "flows": [
+   {
+    "flow": "join",
+    "error": "",
+    "requests": [
+     {
+      "flow": "join",
+      "seq": 0,
+      "server": "sfu",
+      "connection": 0,
+      "method": "POST",
+      "target": "/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026originMid=2\u0026pid=3d131e5f5194d283\u0026preferredPublishCodec=vp9\u0026publishToken=vcPRIVATE\u0026twcc=true\u0026userId=100200999\u0026userName=guest",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003csfu\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: \u003coffer-length\u003e",
+       "Content-Type: application/sdp",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "\u003coffer.sdp\u003e"
+     },
+     {
+      "flow": "join",
+      "seq": 1,
+      "server": "sfu",
+      "connection": 0,
+      "method": "POST",
+      "target": "/rtc/peer/31djU82nnvUp1kyQjpDpPhyWx6eeoD1xs1SrH6HGSrPpwQyR8IgX3REL7/pin",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003csfu\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 16",
+       "Content-Type: application/json",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "{\"streams\":[\"\"]}"
+     }
+    ]
+   },
+   {
+    "flow": "join_refused",
+    "error": "mtslink: the SFU refused the join: status 400: SDP validation error: exceeded maximal audio players value 1",
+    "requests": [
+     {
+      "flow": "join_refused",
+      "seq": 0,
+      "server": "sfu",
+      "connection": 0,
+      "method": "POST",
+      "target": "/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026originMid=2\u0026pid=3d131e5f5194d283\u0026preferredPublishCodec=vp9\u0026publishToken=vcPRIVATE\u0026twcc=true\u0026userId=100200999\u0026userName=guest",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003csfu\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: \u003coffer-length\u003e",
+       "Content-Type: application/sdp",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "\u003coffer.sdp\u003e"
+     },
+     {
+      "flow": "join_refused",
+      "seq": 1,
+      "server": "gateway",
+      "connection": 0,
+      "method": "DELETE",
+      "target": "/api/conferences/395296501",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003cgateway\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Cookie: access=eyJguest.access; refresh=6074c7a91c56; sessionId=529e1f7d",
+       "Accept-Encoding: gzip"
+      ],
+      "body": ""
+     }
+    ]
+   }
+  ]
+ }
+}

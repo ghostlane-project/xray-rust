@@ -1,0 +1,82 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/mtslink/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/mtslink/mtslink.go:210-242 (the codecs)",
+  "internal/engine/mtslink/mtslink.go:301-344 (the lines, in order)",
+  "internal/engine/mtslink/mtslink.go:445-456 (the offer is posted as CreateOffer returned it)",
+  "internal/transport/common/track.go:21-37 (the track's ids)",
+  "github.com/pion/webrtc/v4@v4.2.15"
+ ],
+ "cases": {
+  "note": "offer.sdp is the offer the engine posts at a join (CreateOffer's text, before any candidate), for the layout the video transport publishes into: its VP9 track, a microphone line, the audio player, nine receive slots. Every field that differs between two offers is replaced by a name in angle brackets; the rest is byte for byte what pion v4.2.15 wrote.",
+  "samples": 8,
+  "line_order": "the a=extmap lines of a section change order from offer to offer; offer.sdp holds each run of them sorted bytewise",
+  "line_end": "CRLF, the last line included",
+  "sections": [
+   "video sendrecv",
+   "audio sendrecv",
+   "audio recvonly",
+   "video recvonly",
+   "video recvonly",
+   "video recvonly",
+   "video recvonly",
+   "video recvonly",
+   "video recvonly",
+   "video recvonly",
+   "video recvonly",
+   "video recvonly"
+  ],
+  "audio_player_mid": "2",
+  "placeholders": [
+   {
+    "name": "\u003csession-id-0\u003e",
+    "form": "a decimal number"
+   },
+   {
+    "name": "\u003csession-version-0\u003e",
+    "form": "a decimal number"
+   },
+   {
+    "name": "\u003cfingerprint-0\u003e",
+    "form": "95 characters of [0-9A-F:]"
+   },
+   {
+    "name": "\u003cice-ufrag-0\u003e",
+    "form": "16 characters of [a-zA-Z]"
+   },
+   {
+    "name": "\u003cice-pwd-0\u003e",
+    "form": "32 characters of [a-zA-Z]"
+   },
+   {
+    "name": "\u003cssrc-0\u003e",
+    "form": "a decimal number"
+   },
+   {
+    "name": "\u003cssrc-1\u003e",
+    "form": "a decimal number"
+   },
+   {
+    "name": "\u003chex8-0\u003e",
+    "form": "eight lower-case hex digits (common.RandomID)"
+   },
+   {
+    "name": "\u003chex8-1\u003e",
+    "form": "eight lower-case hex digits (common.RandomID)"
+   },
+   {
+    "name": "\u003cssrc-2\u003e",
+    "form": "a decimal number"
+   },
+   {
+    "name": "\u003cid-0\u003e",
+    "form": "16 characters of [a-zA-Z]"
+   },
+   {
+    "name": "\u003cid-1\u003e",
+    "form": "16 characters of [a-zA-Z]"
+   }
+  ]
+ }
+}

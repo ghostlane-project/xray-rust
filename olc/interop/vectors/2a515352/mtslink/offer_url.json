@@ -1,0 +1,222 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/mtslink/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/mtslink/signal.go:50-64 (offerURL)",
+  "internal/engine/mtslink/mtslink_test.go:294-318"
+ ],
+ "cases": [
+  {
+   "name": "the test's join",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?userId=1\u0026joinToken=vcJ\u0026userName=%D0%9C",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?joinToken=vcJ\u0026originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1\u0026userName=%D0%9C"
+  },
+  {
+   "name": "a join as the provider issues it",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026pid=3d131e5f5194d283\u0026publishToken=vcPRIVATE\u0026userId=100200999\u0026userName=guest",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026originMid=2\u0026pid=3d131e5f5194d283\u0026preferredPublishCodec=vp9\u0026publishToken=vcPRIVATE\u0026twcc=true\u0026userId=100200999\u0026userName=guest"
+  },
+  {
+   "name": "a join in the web client's order",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?userId=100200999\u0026joinToken=vcJOIN\u0026disableRecording=true\u0026userName=guest\u0026publishToken=vcPRIVATE\u0026did=33d131e5f5194d28\u0026pid=3d131e5f5194d283",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026originMid=2\u0026pid=3d131e5f5194d283\u0026preferredPublishCodec=vp9\u0026publishToken=vcPRIVATE\u0026twcc=true\u0026userId=100200999\u0026userName=guest"
+  },
+  {
+   "name": "mid 0",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026pid=3d131e5f5194d283\u0026publishToken=vcPRIVATE\u0026userId=100200999\u0026userName=guest",
+   "mid": "0",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026originMid=0\u0026pid=3d131e5f5194d283\u0026preferredPublishCodec=vp9\u0026publishToken=vcPRIVATE\u0026twcc=true\u0026userId=100200999\u0026userName=guest"
+  },
+  {
+   "name": "mid 11",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026pid=3d131e5f5194d283\u0026publishToken=vcPRIVATE\u0026userId=100200999\u0026userName=guest",
+   "mid": "11",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026originMid=11\u0026pid=3d131e5f5194d283\u0026preferredPublishCodec=vp9\u0026publishToken=vcPRIVATE\u0026twcc=true\u0026userId=100200999\u0026userName=guest"
+  },
+  {
+   "name": "an empty mid",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026pid=3d131e5f5194d283\u0026publishToken=vcPRIVATE\u0026userId=100200999\u0026userName=guest",
+   "mid": "",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026originMid=\u0026pid=3d131e5f5194d283\u0026preferredPublishCodec=vp9\u0026publishToken=vcPRIVATE\u0026twcc=true\u0026userId=100200999\u0026userName=guest"
+  },
+  {
+   "name": "a mid that is not a number",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026pid=3d131e5f5194d283\u0026publishToken=vcPRIVATE\u0026userId=100200999\u0026userName=guest",
+   "mid": "audio 1\u0026x=y",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?did=33d131e5f5194d28\u0026disableRecording=true\u0026joinToken=vcJOIN\u0026originMid=audio+1%26x%3Dy\u0026pid=3d131e5f5194d283\u0026preferredPublishCodec=vp9\u0026publishToken=vcPRIVATE\u0026twcc=true\u0026userId=100200999\u0026userName=guest"
+  },
+  {
+   "name": "the three values already there are replaced",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?twcc=false\u0026originMid=9\u0026preferredPublishCodec=h264\u0026userId=1",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "a value given twice is replaced by one",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?twcc=a\u0026twcc=b\u0026userId=1",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "a key given twice keeps both, in their order",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?userId=2\u0026userId=1\u0026a=1",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?a=1\u0026originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=2\u0026userId=1"
+  },
+  {
+   "name": "no query",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true"
+  },
+  {
+   "name": "an empty query",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true"
+  },
+  {
+   "name": "a fragment stays behind the query",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?userId=1#frag",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1#frag"
+  },
+  {
+   "name": "a port and http",
+   "join": "http://127.0.0.1:8443/rtc/room/1/join?userId=1",
+   "mid": "2",
+   "url": "http://127.0.0.1:8443/rtc/room/1/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "a plus is a space, a space is a plus",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?userName=a+b%20c",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userName=a+b+c"
+  },
+  {
+   "name": "what a query escapes",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?joinToken=a%2Bb%2Fc%3Dd~e*f\u0026userName=%D0%9C%D0%B0%D1%80%D0%B8%D1%8F",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?joinToken=a%2Bb%2Fc%3Dd~e%2Af\u0026originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userName=%D0%9C%D0%B0%D1%80%D0%B8%D1%8F"
+  },
+  {
+   "name": "what a query leaves alone",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?t=AZaz09-_.~",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026t=AZaz09-_.~\u0026twcc=true"
+  },
+  {
+   "name": "raw punctuation in a value",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?t=!'()*,:@$/?",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026t=%21%27%28%29%2A%2C%3A%40%24%2F%3F\u0026twcc=true"
+  },
+  {
+   "name": "a key with no value and a key with an empty one",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?a\u0026b=\u0026userId=1",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?a=\u0026b=\u0026originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "a key that needs escaping",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?a%20b=1\u0026%D0%BA=2",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?a+b=1\u0026originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026%D0%BA=2"
+  },
+  {
+   "name": "a pair with a semicolon is dropped",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?a=1;b=2\u0026userId=1",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "a pair with a bad escape is dropped",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?a=%zz\u0026userId=1",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/20300400600/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "an escaped path stays as written",
+   "join": "https://sfu.mts-link.ru/rtc/room/a%20b%2Fc/join?userId=1",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru/rtc/room/a%20b%2Fc/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "an upper-case host and scheme",
+   "join": "HTTPS://SFU.MTS-Link.RU/rtc/room/1/join?userId=1",
+   "mid": "2",
+   "url": "https://SFU.MTS-Link.RU/rtc/room/1/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "userinfo",
+   "join": "https://u:p@sfu.mts-link.ru/rtc/room/1/join?userId=1",
+   "mid": "2",
+   "url": "https://u:p@sfu.mts-link.ru/rtc/room/1/join?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "no path",
+   "join": "https://sfu.mts-link.ru?userId=1",
+   "mid": "2",
+   "url": "https://sfu.mts-link.ru?originMid=2\u0026preferredPublishCodec=vp9\u0026twcc=true\u0026userId=1"
+  },
+  {
+   "name": "a scheme with nothing in front",
+   "join": "://nothing",
+   "mid": "2",
+   "url": "",
+   "error": "mtslink: room join URL missing: the join URL does not parse"
+  },
+  {
+   "name": "empty",
+   "join": "",
+   "mid": "2",
+   "url": "",
+   "error": "mtslink: room join URL missing: the join URL does not parse"
+  },
+  {
+   "name": "no scheme",
+   "join": "sfu.mts-link.ru/rtc/room/1/join?userId=1",
+   "mid": "2",
+   "url": "",
+   "error": "mtslink: room join URL missing: the join URL does not parse"
+  },
+  {
+   "name": "no host",
+   "join": "https:///rtc/room/1/join?userId=1",
+   "mid": "2",
+   "url": "",
+   "error": "mtslink: room join URL missing: the join URL does not parse"
+  },
+  {
+   "name": "a path only",
+   "join": "/rtc/room/1/join?userId=1",
+   "mid": "2",
+   "url": "",
+   "error": "mtslink: room join URL missing: the join URL does not parse"
+  },
+  {
+   "name": "a scheme-relative join",
+   "join": "//sfu.mts-link.ru/rtc/room/1/join",
+   "mid": "2",
+   "url": "",
+   "error": "mtslink: room join URL missing: the join URL does not parse"
+  },
+  {
+   "name": "a control byte",
+   "join": "https://sfu.mts-link.ru/rtc/room/20300400600/join?userId=1",
+   "mid": "2",
+   "url": "",
+   "error": "mtslink: room join URL missing: the join URL does not parse"
+  },
+  {
+   "name": "a space in the host",
+   "join": "https://sfu mts-link.ru/rtc/room/1/join",
+   "mid": "2",
+   "url": "",
+   "error": "mtslink: room join URL missing: the join URL does not parse"
+  }
+ ]
+}

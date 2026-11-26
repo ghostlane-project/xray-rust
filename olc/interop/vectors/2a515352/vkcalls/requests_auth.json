@@ -1,0 +1,248 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/auth/vkcalls/zz_vectors_test.go",
+ "sources": [
+  "internal/auth/vkcalls/vkcalls.go:125-232 (Issue: the five calls, their order and fields), 234-256 (sdkLogin)",
+  "internal/auth/vkcalls/vkcalls.go:312-364 (vkCall, fbCall, raw: the fields added to every call, the one header the code sets)",
+  "internal/auth/vkcalls/vkcalls_test.go:75-105 (the answers)",
+  "internal/protect/protect.go (the HTTP client)"
+ ],
+ "cases": {
+  "note": "Every request of Provider.Issue as Go's net/http wrote it on a plain-HTTP loopback connection, read by a TCP listener in front of each server: header lines in wire order, the form body with its keys in byte order, HTTP/1.1. The three API calls come first, then the two SDK calls. Over TLS the client offers h2 too; that wire is not here.",
+  "masked": {
+   "\u003capi\u003e": "the API listener's host:port",
+   "\u003cfb\u003e": "the SDK listener's host:port",
+   "guest-\u003chex8\u003e": "the name sent when the caller gave none: guest- and 8 lower-case hex digits, random on every Issue",
+   "olcrtc-\u003chex32\u003e": "the device id of the three API calls: olcrtc- and 32 lower-case hex digits, random on every Issue, one for the three",
+   "olcrtc-sdk-\u003chex32\u003e": "the device id inside session_data: olcrtc-sdk- and 32 lower-case hex digits, random on every Issue"
+  },
+  "flows": [
+   {
+    "flow": "issue",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "Мария Ковалёва",
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin",
+     "vchat.joinConversationByLink"
+    ],
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    },
+    "requests": [
+     {
+      "flow": "issue",
+      "seq": 0,
+      "server": "api",
+      "connection": 0,
+      "method": "POST",
+      "target": "/method/auth.getAnonymToken",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003capi\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 242",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "anonymName=%D0%9C%D0%B0%D1%80%D0%B8%D1%8F+%D0%9A%D0%BE%D0%B2%D0%B0%D0%BB%D1%91%D0%B2%D0%B0\u0026client_id=8093730\u0026device_id=olcrtc-\u003chex32\u003e\u0026lang=ru\u0026link=https%3A%2F%2Fvk.ru%2Fcall%2Fjoin%2F0FakeCallLinkForVectors012\u0026v=5.276"
+     },
+     {
+      "flow": "issue",
+      "seq": 1,
+      "server": "api",
+      "connection": 0,
+      "method": "POST",
+      "target": "/method/messages.getCallPreview",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003capi\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 213",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "anonymous_token=anon-token\u0026device_id=olcrtc-\u003chex32\u003e\u0026extended=1\u0026fields=first_name%2Clast_name%2Cphoto_200\u0026lang=ru\u0026link=https%3A%2F%2Fvk.ru%2Fcall%2Fjoin%2F0FakeCallLinkForVectors012\u0026v=5.276"
+     },
+     {
+      "flow": "issue",
+      "seq": 2,
+      "server": "api",
+      "connection": 0,
+      "method": "POST",
+      "target": "/method/messages.getAnonymCallToken",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003capi\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 280",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "anonymous_token=anon-token\u0026device_id=olcrtc-\u003chex32\u003e\u0026lang=ru\u0026link=https%3A%2F%2Fvk.ru%2Fcall%2Fjoin%2F0FakeCallLinkForVectors012\u0026name=%D0%9C%D0%B0%D1%80%D0%B8%D1%8F+%D0%9A%D0%BE%D0%B2%D0%B0%D0%BB%D1%91%D0%B2%D0%B0\u0026secret=s3cret\u0026user_id=100200300400\u0026v=5.276"
+     },
+     {
+      "flow": "issue",
+      "seq": 3,
+      "server": "fb",
+      "connection": 0,
+      "method": "POST",
+      "target": "/fb.do",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003cfb\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 213",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "application_key=CGMMEJLGDIHBABABA\u0026format=JSON\u0026method=auth.anonymLogin\u0026session_data=%7B%22client_version%22%3A%221.0.1%22%2C%22device_id%22%3A%22olcrtc-sdk-\u003chex32\u003e%22%2C%22version%22%3A2%7D"
+     },
+     {
+      "flow": "issue",
+      "seq": 4,
+      "server": "fb",
+      "connection": 0,
+      "method": "POST",
+      "target": "/fb.do",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003cfb\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 191",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "anonymToken=sdk-anon-token\u0026application_key=CGMMEJLGDIHBABABA\u0026format=JSON\u0026isVideo=false\u0026joinLink=0FakeCallLinkForVectors012\u0026method=vchat.joinConversationByLink\u0026protocolVersion=5\u0026session_key=sk"
+     }
+    ]
+   },
+   {
+    "flow": "issue_no_nickname",
+    "link": "https://vk.com/call/join/abc-DEF_123/",
+    "nickname": "",
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin",
+     "vchat.joinConversationByLink"
+    ],
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.com/call/join/abc-DEF_123",
+      "vkcalls_schema": "1"
+     }
+    },
+    "requests": [
+     {
+      "flow": "issue_no_nickname",
+      "seq": 0,
+      "server": "api",
+      "connection": 0,
+      "method": "POST",
+      "target": "/method/auth.getAnonymToken",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003capi\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 163",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "anonymName=guest-\u003chex8\u003e\u0026client_id=8093730\u0026device_id=olcrtc-\u003chex32\u003e\u0026lang=ru\u0026link=https%3A%2F%2Fvk.com%2Fcall%2Fjoin%2Fabc-DEF_123\u0026v=5.276"
+     },
+     {
+      "flow": "issue_no_nickname",
+      "seq": 1,
+      "server": "api",
+      "connection": 0,
+      "method": "POST",
+      "target": "/method/messages.getCallPreview",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003capi\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 199",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "anonymous_token=anon-token\u0026device_id=olcrtc-\u003chex32\u003e\u0026extended=1\u0026fields=first_name%2Clast_name%2Cphoto_200\u0026lang=ru\u0026link=https%3A%2F%2Fvk.com%2Fcall%2Fjoin%2Fabc-DEF_123\u0026v=5.276"
+     },
+     {
+      "flow": "issue_no_nickname",
+      "seq": 2,
+      "server": "api",
+      "connection": 0,
+      "method": "POST",
+      "target": "/method/messages.getAnonymCallToken",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003capi\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 201",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "anonymous_token=anon-token\u0026device_id=olcrtc-\u003chex32\u003e\u0026lang=ru\u0026link=https%3A%2F%2Fvk.com%2Fcall%2Fjoin%2Fabc-DEF_123\u0026name=guest-\u003chex8\u003e\u0026secret=s3cret\u0026user_id=100200300400\u0026v=5.276"
+     },
+     {
+      "flow": "issue_no_nickname",
+      "seq": 3,
+      "server": "fb",
+      "connection": 0,
+      "method": "POST",
+      "target": "/fb.do",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003cfb\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 213",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "application_key=CGMMEJLGDIHBABABA\u0026format=JSON\u0026method=auth.anonymLogin\u0026session_data=%7B%22client_version%22%3A%221.0.1%22%2C%22device_id%22%3A%22olcrtc-sdk-\u003chex32\u003e%22%2C%22version%22%3A2%7D"
+     },
+     {
+      "flow": "issue_no_nickname",
+      "seq": 4,
+      "server": "fb",
+      "connection": 0,
+      "method": "POST",
+      "target": "/fb.do",
+      "proto": "HTTP/1.1",
+      "headers": [
+       "Host: \u003cfb\u003e",
+       "User-Agent: Go-http-client/1.1",
+       "Content-Length: 176",
+       "Content-Type: application/x-www-form-urlencoded",
+       "Accept-Encoding: gzip"
+      ],
+      "body": "anonymToken=sdk-anon-token\u0026application_key=CGMMEJLGDIHBABABA\u0026format=JSON\u0026isVideo=false\u0026joinLink=abc-DEF_123\u0026method=vchat.joinConversationByLink\u0026protocolVersion=5\u0026session_key=sk"
+     }
+    ]
+   }
+  ]
+ }
+}

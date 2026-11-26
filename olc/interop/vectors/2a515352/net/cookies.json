@@ -1,0 +1,511 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/zzvectors/zz_net_vectors_test.go TestZZVectors",
+ "sources": [
+  "net/http Response.Cookies, as called at internal/auth/mtslink/api.go:175-180",
+  "internal/auth/mtslink/api.go:235"
+ ],
+ "cases": [
+  {
+   "name": "no Set-Cookie",
+   "pair_count": 0
+  },
+  {
+   "name": "one plain cookie",
+   "set_cookie": [
+    "73657373696f6e49643d616263313233"
+   ],
+   "pairs": [
+    "sessionId=abc123"
+   ],
+   "pair_count": 1,
+   "header": "sessionId=abc123"
+  },
+  {
+   "name": "three cookies in header order",
+   "set_cookie": [
+    "73657373696f6e49643d732d313b20506174683d2f3b20487474704f6e6c79",
+    "7573657249643d34323b20506174683d2f",
+    "726f7574653d623b20506174683d2f3b205365637572653b2053616d65536974653d4e6f6e65"
+   ],
+   "pairs": [
+    "sessionId=s-1",
+    "userId=42",
+    "route=b"
+   ],
+   "pair_count": 3,
+   "header": "sessionId=s-1; userId=42; route=b"
+  },
+  {
+   "name": "every attribute is dropped",
+   "set_cookie": [
+    "613d623b20446f6d61696e3d2e6d74732d6c696e6b2e72753b20506174683d2f6170693b20457870697265733d5765642c203231204f637420323032362030373a32383a303020474d543b204d61782d4167653d333630303b20487474704f6e6c793b205365637572653b2053616d65536974653d4c61783b20506172746974696f6e65643b205072696f726974793d486967683b20783d79"
+   ],
+   "pairs": [
+    "a=b"
+   ],
+   "pair_count": 1,
+   "header": "a=b"
+  },
+  {
+   "name": "a broken attribute does not drop the cookie",
+   "set_cookie": [
+    "613d623b204d61782d4167653d736f6f6e3b20457870697265733d6e657665723b2053616d65536974653d2271223b20506174683d013b20ff3d313b203d3b203b3b"
+   ],
+   "pairs": [
+    "a=b"
+   ],
+   "pair_count": 1,
+   "header": "a=b"
+  },
+  {
+   "name": "an empty value is skipped",
+   "set_cookie": [
+    "656d7074793d",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "an empty quoted value is skipped",
+   "set_cookie": [
+    "656d7074793d2222",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "a quoted value loses its quotes",
+   "set_cookie": [
+    "713d2261626322"
+   ],
+   "pairs": [
+    "q=abc"
+   ],
+   "pair_count": 1,
+   "header": "q=abc"
+  },
+  {
+   "name": "a quoted value with spaces and commas",
+   "set_cookie": [
+    "713d226120622c206322"
+   ],
+   "pairs": [
+    "q=a b, c"
+   ],
+   "pair_count": 1,
+   "header": "q=a b, c"
+  },
+  {
+   "name": "one quote alone is refused",
+   "set_cookie": [
+    "713d22",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "a quote at one end only is refused",
+   "set_cookie": [
+    "713d22616263",
+    "723d61626322",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "a quote inside is refused",
+   "set_cookie": [
+    "713d612262",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "quotes inside quotes are refused",
+   "set_cookie": [
+    "713d2261226222",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "a duplicate name is kept twice",
+   "set_cookie": [
+    "613d31",
+    "613d32",
+    "623d33",
+    "613d31"
+   ],
+   "pairs": [
+    "a=1",
+    "a=2",
+    "b=3",
+    "a=1"
+   ],
+   "pair_count": 4,
+   "header": "a=1; a=2; b=3; a=1"
+  },
+  {
+   "name": "no equals sign",
+   "set_cookie": [
+    "6e6f76616c7565",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "an empty name",
+   "set_cookie": [
+    "3d76616c7565",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "a blank line",
+   "set_cookie": [
+    "",
+    "202020",
+    "09",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "only a separator",
+   "set_cookie": [
+    "3b",
+    "3b20506174683d2f",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "spaces around the pair",
+   "set_cookie": [
+    "2020613d622020",
+    "09633d64093b20506174683d2f"
+   ],
+   "pairs": [
+    "a=b",
+    "c=d"
+   ],
+   "pair_count": 2,
+   "header": "a=b; c=d"
+  },
+  {
+   "name": "spaces around the name",
+   "set_cookie": [
+    "2061203d62",
+    "63093d64"
+   ],
+   "pairs": [
+    "a=b",
+    "c=d"
+   ],
+   "pair_count": 2,
+   "header": "a=b; c=d"
+  },
+  {
+   "name": "a space inside the name is refused",
+   "set_cookie": [
+    "6120623d63",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "a space after the equals sign stays",
+   "set_cookie": [
+    "613d2062",
+    "633d20206420203b20506174683d2f"
+   ],
+   "pairs": [
+    "a= b",
+    "c=  d"
+   ],
+   "pair_count": 2,
+   "header": "a= b; c=  d"
+  },
+  {
+   "name": "only spaces as a value",
+   "set_cookie": [
+    "613d202020",
+    "623d2009",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "a space inside the value stays",
+   "set_cookie": [
+    "613d622063"
+   ],
+   "pairs": [
+    "a=b c"
+   ],
+   "pair_count": 1,
+   "header": "a=b c"
+  },
+  {
+   "name": "an equals sign in the value stays",
+   "set_cookie": [
+    "613d623d63",
+    "743d59574a6a3d3d",
+    "753d3d76"
+   ],
+   "pairs": [
+    "a=b=c",
+    "t=YWJj==",
+    "u==v"
+   ],
+   "pair_count": 3,
+   "header": "a=b=c; t=YWJj==; u==v"
+  },
+  {
+   "name": "a comma in the value stays",
+   "set_cookie": [
+    "613d622c63"
+   ],
+   "pairs": [
+    "a=b,c"
+   ],
+   "pair_count": 1,
+   "header": "a=b,c"
+  },
+  {
+   "name": "a backslash is refused",
+   "set_cookie": [
+    "613d625c63",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "a control byte is refused",
+   "set_cookie": [
+    "613d620163",
+    "623d780979",
+    "633d7f",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "bytes outside ASCII are refused",
+   "set_cookie": [
+    "613dd0b0",
+    "623d636166e9",
+    "d0b03d31",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "the token characters make a name",
+   "set_cookie": [
+    "2123242526272a2b2d2e5e5f607c7e3039415a617a3d31"
+   ],
+   "pairs": [
+    "!#$%\u0026'*+-.^_`|~09AZaz=1"
+   ],
+   "pair_count": 1,
+   "header": "!#$%\u0026'*+-.^_`|~09AZaz=1"
+  },
+  {
+   "name": "what is not a token character is refused in a name",
+   "set_cookie": [
+    "6128623d31",
+    "6129623d31",
+    "612c623d31",
+    "612f623d31",
+    "613a623d31",
+    "613c623d31",
+    "613e623d31",
+    "613f623d31",
+    "6140623d31",
+    "615b623d31",
+    "615d623d31",
+    "617b623d31",
+    "617d623d31",
+    "6122623d31",
+    "615c623d31",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "the value's printable set",
+   "set_cookie": [
+    "763d21232425262728292a2b2c2d2e2f303138393a3c3d3e3f40415a5b5d5e5f60617a7b7c7d7e"
+   ],
+   "pairs": [
+    "v=!#$%\u0026'()*+,-./0189:\u003c=\u003e?@AZ[]^_`az{|}~"
+   ],
+   "pair_count": 1,
+   "header": "v=!#$%\u0026'()*+,-./0189:\u003c=\u003e?@AZ[]^_`az{|}~"
+  },
+  {
+   "name": "the name keeps its case",
+   "set_cookie": [
+    "53657373696f6e49443d416243",
+    "73657373696f6e69643d614263"
+   ],
+   "pairs": [
+    "SessionID=AbC",
+    "sessionid=aBc"
+   ],
+   "pair_count": 2,
+   "header": "SessionID=AbC; sessionid=aBc"
+  },
+  {
+   "name": "a long value",
+   "set_cookie": [
+    "6269673d78787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878"
+   ],
+   "pairs": [
+    "big=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+   ],
+   "pair_count": 1,
+   "header": "big=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  {
+   "name": "a line feed inside a line",
+   "set_cookie": [
+    "613d620a633d64",
+    "653d660d0a673d68",
+    "6b6570743d31"
+   ],
+   "pairs": [
+    "kept=1"
+   ],
+   "pair_count": 1,
+   "header": "kept=1"
+  },
+  {
+   "name": "many lines: 1024 cookies and 0 blank",
+   "repeat": {
+    "prefix": "c",
+    "count": 1024,
+    "blank": 0
+   },
+   "pair_count": 1024,
+   "pairs_sha256": "e6c569ffe3fa34fe535e5104e885577f4b0bfc7dca5d253951d7fad9e422a5c7"
+  },
+  {
+   "name": "many lines: 2999 cookies and 0 blank",
+   "repeat": {
+    "prefix": "c",
+    "count": 2999,
+    "blank": 0
+   },
+   "pair_count": 2999,
+   "pairs_sha256": "ee8eb6a605631232d18bc4603e31c92d28feec38fe3299425a25e34edf5c3167"
+  },
+  {
+   "name": "many lines: 3000 cookies and 0 blank",
+   "repeat": {
+    "prefix": "c",
+    "count": 3000,
+    "blank": 0
+   },
+   "pair_count": 3000,
+   "pairs_sha256": "0ec45b24c1ccc015ef3adc63d06a78d52fb3c308ff6891d408bc440a7b016404"
+  },
+  {
+   "name": "many lines: 3001 cookies and 0 blank",
+   "repeat": {
+    "prefix": "c",
+    "count": 3001,
+    "blank": 0
+   },
+   "pair_count": 0,
+   "pairs_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+   "name": "many lines: 2999 cookies and 1 blank",
+   "repeat": {
+    "prefix": "c",
+    "count": 2999,
+    "blank": 1
+   },
+   "pair_count": 2999,
+   "pairs_sha256": "ee8eb6a605631232d18bc4603e31c92d28feec38fe3299425a25e34edf5c3167"
+  },
+  {
+   "name": "many lines: 2999 cookies and 2 blank",
+   "repeat": {
+    "prefix": "c",
+    "count": 2999,
+    "blank": 2
+   },
+   "pair_count": 0,
+   "pairs_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+ ]
+}

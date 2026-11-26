@@ -1,0 +1,160 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/mtslink/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/mtslink/signal.go:114-128 (peerOf)",
+  "internal/engine/mtslink/mtslink_test.go:320-330"
+ ],
+ "cases": [
+  {
+   "name": "the SFU's answer",
+   "answer": "v=0\r\no=odin 0 0 IN IP4 127.0.0.1\r\ns=31djU82nnvUp1kyQjpDpPhyWx6eeoD1xs1SrH6HGSrPpwQyR8IgX3REL7\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\n",
+   "peer": "31djU82nnvUp1kyQjpDpPhyWx6eeoD1xs1SrH6HGSrPpwQyR8IgX3REL7"
+  },
+  {
+   "name": "no s line",
+   "answer": "v=0\r\no=odin 0 0\r\n",
+   "peer": ""
+  },
+  {
+   "name": "a dash",
+   "answer": "v=0\r\ns=-\r\n",
+   "peer": ""
+  },
+  {
+   "name": "a slash",
+   "answer": "v=0\r\ns=a/b\r\n",
+   "peer": ""
+  },
+  {
+   "name": "a space",
+   "answer": "v=0\r\ns=a b\r\n",
+   "peer": ""
+  },
+  {
+   "name": "empty",
+   "answer": "",
+   "peer": ""
+  },
+  {
+   "name": "line feeds alone",
+   "answer": "v=0\no=odin 0 0 IN IP4 127.0.0.1\ns=31djU82nnvUp1kyQjpDpPhyWx6eeoD1xs1SrH6HGSrPpwQyR8IgX3REL7\nt=0 0\n",
+   "peer": "31djU82nnvUp1kyQjpDpPhyWx6eeoD1xs1SrH6HGSrPpwQyR8IgX3REL7"
+  },
+  {
+   "name": "carriage returns alone are no line ends",
+   "answer": "v=0\rs=abc\rt=0 0\r",
+   "peer": ""
+  },
+  {
+   "name": "no line end behind it",
+   "answer": "v=0\r\ns=abc",
+   "peer": "abc"
+  },
+  {
+   "name": "the s line first",
+   "answer": "s=abc\r\nv=0\r\n",
+   "peer": "abc"
+  },
+  {
+   "name": "spaces in front of the line",
+   "answer": "v=0\r\n   s=abc\r\n",
+   "peer": "abc"
+  },
+  {
+   "name": "a tab in front and spaces behind",
+   "answer": "v=0\r\n\ts=abc  \r\n",
+   "peer": "abc"
+  },
+  {
+   "name": "a space behind the equals sign",
+   "answer": "v=0\r\ns= abc\r\n",
+   "peer": ""
+  },
+  {
+   "name": "an empty name",
+   "answer": "v=0\r\ns=\r\nt=0 0\r\n",
+   "peer": ""
+  },
+  {
+   "name": "only spaces for a name",
+   "answer": "v=0\r\ns=   \r\n",
+   "peer": ""
+  },
+  {
+   "name": "a question mark",
+   "answer": "v=0\r\ns=a?b\r\n",
+   "peer": ""
+  },
+  {
+   "name": "a hash",
+   "answer": "v=0\r\ns=a#b\r\n",
+   "peer": ""
+  },
+  {
+   "name": "a percent",
+   "answer": "v=0\r\ns=a%20b\r\n",
+   "peer": ""
+  },
+  {
+   "name": "a tab inside",
+   "answer": "v=0\r\ns=a\tb\r\n",
+   "peer": ""
+  },
+  {
+   "name": "two dashes are a name",
+   "answer": "v=0\r\ns=--\r\n",
+   "peer": "--"
+  },
+  {
+   "name": "dots are a name",
+   "answer": "v=0\r\ns=..\r\n",
+   "peer": ".."
+  },
+  {
+   "name": "a backslash, a colon and an at sign are taken",
+   "answer": "v=0\r\ns=a\\b:c@d\r\n",
+   "peer": "a\\b:c@d"
+  },
+  {
+   "name": "a Cyrillic name is taken",
+   "answer": "v=0\r\ns=один\r\n",
+   "peer": "один"
+  },
+  {
+   "name": "the first s line decides: a name",
+   "answer": "v=0\r\ns=first\r\ns=second\r\n",
+   "peer": "first"
+  },
+  {
+   "name": "the first s line decides: none",
+   "answer": "v=0\r\ns=-\r\ns=second\r\n",
+   "peer": ""
+  },
+  {
+   "name": "an s line behind the media",
+   "answer": "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 98\r\ns=late\r\n",
+   "peer": "late"
+  },
+  {
+   "name": "an upper-case S is no s line",
+   "answer": "v=0\r\nS=abc\r\n",
+   "peer": ""
+  },
+  {
+   "name": "an attribute that holds s= is no s line",
+   "answer": "v=0\r\na=s=abc\r\nas=def\r\n",
+   "peer": ""
+  },
+  {
+   "name": "an s line that is not SDP at all",
+   "answer": "s=only",
+   "peer": "only"
+  },
+  {
+   "name": "a zero byte inside is taken",
+   "answer": "v=0\r\ns=a\u0000b\r\n",
+   "peer": "a\u0000b"
+  }
+ ]
+}

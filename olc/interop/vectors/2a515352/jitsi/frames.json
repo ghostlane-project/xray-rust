@@ -1,0 +1,338 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/jitsi/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/jitsi/epoch.go:36-48 (encodeBridgeFrame)",
+  "internal/engine/jitsi/bridge.go:439-492,647-675",
+  "internal/engine/jitsi/relaywindow.go:85-125"
+ ],
+ "cases": {
+  "encode": [
+   {
+    "data_hex": "6869",
+    "local": 16909060,
+    "peer": 168496141,
+    "frame_hex": "4f4c5231010203040a0b0c0d6869",
+    "too_big": false
+   },
+   {
+    "data_hex": "",
+    "local": 1,
+    "peer": 2,
+    "frame_hex": "4f4c52310000000100000002",
+    "too_big": false
+   },
+   {
+    "data_hex": "",
+    "local": 1,
+    "peer": 2,
+    "frame_hex": "",
+    "zeros": 16372,
+    "frame_len": 16384,
+    "frame_head_hex": "4f4c52310000000100000002",
+    "too_big": false
+   },
+   {
+    "data_hex": "",
+    "local": 1,
+    "peer": 2,
+    "frame_hex": "",
+    "zeros": 16373,
+    "too_big": true
+   },
+   {
+    "data_hex": "",
+    "local": 1,
+    "peer": 2,
+    "frame_hex": "",
+    "zeros": 16384,
+    "too_big": true
+   },
+   {
+    "data_hex": "7061796c6f6164",
+    "local": 4294967295,
+    "peer": 0,
+    "frame_hex": "4f4c5231ffffffff000000007061796c6f6164",
+    "too_big": false
+   },
+   {
+    "data_hex": "000102ff",
+    "local": 0,
+    "peer": 4294967295,
+    "frame_hex": "4f4c523100000000ffffffff000102ff",
+    "too_big": false
+   }
+  ],
+  "decode_raw": [
+   {
+    "name": "legacy raw",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"aGVsbG8gd29ybGQ=\"}",
+    "want_hex": "68656c6c6f20776f726c64",
+    "some": true
+   },
+   {
+    "name": "other class",
+    "class": "OtherClass",
+    "fields": "{\"raw\":\"eA==\"}",
+    "want_hex": "",
+    "some": false
+   },
+   {
+    "name": "no raw",
+    "class": "EndpointMessage",
+    "fields": "{}",
+    "want_hex": "",
+    "some": false
+   },
+   {
+    "name": "bad base64",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"not-base64!!!\"}",
+    "want_hex": "",
+    "some": false
+   },
+   {
+    "name": "msgPayload raw",
+    "class": "EndpointMessage",
+    "fields": "{\"msgPayload\":{\"raw\":\"aGVsbG8gbXNnUGF5bG9hZA==\"}}",
+    "want_hex": "68656c6c6f206d73675061796c6f6164",
+    "some": true
+   },
+   {
+    "name": "msgPayload without raw",
+    "class": "EndpointMessage",
+    "fields": "{\"msgPayload\":{\"other\":\"field\"}}",
+    "want_hex": "",
+    "some": false
+   },
+   {
+    "name": "msgPayload without raw, top-level raw",
+    "class": "EndpointMessage",
+    "fields": "{\"msgPayload\":{\"other\":1},\"raw\":\"dG9w\"}",
+    "want_hex": "746f70",
+    "some": true
+   },
+   {
+    "name": "raw not a string",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":5}",
+    "want_hex": "",
+    "some": false
+   },
+   {
+    "name": "msgPayload not an object",
+    "class": "EndpointMessage",
+    "fields": "{\"msgPayload\":\"x\",\"raw\":\"dG9w\"}",
+    "want_hex": "746f70",
+    "some": true
+   },
+   {
+    "name": "msgPayload raw not a string",
+    "class": "EndpointMessage",
+    "fields": "{\"msgPayload\":{\"raw\":5},\"raw\":\"dG9w\"}",
+    "want_hex": "746f70",
+    "some": true
+   },
+   {
+    "name": "both, msgPayload first",
+    "class": "EndpointMessage",
+    "fields": "{\"msgPayload\":{\"raw\":\"aW5uZXI=\"},\"raw\":\"b3V0ZXI=\"}",
+    "want_hex": "696e6e6572",
+    "some": true
+   },
+   {
+    "name": "no padding",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"YQ\"}",
+    "want_hex": "",
+    "some": false
+   },
+   {
+    "name": "padding",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"YQ==\"}",
+    "want_hex": "61",
+    "some": true
+   },
+   {
+    "name": "trailing bits",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"YR==\"}",
+    "want_hex": "61",
+    "some": true
+   },
+   {
+    "name": "newline inside",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"Y\\nQ==\"}",
+    "want_hex": "61",
+    "some": true
+   },
+   {
+    "name": "carriage return inside",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"Y\\rQ==\"}",
+    "want_hex": "61",
+    "some": true
+   },
+   {
+    "name": "space inside",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"Y Q==\"}",
+    "want_hex": "",
+    "some": false
+   },
+   {
+    "name": "empty",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"\"}",
+    "want_hex": "",
+    "some": true
+   },
+   {
+    "name": "url alphabet",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"-_-_\"}",
+    "want_hex": "",
+    "some": false
+   },
+   {
+    "name": "std alphabet",
+    "class": "EndpointMessage",
+    "fields": "{\"raw\":\"+/+/\"}",
+    "want_hex": "fbffbf",
+    "some": true
+   }
+  ],
+  "endpoint_message": [
+   {
+    "to": "abc123",
+    "data_hex": "7061796c6f6164",
+    "json": "{\"colibriClass\":\"EndpointMessage\",\"to\":\"abc123\",\"msgPayload\":{\"raw\":\"cGF5bG9hZA==\"}}"
+   },
+   {
+    "to": "",
+    "data_hex": "",
+    "json": "{\"colibriClass\":\"EndpointMessage\",\"to\":\"\",\"msgPayload\":{\"raw\":\"\"}}"
+   },
+   {
+    "to": "",
+    "data_hex": "78",
+    "json": "{\"colibriClass\":\"EndpointMessage\",\"to\":\"\",\"msgPayload\":{\"raw\":\"eA==\"}}"
+   },
+   {
+    "to": "a\"b\u003cc\u003e\u0026",
+    "data_hex": "",
+    "json": "{\"colibriClass\":\"EndpointMessage\",\"to\":\"a\\\"b\\u003cc\\u003e\\u0026\",\"msgPayload\":{\"raw\":\"\"}}"
+   },
+   {
+    "to": "a\\b",
+    "data_hex": "00ff",
+    "json": "{\"colibriClass\":\"EndpointMessage\",\"to\":\"a\\\\b\",\"msgPayload\":{\"raw\":\"AP8=\"}}"
+   },
+   {
+    "to": "a\u2028b\u2029",
+    "data_hex": "",
+    "json": "{\"colibriClass\":\"EndpointMessage\",\"to\":\"a\\u2028b\\u2029\",\"msgPayload\":{\"raw\":\"\"}}"
+   },
+   {
+    "to": "ctl\u0001\b\f\n\r\t",
+    "data_hex": "",
+    "json": "{\"colibriClass\":\"EndpointMessage\",\"to\":\"ctl\\u0001\\b\\f\\n\\r\\t\",\"msgPayload\":{\"raw\":\"\"}}"
+   },
+   {
+    "to": "é",
+    "data_hex": "",
+    "json": "{\"colibriClass\":\"EndpointMessage\",\"to\":\"é\",\"msgPayload\":{\"raw\":\"\"}}"
+   },
+   {
+    "to": "endpoint-1",
+    "data_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "json": "{\"colibriClass\":\"EndpointMessage\",\"to\":\"endpoint-1\",\"msgPayload\":{\"raw\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\"}}"
+   }
+  ],
+  "window": [
+   {
+    "hex": "4f4c57310100000001000000020102030405060708",
+    "parsed": true,
+    "kind": 1,
+    "sender": 1,
+    "receiver": 2,
+    "counter": 72623859790382856
+   },
+   {
+    "hex": "4f4c573102a0a0a0a0b0b0b0b00000000000000001",
+    "parsed": true,
+    "kind": 2,
+    "sender": 2694881440,
+    "receiver": 2964369584,
+    "counter": 1
+   },
+   {
+    "hex": "4f4c57310900000003000000040000000000000005",
+    "parsed": true,
+    "kind": 9,
+    "sender": 3,
+    "receiver": 4,
+    "counter": 5
+   },
+   {
+    "hex": "4f4c57310000000000000000000000000000000000",
+    "parsed": true,
+    "kind": 0,
+    "sender": 0,
+    "receiver": 0,
+    "counter": 0
+   },
+   {
+    "hex": "4f4c573101ffffffffffffffffffffffffffffffff",
+    "parsed": true,
+    "kind": 1,
+    "sender": 4294967295,
+    "receiver": 4294967295,
+    "counter": 18446744073709551615
+   },
+   {
+    "hex": "4f4c573101000000010000000200000000000000",
+    "parsed": false,
+    "kind": 0,
+    "sender": 0,
+    "receiver": 0,
+    "counter": 0
+   },
+   {
+    "hex": "4f4c5731010000000100000002000000000000000300",
+    "parsed": false,
+    "kind": 0,
+    "sender": 0,
+    "receiver": 0,
+    "counter": 0
+   },
+   {
+    "hex": "4f4c57320100000001000000020000000000000003",
+    "parsed": false,
+    "kind": 0,
+    "sender": 0,
+    "receiver": 0,
+    "counter": 0
+   },
+   {
+    "hex": "",
+    "parsed": false,
+    "kind": 0,
+    "sender": 0,
+    "receiver": 0,
+    "counter": 0
+   },
+   {
+    "hex": "4f4c5731",
+    "parsed": false,
+    "kind": 0,
+    "sender": 0,
+    "receiver": 0,
+    "counter": 0
+   }
+  ]
+ }
+}
