@@ -1,0 +1,78 @@
+--- a/aws-lc/crypto/rand_extra/urandom.c
++++ b/aws-lc/crypto/rand_extra/urandom.c
+@@ -26,6 +26,7 @@
+   typedef unsigned int __u32;
+ #endif
+ #include <linux/random.h>
++#include <poll.h>
+ #include <sys/ioctl.h>
+ #include <sys/param.h>
+ #include <sys/syscall.h>
+@@ -344,34 +345,47 @@
+ static void ensure_dev_urandom_is_initialized(void) {
+
+   // On platforms where urandom doesn't block at startup, we ensure that the
+-  // kernel has sufficient entropy before continuing. We do this via the
+-  // RNDGETENTCNT ioctl from <linux/random.h>, which is Linux-specific.
++  // kernel has sufficient entropy before continuing.
++  //
++  // Upstream uses ioctl(RNDGETENTCNT) here. On Linux 3.10 (Android 6 and 7)
++  // entropy_avail never reaches the 256-bit threshold even after the blocking
++  // pool is seeded, so upstream's loop sleeps forever. Poll /dev/random for
++  // readability instead, the same readiness check getrandom 0.2 uses when
++  // SYS_getrandom is ENOSYS. Once the blocking pool is seeded, reading
++  // /dev/urandom is safe; after that the kernel never returns low-entropy
++  // bytes from it.
++  //
++  // Upstream aborts when it cannot query the pool. Keep that fail-closed
++  // rule: if /dev/random cannot be opened or polled, abort instead of
++  // marking /dev/urandom ready without a readiness check.
+   //
+   // On other URANDOM-path platforms (e.g. AIX) we have no portable way to
+   // query the kernel entropy pool, so we skip this pre-check and proceed.
+ #if defined(OPENSSL_LINUX)
+-  for (;;) {
+-    int entropy_bits = 0;
+-    if (ioctl(urandom_fd, RNDGETENTCNT, &entropy_bits)) {
+-      fprintf(stderr,
+-        "RNDGETENTCNT on /dev/urandom failed. We cannot determine if the kernel "
+-        "has enough entropy and must abort.\n");
+-      abort();
+-    }
++  int random_fd;
++  do {
++    random_fd = open("/dev/random", O_RDONLY | O_CLOEXEC);
++  } while (random_fd == -1 && errno == EINTR);
++  if (random_fd < 0) {
++    perror("failed to open /dev/random");
++    abort();
++  }
+
+-    static const int kBitsNeeded = 256;
+-    if (entropy_bits >= kBitsNeeded) {
++  struct pollfd pfd;
++  pfd.fd = random_fd;
++  pfd.events = POLLIN;
++  pfd.revents = 0;
++  for (;;) {
++    int ret = poll(&pfd, 1, -1);
++    if (ret >= 0) {
+       break;
+     }
+-
+-    fprintf(stderr,
+-      "RNDGETENTCNT on /dev/urandom indicates that the entropy pool does not "
+-      "have enough entropy. Rather than continue with poor entropy, this "
+-      "process will block until entropy is available.\n");
+-
+-    struct timespec sleep_time = {.tv_sec = 0, .tv_nsec = MILLISECONDS_250 };
+-    nanosleep(&sleep_time, &sleep_time);
++    if (errno != EINTR && errno != EAGAIN) {
++      perror("poll /dev/random");
++      abort();
++    }
+   }
++  close(random_fd);
+ #endif  // OPENSSL_LINUX
+
+   random_flavor_state = STATE_READY;

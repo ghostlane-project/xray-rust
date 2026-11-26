@@ -7,7 +7,7 @@ trap 'rm -rf "$temporary"' EXIT
 
 # Include ignored files here: an upstream .gitignore can hide crate files on
 # the developer's filesystem even though a clean checkout will omit them.
-untracked="$(git -C "$ROOT" ls-files --others -- vendor/blake3 vendor/h2 vendor/h3 vendor/h3-quinn vendor/quinn vendor/quinn-proto vendor/gotatun vendor/smoltcp olc/vendor/str0m-0.25.0 olc/vendor/sctp-proto-0.10.8 olc/vendor/is-0.12.0 olc/vendor/stun-proto-2.0.5 olc/vendor/turn-client-proto-0.8.0)"
+untracked="$(git -C "$ROOT" ls-files --others -- vendor/aws-lc-sys vendor/blake3 vendor/h2 vendor/h3 vendor/h3-quinn vendor/quinn vendor/quinn-proto vendor/gotatun vendor/smoltcp olc/vendor/str0m-0.25.0 olc/vendor/sctp-proto-0.10.8 olc/vendor/is-0.12.0 olc/vendor/stun-proto-2.0.5 olc/vendor/turn-client-proto-0.8.0)"
 if [[ -n "$untracked" ]]; then
   echo 'vendored source files are absent from the Git index:' >&2
   printf '%s\n' "$untracked" >&2
@@ -46,6 +46,15 @@ patch --batch --fuzz=0 -p1 \
   <"$ROOT/vendor/quinn/XRAY-PATCH.diff"
 diff -ruN --exclude XRAY-PATCH.diff --exclude XRAY-PATCH.md \
   "$temporary/quinn-0.11.9" "$ROOT/vendor/quinn"
+
+download_and_verify \
+  aws-lc-sys 0.45.0 \
+  9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27
+patch --batch --fuzz=0 -p1 \
+  -d "$temporary/aws-lc-sys-0.45.0" \
+  <"$ROOT/vendor/aws-lc-sys/XRAY-PATCH.diff"
+diff -ruN --exclude XRAY-PATCH.diff --exclude XRAY-PATCH.md \
+  "$temporary/aws-lc-sys-0.45.0" "$ROOT/vendor/aws-lc-sys"
 
 patch --batch --fuzz=0 -p1 \
   -d "$temporary/blake3-1.8.5" \

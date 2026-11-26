@@ -930,6 +930,70 @@ jobs:
       - name: Audit RustSec advisories
         run: cargo audit
 
+      - name: Audit patched crates as registry releases
+        run: |
+          # Cargo audit skips lock entries with no registry source, so [patch.crates-io]
+          # paths are invisible to it. Restore the crates.io identity of every patched
+          # crate in a copy of the lockfile and audit that copy as well.
+          python3 - "$RUNNER_TEMP/patched-crates.lock" <<'PY'
+          import pathlib
+          import re
+          import sys
+          import tomllib
+
+          root = pathlib.Path('.')
+          manifest = tomllib.loads((root / 'Cargo.toml').read_text())
+          patched = set()
+          for name, spec in manifest['patch']['crates-io'].items():
+              if not isinstance(spec, dict) or 'path' not in spec:
+                  continue
+              crate = tomllib.loads((root / spec['path'] / 'Cargo.toml').read_text())
+              patched.add((name, crate['package']['version']))
+
+          source = 'source = "registry+https://github.com/rust-lang/crates.io-index"'
+          lines = (root / 'Cargo.lock').read_text().splitlines(keepends=True)
+          result = []
+          restored = set()
+          index = 0
+          while index < len(lines):
+              line = lines[index]
+              if line.strip() != '[[package]]':
+                  result.append(line)
+                  index += 1
+                  continue
+              block = [line]
+              index += 1
+              while index < len(lines) and lines[index].strip() != '[[package]]':
+                  block.append(lines[index])
+                  index += 1
+              name = None
+              version = None
+              version_line = None
+              has_source = False
+              for offset, entry in enumerate(block):
+                  match = re.match(r'^name = "([^"]+)"$', entry.rstrip())
+                  if match:
+                      name = match.group(1)
+                  match = re.match(r'^version = "([^"]+)"$', entry.rstrip())
+                  if match:
+                      version = match.group(1)
+                      version_line = offset
+                  if entry.startswith('source = '):
+                      has_source = True
+              if (name, version) in patched and not has_source:
+                  block.insert(version_line + 1, source + '\n')
+                  restored.add((name, version))
+              result.extend(block)
+
+          missing = patched - restored
+          if missing:
+              print('No lockfile entry for patched crates:', sorted(missing), file=sys.stderr)
+              sys.exit(1)
+          pathlib.Path(sys.argv[1]).write_text(''.join(result))
+          print('Restored registry sources for', len(restored), 'patched crates')
+          PY
+          cargo audit --file "$RUNNER_TEMP/patched-crates.lock"
+
       - name: Enforce dependency policy
         run: cargo deny --locked check advisories bans licenses sources
 
