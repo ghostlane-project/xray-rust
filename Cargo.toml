@@ -110,6 +110,12 @@ strip = "symbols"
 panic = "unwind"
 
 [patch.crates-io]
+# aws-lc-sys 0.45.0's RNDGETENTCNT loop never finishes on Linux 3.10, where
+# entropy_avail stays below 256 bits even after the blocking pool is seeded
+# (Android 6 and 7, API 23 and 24). The vendored copy waits for /dev/random
+# readability instead, as getrandom 0.2 does when SYS_getrandom is ENOSYS.
+# Only crypto/rand_extra/urandom.c differs from the released crate.
+aws-lc-sys = { path = "crates/xray-transport/vendor/aws-lc-sys" }
 # str0m's ICE crate with Chrome's STUN attribute order (olc/vendor/is-0.12.0/src/stun.rs, `StunProfile`)
 # and libwebrtc's rank for a relayed candidate by its path to the TURN server (candidate.rs,
 # `Candidate::relayed_via`): the olcRTC engine's connectivity checks must read as a browser's
