@@ -1,9 +1,10 @@
 // Copyright 2026 The Ghostlane Project contributors.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The few calls into the C library the client needs: the file limit at
-//! start. The only `unsafe` in the crate. (A scoped address's interface,
-//! which the resolver needs, is in `olc_net::sys` with the resolver.)
+//! Where the client asks the C library for the file limit at start, on
+//! hosts that have the call. The only `unsafe` in the crate. (A scoped
+//! address's interface, which the resolver needs, is in `olc_net::sys`
+//! with the resolver.)
 //!
 //! [`raise_nofile_limit`] is xray-cli's (`crates/xray-cli/src/lib.rs`,
 //! `raise_nofile_limit`), carried here so the engine needs none of the Xray
@@ -21,6 +22,7 @@ pub struct NofileLimits {
 }
 
 /// The file limits now.
+#[cfg(unix)]
 #[must_use]
 #[allow(
     clippy::unnecessary_cast,
@@ -41,11 +43,20 @@ pub fn nofile_limits() -> Option<NofileLimits> {
     })
 }
 
+/// The file limits now. Without `getrlimit` the process keeps the limit
+/// the host started it with, and there is no value to report here.
+#[cfg(not(unix))]
+#[must_use]
+pub fn nofile_limits() -> Option<NofileLimits> {
+    None
+}
+
 /// Raises the soft file limit to the hard one, clamped on macOS and iOS to
 /// `kern.maxfilesperproc` (setrlimit refuses more there even when the hard
 /// limit says unlimited), and returns the limits in effect. The Go runtime
 /// does the same at start (`syscall` package init), so the Go client ran at
 /// the hard limit: 256 connections need more than iOS's default 256 files.
+#[cfg(unix)]
 #[allow(
     clippy::unnecessary_cast,
     reason = "rlim_t is only u64 on some unix targets"
@@ -71,6 +82,13 @@ pub fn raise_nofile_limit() -> Option<NofileLimits> {
     nofile_limits()
 }
 
+/// Raises the soft file limit to the hard one. Without `setrlimit` there
+/// is no limit to raise: the host's value is left as it is.
+#[cfg(not(unix))]
+pub fn raise_nofile_limit() -> Option<NofileLimits> {
+    None
+}
+
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn max_files_per_proc() -> Option<u64> {
     let mut value: libc::c_int = 0;
@@ -92,6 +110,7 @@ fn max_files_per_proc() -> Option<u64> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn the_soft_limit_is_raised_to_the_hard_one() {
         let after = raise_nofile_limit().expect("getrlimit");
