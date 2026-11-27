@@ -26,6 +26,9 @@ use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 /// field without being narrowed.
 #[cfg(unix)]
 pub type RawFd = std::os::fd::RawFd;
+
+/// The raw socket handle a protector is handed on Windows: the C ABI's
+/// `i64` field carries the SOCKET value without narrowing it.
 #[cfg(windows)]
 pub type RawFd = i64;
 
