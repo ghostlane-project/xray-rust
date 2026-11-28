@@ -577,6 +577,42 @@ impl OlcrtcRuntime {
         });
     }
 
+    /// `SetRoomID`: a carrier engine's room code when it takes its
+    /// credentials directly (`Extra["roomID"]`). An interop seam, empty by
+    /// default: a shipped room names its code in the room link instead.
+    pub fn set_room_id(&self, room_id: String) {
+        self.set(|d| d.room_id = room_id.trim().to_owned());
+    }
+
+    /// `SetEngineExtra`: `Engine.Extra` for a fake carrier's engine, as a
+    /// JSON object of string values. An interop seam, empty by default: no
+    /// real provider is ever handed extras by a shipped session.
+    ///
+    /// # Errors
+    /// `InvalidConfig` when the text is not an object of string values.
+    pub fn set_engine_extra(&self, json: String) -> Result<(), OlcrtcError> {
+        let extra: std::collections::BTreeMap<String, String> = serde_json::from_str(&json)
+            .map_err(|error| invalid(format!("engine extra: {error}")))?;
+        self.set(|d| d.engine_extra = extra);
+        Ok(())
+    }
+
+    /// `SetICETransportPolicy`: WebRTC's `iceTransportPolicy`, `all` (the
+    /// default) or `relay`. An interop seam for relay-only fake carriers.
+    ///
+    /// # Errors
+    /// `InvalidConfig` for any other value.
+    pub fn set_ice_transport_policy(&self, policy: String) -> Result<(), OlcrtcError> {
+        let policy = policy.trim().to_owned();
+        if !matches!(policy.as_str(), "" | "all" | "relay") {
+            return Err(invalid(format!(
+                "ice transport policy {policy:?}: all or relay"
+            )));
+        }
+        self.set(|d| d.ice_transport_policy = policy);
+        Ok(())
+    }
+
     /// `SetLivenessOptions`, in milliseconds.
     ///
     /// # Errors

@@ -895,3 +895,29 @@ fn a_start_leaves_the_signalling_tls_installed() {
         rt.stop(100).unwrap();
     });
 }
+
+/// The interop-only setters start empty and take exactly what the fake
+/// carrier names; a shipped session never calls them.
+#[test]
+fn interop_setters_default_empty_and_hold_what_is_set() {
+    let rt = OlcrtcRuntime::new();
+    let defaults = rt.shared.lock().defaults.clone();
+    assert!(
+        defaults.room_id.is_empty()
+            && defaults.engine_extra.is_empty()
+            && defaults.ice_transport_policy.is_empty()
+    );
+    rt.set_room_id("roomcode".into());
+    rt.set_engine_extra(r#"{"gateway":"http://127.0.0.1:9"}"#.into())
+        .unwrap();
+    rt.set_ice_transport_policy("relay".into()).unwrap();
+    assert!(rt.set_engine_extra("[]".into()).is_err());
+    assert!(rt.set_ice_transport_policy("nonsense".into()).is_err());
+    let defaults = rt.shared.lock().defaults.clone();
+    assert_eq!(defaults.room_id, "roomcode");
+    assert_eq!(
+        defaults.engine_extra.get("gateway").map(String::as_str),
+        Some("http://127.0.0.1:9")
+    );
+    assert_eq!(defaults.ice_transport_policy, "relay");
+}

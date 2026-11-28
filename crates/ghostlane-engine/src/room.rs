@@ -134,7 +134,7 @@ pub(crate) fn ask(
 
 #[cfg(feature = "rooms")]
 mod carried {
-    use std::collections::HashSet;
+    use std::collections::{BTreeMap, HashSet};
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::os::fd::RawFd;
     use std::sync::Arc;
@@ -168,6 +168,13 @@ mod carried {
         "channel",
         "vp8",
         "debug",
+        // The interop seam. All five are optional and empty on a shipped
+        // session; only the gate's fake-carrier rooms name them.
+        "engine",
+        "token",
+        "room_id",
+        "engine_extra",
+        "ice_transport_policy",
     ];
 
     /// The room half, read.
@@ -187,6 +194,12 @@ mod carried {
         channel: Option<String>,
         vp8: Option<(i64, i64)>,
         debug: bool,
+        // The interop seam, kept out of every shipped app's session.
+        engine: Option<String>,
+        token: Option<String>,
+        room_id: Option<String>,
+        engine_extra: Option<BTreeMap<String, String>>,
+        ice_policy: Option<String>,
     }
 
     /// What reading a half found: the errors refuse it, the warnings are
@@ -234,6 +247,14 @@ mod carried {
     fn carrier_transport(provider: &str) -> &'static str {
         match provider {
             "mtslink" | "vkcalls" => "vp8channel",
+            _ => "datachannel",
+        }
+    }
+
+    /// The interop engines that carry a video track, and so vp8channel.
+    fn engine_transport(engine: &str) -> &'static str {
+        match engine {
+            "mtslink" | "vkcalls" | "interop-p2p" => "vp8channel",
             _ => "datachannel",
         }
     }
@@ -395,6 +416,38 @@ mod carried {
         let udp = flag(half, "udp", &mut found);
         let debug = flag(half, "debug", &mut found).unwrap_or(false);
 
+        // The interop seam. Each value is read by hand: a token or a room
+        // code must never appear in a diagnostic.
+        let engine = text(half, "engine", &mut found);
+        let token = text(half, "token", &mut found);
+        let room_id = text(half, "room_id", &mut found);
+        let ice_policy = text(half, "ice_transport_policy", &mut found);
+        if ice_policy
+            .as_deref()
+            .is_some_and(|policy| !matches!(policy, "" | "all" | "relay"))
+        {
+            found.error("$.ice_transport_policy", "must be `all` or `relay`");
+        }
+        let engine_extra = match half.get("engine_extra") {
+            None | Some(Value::Null) => None,
+            Some(Value::Object(members)) => {
+                let mut extra = BTreeMap::new();
+                for (name, value) in members {
+                    match value.as_str() {
+                        Some(value) => {
+                            extra.insert(name.clone(), value.to_owned());
+                        }
+                        None => found.error("$.engine_extra", "values must be strings"),
+                    }
+                }
+                Some(extra)
+            }
+            Some(_) => {
+                found.error("$.engine_extra", "must be an object of strings");
+                None
+            }
+        };
+
         if found.refused() {
             return (None, found);
         }
@@ -419,6 +472,11 @@ mod carried {
             channel,
             vp8,
             debug,
+            engine,
+            token,
+            room_id,
+            engine_extra,
+            ice_policy,
         };
         (Some(half), found)
     }
@@ -449,11 +507,19 @@ mod carried {
         runtime
             .set_transport(half.transport.clone())
             .map_err(at("$.transport"))?;
-        let own = carrier_transport(&half.provider);
+        // A named engine is the fake carriers' direct-credentials path:
+        // its carrier, not the `none` provider, decides the transport.
+        let own = half
+            .engine
+            .as_deref()
+            .map_or_else(|| carrier_transport(&half.provider), engine_transport);
         if half.transport != own {
             return Err((
                 "$.transport".to_owned(),
-                format!("the `{}` carrier runs `{own}` alone", half.provider),
+                format!(
+                    "the `{}` engine runs `{own}` alone",
+                    half.engine.as_deref().unwrap_or(&half.provider)
+                ),
             ));
         }
         let (first, others) = half.rooms.split_first().ok_or_else(|| {
@@ -515,6 +581,33 @@ mod carried {
             runtime.set_udp(udp);
         }
         runtime.set_debug(half.debug);
+
+        // The interop seam. Nothing is called unless the session names a
+        // field, so every shipped room takes exactly the path above.
+        if let Some(engine) = &half.engine {
+            runtime.set_engine(
+                engine.clone(),
+                String::new(),
+                half.token.clone().unwrap_or_default(),
+            );
+        } else if let Some(token) = &half.token {
+            runtime.set_provider_token(token.clone());
+        }
+        if let Some(room_id) = &half.room_id {
+            runtime.set_room_id(room_id.clone());
+        }
+        if let Some(extra) = &half.engine_extra {
+            let json = serde_json::to_string(extra)
+                .map_err(|error| ("$.engine_extra".to_owned(), error.to_string()))?;
+            runtime
+                .set_engine_extra(json)
+                .map_err(at("$.engine_extra"))?;
+        }
+        if let Some(policy) = &half.ice_policy {
+            runtime
+                .set_ice_transport_policy(policy.clone())
+                .map_err(at("$.ice_transport_policy"))?;
+        }
         Ok(())
     }
 
@@ -826,13 +919,89 @@ mod carried {
         #[test]
         fn a_fake_carrier_room_reads_its_engine_and_credentials() {
             let spec = fake_room();
-            let findings = check(spec.get("room").unwrap());
+            let room = spec.get("room").unwrap();
+            let findings = check(room);
             let errors: Vec<_> = findings
                 .iter()
                 .filter(|found| found.severity == Severity::Error)
                 .map(|found| found.message.clone())
                 .collect();
-            assert!(errors.is_empty(), "the interop seam was refused: {errors:?}");
+            assert!(
+                errors.is_empty(),
+                "the interop seam was refused: {errors:?}"
+            );
+            let (half, _) = read(room);
+            let half = half.unwrap();
+            assert_eq!(half.engine.as_deref(), Some("salutejazz"));
+            assert_eq!(half.token.as_deref(), Some("password"));
+            assert_eq!(half.room_id.as_deref(), Some("roomcode"));
+            assert_eq!(half.ice_policy.as_deref(), Some("relay"));
+            assert_eq!(
+                half.engine_extra
+                    .as_ref()
+                    .and_then(|extra| extra.get("gateway"))
+                    .map(String::as_str),
+                Some("http://127.0.0.1:9")
+            );
+        }
+
+        #[test]
+        fn an_interop_engine_chooses_its_own_transport() {
+            let mut spec = fake_room();
+            let room = spec.get_mut("room").unwrap();
+            room["engine"] = json!("vkcalls");
+            room["transport"] = json!("vp8channel");
+            assert!(check(room)
+                .iter()
+                .all(|found| found.severity != Severity::Error));
+            room["transport"] = json!("datachannel");
+            assert!(check(room)
+                .iter()
+                .any(|found| found.severity == Severity::Error
+                    && found.path.as_deref() == Some("$.transport")));
+        }
+
+        #[test]
+        fn a_plain_room_reads_no_interop_field() {
+            let spec = json!({
+                "provider": "none",
+                "transport": "datachannel",
+                "rooms": ["tcp://127.0.0.1:7000/room"],
+                "key": "6b".repeat(32)
+            });
+            let (half, _) = read(&spec);
+            let half = half.unwrap();
+            assert!(
+                half.engine.is_none()
+                    && half.token.is_none()
+                    && half.room_id.is_none()
+                    && half.engine_extra.is_none()
+                    && half.ice_policy.is_none()
+            );
+        }
+
+        #[test]
+        fn a_bad_interop_field_is_refused_without_quoting_it() {
+            let spec = json!({
+                "provider": "none",
+                "transport": "datachannel",
+                "rooms": ["tcp://127.0.0.1:7000/room"],
+                "key": "6b".repeat(32),
+                "engine_extra": {"gateway": 42},
+                "ice_transport_policy": "somewhere"
+            });
+            let (half, found) = read(&spec);
+            assert!(half.is_none());
+            let messages: Vec<_> = found
+                .0
+                .iter()
+                .filter(|found| found.severity == Severity::Error)
+                .map(|found| found.message.clone())
+                .collect();
+            assert_eq!(messages.len(), 2);
+            assert!(messages
+                .iter()
+                .all(|message| !message.contains("somewhere")));
         }
 
         #[test]
@@ -844,7 +1013,9 @@ mod carried {
                 "key": "6b".repeat(32)
             });
             let findings = check(&spec);
-            assert!(findings.iter().all(|found| found.severity != Severity::Error));
+            assert!(findings
+                .iter()
+                .all(|found| found.severity != Severity::Error));
         }
     }
 }

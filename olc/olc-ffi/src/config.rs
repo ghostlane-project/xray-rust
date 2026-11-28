@@ -6,6 +6,8 @@
 //! persist across starts (the Android service relies on it for the rules,
 //! UDP and DTLS); only the room list is read again at each hop.
 
+use std::collections::BTreeMap;
+
 use crate::error::{invalid, OlcrtcError};
 
 /// `transportData`.
@@ -74,6 +76,14 @@ pub(crate) struct RuntimeConfig {
     pub engine: String,
     pub service_url: String,
     pub engine_token: String,
+    /// The room's code when the engine takes its credentials directly
+    /// (`Extra["roomID"]`). Empty on every shipped path.
+    pub room_id: String,
+    /// Credentials a fake carrier asks for in `Engine.Extra`. Empty on
+    /// every shipped path, so no real provider ever sees it.
+    pub engine_extra: BTreeMap<String, String>,
+    /// WebRTC's `iceTransportPolicy`: empty (all) on every shipped path.
+    pub ice_transport_policy: String,
     pub liveness: olc_client::config::Liveness,
     pub traffic: (i64, i64, i64),
     pub vp8: (i64, i64),
@@ -106,6 +116,9 @@ impl Default for RuntimeConfig {
             engine: String::new(),
             service_url: String::new(),
             engine_token: String::new(),
+            room_id: String::new(),
+            engine_extra: BTreeMap::new(),
+            ice_transport_policy: String::new(),
             liveness: olc_client::config::Liveness {
                 interval_ms: 10_000,
                 timeout_ms: 15_000,
@@ -141,6 +154,12 @@ impl std::fmt::Debug for RuntimeConfig {
             .field("device_id_path", &self.device_id_path)
             .field("engine", &(&self.engine, &self.service_url))
             .field("engine_token", &hidden(&self.engine_token))
+            .field("room_id", &hidden(&self.room_id))
+            .field(
+                "engine_extra",
+                &self.engine_extra.keys().collect::<Vec<_>>(),
+            )
+            .field("ice_transport_policy", &self.ice_transport_policy)
             .field("liveness", &self.liveness)
             .field("traffic", &self.traffic)
             .field("vp8", &self.vp8)
@@ -157,6 +176,10 @@ impl Drop for RuntimeConfig {
         zero(&mut self.socks_pass);
         zero(&mut self.provider_token);
         zero(&mut self.engine_token);
+        zero(&mut self.room_id);
+        for value in self.engine_extra.values_mut() {
+            zero(value);
+        }
     }
 }
 
@@ -189,8 +212,13 @@ impl RuntimeConfig {
         if self.provider != PROVIDER_NONE && self.room.is_empty() {
             return Err(invalid("room is required"));
         }
+        // A `none` provider with a named engine is the fake carriers'
+        // direct-credentials path: the engine takes `url`, `token` and
+        // `room_id` as given instead of asking a real provider. No shipped
+        // app sets an engine without a provider, so this only widens what
+        // an interop session can start.
         if self.provider == PROVIDER_NONE
-            && !(self.engine.is_empty() || self.engine == ENGINE_INTEROP_PIPE)
+            && !(self.engine.is_empty() || direct_engine(&self.engine))
         {
             return Err(invalid(format!("engine {:?}", self.engine)));
         }
@@ -249,6 +277,10 @@ impl RuntimeConfig {
         } else {
             &self.provider_token
         });
+        cfg.room_id.clone_from(&self.room_id);
+        cfg.engine_extra.clone_from(&self.engine_extra);
+        cfg.ice_transport_policy
+            .clone_from(&self.ice_transport_policy);
         cfg.channel.clone_from(&self.channel);
         let (fps, batch) = self.vp8;
         cfg.vp8_fps = u32::try_from(fps).unwrap_or(0);
@@ -265,6 +297,20 @@ impl RuntimeConfig {
         cfg.debug = debug;
         cfg
     }
+}
+
+/// An engine a `none` provider may dial with direct credentials. The apps
+/// never name one: a real carrier is reached through its provider.
+fn direct_engine(name: &str) -> bool {
+    matches!(
+        name,
+        ENGINE_INTEROP_PIPE
+            | olc_client::config::ENGINE_SALUTEJAZZ
+            | olc_client::config::ENGINE_INTEROP_P2P
+            | olc_client::config::ENGINE_MTSLINK
+            | olc_client::config::ENGINE_VKCALLS
+            | olc_client::config::ENGINE_JITSI
+    )
 }
 
 /// `net.JoinHostPort`.
@@ -547,6 +593,25 @@ mod tests {
         );
     }
 
+    /// A fake carrier's engine is dialed with the credentials in the room
+    /// (provider `none`), not through the carrier's real auth service. A
+    /// shipped session names no engine, and an unknown one is still refused.
+    #[test]
+    fn a_none_provider_may_dial_a_named_fake_engine_only() {
+        let mut c = RuntimeConfig::default();
+        c.key_hex = "00".repeat(32);
+        c.provider = "none".into();
+        c.room = "https://sfu.example/room".into();
+        c.transport = "datachannel".into();
+        c.engine.clear();
+        assert_eq!(c.validate(), Ok(()));
+        c.engine = "vkcalls".into();
+        c.transport = "vp8channel".into();
+        assert_eq!(c.validate(), Ok(()));
+        c.engine = "carrier-pigeon".into();
+        assert!(c.validate().is_err());
+    }
+
     /// What a start hands the client: the provider, the engine, the token
     /// (a provider's account token through a provider, the engine's own
     /// without one, as Go's `ProviderToken` and `Token`), the channel and
@@ -580,6 +645,40 @@ mod tests {
         let client = c.client_config(String::new(), false);
         assert_eq!(client.engine_name(), Ok("interop-pipe"));
         assert_eq!(client.token, "eng");
+    }
+
+    /// The interop seam is opt-in: a shipped config hands the client none
+    /// of it, whatever carrier it runs.
+    #[test]
+    fn the_interop_fields_are_empty_by_default() {
+        let c = RuntimeConfig::default();
+        let client = c.client_config(String::new(), false);
+        assert!(
+            c.room_id.is_empty() && c.engine_extra.is_empty() && c.ice_transport_policy.is_empty()
+        );
+        assert!(
+            client.room_id.is_empty()
+                && client.engine_extra.is_empty()
+                && client.ice_transport_policy.is_empty()
+        );
+    }
+
+    #[test]
+    fn the_set_interop_fields_reach_the_client_without_a_log_leak() {
+        let mut c = RuntimeConfig::default();
+        c.room_id = "roomcode".into();
+        c.engine_extra
+            .insert("gateway".into(), "http://127.0.0.1:9".into());
+        c.ice_transport_policy = "relay".into();
+        let client = c.client_config(String::new(), false);
+        assert_eq!(client.room_id, "roomcode");
+        assert_eq!(
+            client.engine_extra.get("gateway").map(String::as_str),
+            Some("http://127.0.0.1:9")
+        );
+        assert_eq!(client.ice_transport_policy, "relay");
+        let shown = format!("{c:?}");
+        assert!(!shown.contains("http://127.0.0.1:9") && !shown.contains("roomcode"));
     }
 
     #[test]

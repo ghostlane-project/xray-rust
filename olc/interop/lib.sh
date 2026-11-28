@@ -195,7 +195,7 @@ def main():
         value = cfg.get(field)
         if value not in (None, "", {}, []):
             room[field] = value
-    port = socks_port(cfg)
+    port = int(os.environ.get("OLC_ENGINE_SOCKS_PORT") or socks_port(cfg))
     if port:
         room["socks"] = {"port": port}
     for field, name in (("socks_user", "user"), ("socks_pass", "password")):
@@ -203,12 +203,27 @@ def main():
             room.setdefault("socks", {})[name] = cfg[field]
     if cfg.get("vp8_fps") or cfg.get("vp8_batch"):
         room["vp8"] = {"fps": cfg.get("vp8_fps") or 30, "batch": cfg.get("vp8_batch") or 64}
+    # The namespace leg: the fake's sockets stay on this host's loopback,
+    # the engine's leave by the named interface. Only the tests set these.
+    host = os.environ.get("OLC_ENGINE_HOST")
+    if host:
+        for field in ("url",):
+            room[field] = room[field].replace("127.0.0.1", host)
+        room["rooms"] = [value.replace("127.0.0.1", host) for value in room["rooms"]]
+    netns = os.environ.get("OLC_ENGINE_NETNS")
+    bind = os.environ.get("OLC_ENGINE_BIND")
+    session = {"version": 1, "room": room}
+    if bind:
+        session["bind"] = {"interface": bind}
     path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "engine-session.json")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.write(fd, json.dumps({"version": 1, "room": room}).encode())
+    os.write(fd, json.dumps(session).encode())
     os.close(fd)
+    command = [ENGINE, "run", "--session", path]
+    if netns:
+        command = ["ip", "netns", "exec", netns] + command
     # A pipe the parent never closes: stdin EOF is the engine's stop signal.
-    child = subprocess.Popen([ENGINE, "run", "--session", path], stdin=subprocess.PIPE)
+    child = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     def read_events():
         for _ in range(10000):
@@ -222,11 +237,29 @@ def main():
             if event.get("event") == "ready":
                 for inbound in event.get("inbounds") or []:
                     if "room" in str(inbound.get("tag") or ""):
-                        sys.stderr.write("SOCKS5 server listening on " + inbound["address"] + "\n")
+                        address = inbound["address"]
+                        exposed = os.environ.get("OLC_ENGINE_SOCKS_HOST")
+                        if netns and exposed:
+                            _, _, listen_port = address.rpartition(":")
+                            subprocess.Popen(
+                                ["ip", "netns", "exec", netns, "socat",
+                                 "TCP-LISTEN:%s:%s,fork,reuseaddr" % (exposed, listen_port),
+                                 "TCP:127.0.0.1:%s" % listen_port],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            )
+                            address = exposed + ":" + listen_port
+                        sys.stderr.write("SOCKS5 server listening on " + address + "\n")
                         sys.stderr.flush()
+            elif event.get("event") == "log":
+                # The gate reads the client's log: the engine's room lines
+                # are its log, as olc-client writes them to stderr.
+                sys.stderr.write(str(event.get("line") or "") + "\n")
+                sys.stderr.flush()
             elif event.get("event") in ("error", "ended"):
                 # A code, never a message that could quote a room or a token.
-                sys.stderr.write("engine: " + str(event.get("event")) + "\n")
+                sys.stderr.write(
+                    "engine: " + str(event.get("event")) + " " + str(event.get("code") or "") + "\n"
+                )
                 sys.stderr.flush()
 
     threading.Thread(target=read_events, daemon=True).start()
