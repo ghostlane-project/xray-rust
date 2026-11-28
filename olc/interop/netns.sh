@@ -22,7 +22,7 @@
 #   signalling), counted by rules on olcc's OUTPUT chain.
 # OLC_NETNS_SILENT names the interface that must stay silent (default tun0);
 # naming out0 is the check pointed at the wrong leg, which must fail.
-# A control first: an unbound ping must move tun0's counter, or the sensor is
+# A control first: an unbound datagram must move tun0's counter, or the sensor is
 # dead and the run says so.
 #
 # Needs root, iproute2, iptables and socat. Leaves 0 when the gate passed and
@@ -63,19 +63,25 @@ in_ns ip link add tun0 type dummy
 in_ns ip link set tun0 up
 in_ns ip route add default dev tun0 table 51820
 in_ns ip rule add pref 1000 lookup 51820
+# The kernel's own answers to a stray packet (a reset, an unreachable) are
+# routed without a socket, so they go into tun0; they are not the engine's.
+in_ns iptables -A OUTPUT -o tun0 -p icmp -j ACCEPT
+in_ns iptables -A OUTPUT -o tun0 -p tcp --tcp-flags RST RST -j ACCEPT
+in_ns iptables -A OUTPUT -o tun0 -m comment --comment leak -j ACCEPT
 in_ns iptables -A OUTPUT -o out0 -p udp -j ACCEPT
 in_ns iptables -A OUTPUT -o out0 -p tcp -j ACCEPT
 
-tx() { in_ns cat "/sys/class/net/$1/statistics/tx_packets"; }
+# The packets a socket sent into tun0 (the kernel's own answers are not counted).
+tx() { in_ns iptables -nvxL OUTPUT | awk '/leak/ {n+=$1} END {print n+0}'; }
 # iptables -n prints the protocol as its number: udp 17, tcp 6.
 rule_pkts() {
 	case "$1" in udp) set -- 17 ;; tcp) set -- 6 ;; esac
 	in_ns iptables -nvxL OUTPUT | awk -v p="$1" '$4==p {n+=$1} END {print n+0}'
 }
 
-# The control: an unbound packet goes into tun0.
+# The control: an unbound datagram goes into tun0.
 t0=$(tx tun0)
-in_ns ping -c 1 -W 1 192.0.2.99 >/dev/null 2>&1 || true
+in_ns bash -c 'echo x > /dev/udp/192.0.2.99/9' >/dev/null 2>&1 || true
 [ "$(tx tun0)" -gt "$t0" ] || { echo "netns: the control failed: an unbound packet did not move tun0" >&2; exit 1; }
 
 # What lands in tun0 is kept, to name it if it is not nothing.

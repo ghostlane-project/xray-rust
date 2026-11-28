@@ -174,11 +174,9 @@ jobs:
           cache: false
 
       - name: Relay-only fake room, the engine in a namespace bound to out0
-        env:
-          OLC_NETNS_SILENT: out0
         run: |
           set -o pipefail
-          sudo env "PATH=$PATH" "HOME=$HOME" OLC_NETNS_SILENT="$OLC_NETNS_SILENT" \
+          sudo env "PATH=$PATH" "HOME=$HOME" \
             bash olc/interop/netns.sh "$RUNNER_TEMP/olc-engine-client" 2>&1 | tee netns.log
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
