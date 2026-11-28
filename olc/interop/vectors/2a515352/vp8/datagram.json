@@ -1,0 +1,307 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/transport/vp8channel/zz_vectors_wire_test.go TestZZVectors",
+ "sources": [
+  "internal/transport/vp8channel/datagram.go:15-141",
+  "internal/transport/vp8channel/writer.go:179-245"
+ ],
+ "cases": {
+  "batch": [
+   {
+    "batch_size": 64,
+    "name": "three_to_the_peer",
+    "queue": [
+     {
+      "dst": 512,
+      "len": 10,
+      "seed": 1
+     },
+     {
+      "dst": 512,
+      "len": 20,
+      "seed": 2
+     },
+     {
+      "dst": 512,
+      "len": 30,
+      "seed": 3
+     }
+    ],
+    "queue_left": 0,
+    "sample": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd44f4c5542000e4f4c554401203f5e7d9cbbdaf91d00184f4c55440221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a5900224f4c5544032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695",
+     "len": 118
+    }
+   },
+   {
+    "batch_size": 64,
+    "name": "another_route_waits",
+    "pending": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000000303a2e564f4c5544032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695",
+     "len": 70
+    },
+    "queue": [
+     {
+      "dst": 512,
+      "len": 10,
+      "seed": 1
+     },
+     {
+      "dst": 512,
+      "len": 20,
+      "seed": 2
+     },
+     {
+      "dst": 0,
+      "len": 30,
+      "seed": 3
+     },
+     {
+      "dst": 512,
+      "len": 40,
+      "seed": 4
+     }
+    ],
+    "queue_left": 1,
+    "sample": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd44f4c5542000e4f4c554401203f5e7d9cbbdaf91d00184f4c55440221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a59",
+     "len": 82
+    }
+   },
+   {
+    "batch_size": 64,
+    "name": "alone",
+    "queue": [
+     {
+      "dst": 512,
+      "len": 10,
+      "seed": 1
+     }
+    ],
+    "queue_left": 0,
+    "sample": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd44f4c554401203f5e7d9cbbdaf91d",
+     "len": 50
+    }
+   },
+   {
+    "batch_size": 1,
+    "name": "batch_size_one",
+    "queue": [
+     {
+      "dst": 512,
+      "len": 10,
+      "seed": 1
+     },
+     {
+      "dst": 512,
+      "len": 20,
+      "seed": 2
+     }
+    ],
+    "queue_left": 1,
+    "sample": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd44f4c554401203f5e7d9cbbdaf91d",
+     "len": 50
+    }
+   },
+   {
+    "batch_size": 2,
+    "name": "batch_size_two",
+    "queue": [
+     {
+      "dst": 512,
+      "len": 10,
+      "seed": 1
+     },
+     {
+      "dst": 512,
+      "len": 20,
+      "seed": 2
+     },
+     {
+      "dst": 512,
+      "len": 30,
+      "seed": 3
+     }
+    ],
+    "queue_left": 1,
+    "sample": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd44f4c5542000e4f4c554401203f5e7d9cbbdaf91d00184f4c55440221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a59",
+     "len": 82
+    }
+   },
+   {
+    "batch_size": 64,
+    "name": "too_large_for_the_sample",
+    "pending": {
+     "len": 20040,
+     "sha256": "33f3b5600228a64d53b3432cd10af681e5bd6da8d58843fb85e42b5a8abd4d1b"
+    },
+    "queue": [
+     {
+      "dst": 512,
+      "len": 20000,
+      "seed": 1
+     },
+     {
+      "dst": 512,
+      "len": 20000,
+      "seed": 2
+     },
+     {
+      "dst": 512,
+      "len": 20000,
+      "seed": 3
+     },
+     {
+      "dst": 512,
+      "len": 20000,
+      "seed": 4
+     }
+    ],
+    "queue_left": 0,
+    "sample": {
+     "len": 60058,
+     "sha256": "ff38f59e98cbf48dae23809dac52fcffbf4216143865536d59aadab87a04edbf"
+    }
+   },
+   {
+    "batch_size": 64,
+    "name": "empty_first",
+    "queue": [
+     {
+      "dst": 512,
+      "len": 0,
+      "seed": 1
+     },
+     {
+      "dst": 512,
+      "len": 5,
+      "seed": 2
+     }
+    ],
+    "queue_left": 0,
+    "sample": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd44f4c554200044f4c554400094f4c55440221405f7e",
+     "len": 57
+    }
+   }
+  ],
+  "frames": [
+   {
+    "data": {
+     "len": 3,
+     "seed": 9
+    },
+    "dst": 0,
+    "frame": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000000303a2e564f4c5544092847",
+     "len": 43
+    },
+    "ok": true
+   },
+   {
+    "data": {
+     "len": 100,
+     "seed": 9
+    },
+    "dst": 512,
+    "frame": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd44f4c55440928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e0042342",
+     "len": 140
+    },
+    "ok": true
+   },
+   {
+    "data": {
+     "len": 0,
+     "seed": 9
+    },
+    "dst": 512,
+    "frame": {
+     "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd44f4c5544",
+     "len": 40
+    },
+    "ok": true
+   },
+   {
+    "data": {
+     "len": 61400,
+     "seed": 9
+    },
+    "dst": 512,
+    "frame": {
+     "len": 61440,
+     "sha256": "c703e34f5814883caed0f1bcf03e905a0cb854cf18eae7778ba3d14f79f50547"
+    },
+    "ok": true
+   },
+   {
+    "data": {
+     "len": 61401,
+     "seed": 9
+    },
+    "dst": 512,
+    "error": "traffic payload exceeds max_payload_size",
+    "ok": false
+   }
+  ],
+  "local_epoch": 256,
+  "max_datagram": 61400,
+  "split": [
+   {
+    "hex": "4f4c5544616263",
+    "name": "olud",
+    "olud": "616263"
+   },
+   {
+    "hex": "4f4c5544",
+    "name": "olud_empty",
+    "olud": ""
+   },
+   {
+    "hex": "4f4c55",
+    "name": "short_of_the_magic"
+   },
+   {
+    "hex": "4f4c5542",
+    "name": "olub_empty",
+    "olub": []
+   },
+   {
+    "hex": "4f4c554200074f4c55446f6e6500074f4c554474776f",
+    "name": "olub_two",
+    "olub": [
+     "4f4c55446f6e65",
+     "4f4c554474776f"
+    ]
+   },
+   {
+    "hex": "4f4c554200",
+    "name": "olub_one_length_byte"
+   },
+   {
+    "hex": "4f4c5542000561",
+    "name": "olub_short_entry"
+   },
+   {
+    "hex": "4f4c55420000",
+    "name": "olub_zero_entry"
+   },
+   {
+    "hex": "4f4c554200074f4c55446f6e6509",
+    "name": "olub_stray_byte"
+   },
+   {
+    "hex": "4f4c4b42000178",
+    "name": "olkb"
+   },
+   {
+    "hex": "",
+    "name": "empty"
+   }
+  ],
+  "token": 1729685987
+ }
+}

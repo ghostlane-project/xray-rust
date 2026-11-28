@@ -1,0 +1,192 @@
+name: Ghostlane olc interop
+
+# Fork only (ghostlane-project/xray-rust). The exits' engine (OLC_PIN in
+# olc/interop/lib.sh) is the Go server and the harness; the client under test
+# is the shipped `ghostlane-engine`, driven through the gate's three fake
+# carriers (SaluteJazz, VK Calls, MTS Link) by a shim that turns the gate's
+# client.json into the engine's session file. No carrier service is reached.
+#
+# This is K4 (the gate's Rust leg). It runs on the program's branches, like
+# ghostlane-p6.yml, and never on main. A pin move must leave the vectors and
+# all three fakes green here. The room half's interop seam has no default:
+# a session that names none of it takes exactly the shipped path.
+on:
+  push:
+    branches: ["p6/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ghostlane-olc-interop-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  pin-and-vectors:
+    name: pin and vectors
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.5'
+          cache: false
+
+      - name: Vectors are the ones the pinned engine writes
+        run: bash olc/interop/regen.sh --check
+
+      - name: The carrier fakes' harnesses at the pin
+        run: |
+          bash olc/interop/vkcalls.sh --dry
+          bash olc/interop/mtslink.sh --dry
+
+  engine-client:
+    name: fakes with ghostlane-engine as the Rust client
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt
+          rustup default 1.96.0
+
+      - name: Install the shipped engine's build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake clang libclang-dev >/dev/null
+
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: olc-interop-${{ hashFiles('Cargo.lock') }}
+
+      - name: The room half's seam tests (the engine as it ships)
+        run: cargo test --locked -p ghostlane-engine --features boring --lib room::carried::tests
+
+      - name: Build the engine as it ships
+        run: cargo build --locked --release -p ghostlane-engine --features boring
+
+      - name: The gate's engine client shim
+        run: |
+          # shellcheck source=/dev/null
+          source olc/interop/lib.sh
+          olc_engine_client "$PWD/target/release/ghostlane-engine" "$RUNNER_TEMP/olc-engine-client"
+          "$RUNNER_TEMP/olc-engine-client" 2>&1 | head -1 || true
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.5'
+          cache: false
+
+      - name: SaluteJazz fake SFU, S0-S5
+        run: |
+          set -o pipefail
+          bash olc/interop/fakeroom.sh "$RUNNER_TEMP/olc-engine-client" gate \
+            -olcrtc.gate-flavours=rust 2>&1 | tee fakeroom.log
+
+      - name: VK Calls fake SFU, S0-S5
+        run: |
+          set -o pipefail
+          bash olc/interop/vkcalls.sh "$RUNNER_TEMP/olc-engine-client" gate 2>&1 | tee vkcalls.log
+
+      - name: MTS Link fake SFU, S0-S5
+        run: |
+          set -o pipefail
+          bash olc/interop/mtslink.sh "$RUNNER_TEMP/olc-engine-client" gate 2>&1 | tee mtslink.log
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: olc-interop-fakes
+          path: |
+            fakeroom.log
+            vkcalls.log
+            mtslink.log
+            olc/interop/.work/gate-artifacts
+          retention-days: 7
+          if-no-files-found: warn
+
+  engine-netns:
+    name: the engine bound to an interface in a namespace
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt
+          rustup default 1.96.0
+
+      - name: Install the shipped engine's build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cmake clang libclang-dev socat iptables tcpdump >/dev/null
+
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: olc-interop-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build the engine as it ships
+        run: cargo build --locked --release -p ghostlane-engine --features boring
+
+      - name: The gate's engine client shim
+        run: |
+          # shellcheck source=/dev/null
+          source olc/interop/lib.sh
+          olc_engine_client "$PWD/target/release/ghostlane-engine" "$RUNNER_TEMP/olc-engine-client"
+          "$RUNNER_TEMP/olc-engine-client" 2>&1 | head -1 || true
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.5'
+          cache: false
+
+      - name: Relay-only fake room, the engine in a namespace bound to out0
+        run: |
+          set -o pipefail
+          sudo env "PATH=$PATH" "HOME=$HOME" \
+            bash olc/interop/netns.sh "$RUNNER_TEMP/olc-engine-client" 2>&1 | tee netns.log
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: olc-interop-netns
+          path: |
+            netns.log
+            netns-tun0.pcap
+            netns-gate.log
+            olc/interop/.work/gate-artifacts
+          retention-days: 7
+          if-no-files-found: warn

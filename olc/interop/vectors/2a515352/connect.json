@@ -1,0 +1,169 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/client/zz_vectors_test.go TestZZVectors",
+ "sources": [
+  "internal/client/tunnel.go:95-117",
+  "internal/tunnelcore/core.go:19-20"
+ ],
+ "cases": {
+  "ack_ok": 0,
+  "ack_host_unreachable": 4,
+  "cases": [
+   {
+    "name": "domain",
+    "host_hex": "6578616d706c652e636f6d",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a226578616d706c652e636f6d222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"example.com\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "ipv4",
+    "host_hex": "312e322e332e34",
+    "port": 80,
+    "ack": 0,
+    "request": "7b2261646472223a22312e322e332e34222c22636d64223a22636f6e6e656374222c22706f7274223a38307d",
+    "request_text": "{\"addr\":\"1.2.3.4\",\"cmd\":\"connect\",\"port\":80}",
+    "verdict": "ok"
+   },
+   {
+    "name": "ipv6",
+    "host_hex": "323030313a6462383a3a31",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a22323030313a6462383a3a31222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"2001:db8::1\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "port zero",
+    "host_hex": "6578616d706c652e636f6d",
+    "port": 0,
+    "ack": 0,
+    "request": "7b2261646472223a226578616d706c652e636f6d222c22636d64223a22636f6e6e656374222c22706f7274223a307d",
+    "request_text": "{\"addr\":\"example.com\",\"cmd\":\"connect\",\"port\":0}",
+    "verdict": "ok"
+   },
+   {
+    "name": "port one",
+    "host_hex": "6578616d706c652e636f6d",
+    "port": 1,
+    "ack": 0,
+    "request": "7b2261646472223a226578616d706c652e636f6d222c22636d64223a22636f6e6e656374222c22706f7274223a317d",
+    "request_text": "{\"addr\":\"example.com\",\"cmd\":\"connect\",\"port\":1}",
+    "verdict": "ok"
+   },
+   {
+    "name": "largest port",
+    "host_hex": "6578616d706c652e636f6d",
+    "port": 65535,
+    "ack": 0,
+    "request": "7b2261646472223a226578616d706c652e636f6d222c22636d64223a22636f6e6e656374222c22706f7274223a36353533357d",
+    "request_text": "{\"addr\":\"example.com\",\"cmd\":\"connect\",\"port\":65535}",
+    "verdict": "ok"
+   },
+   {
+    "name": "empty host",
+    "host_hex": "",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a22222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "quote, backslash and html",
+    "host_hex": "6122625c633c643e2665",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a22615c22625c5c635c7530303363645c75303033655c753030323665222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"a\\\"b\\\\c\\u003cd\\u003e\\u0026e\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "short escapes",
+    "host_hex": "080c0a0d09",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a225c625c665c6e5c725c74222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"\\b\\f\\n\\r\\t\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "other control bytes and delete",
+    "host_hex": "00011f7f",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a225c75303030305c75303030315c75303031667f222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"\\u0000\\u0001\\u001f\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "line and paragraph separators",
+    "host_hex": "61e280a862e280a963",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a22615c7532303238625c753230323963222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"a\\u2028b\\u2029c\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "non-ascii name",
+    "host_hex": "d0bfd180d0b8d0bcd0b5d1802ed180d184",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a22d0bfd180d0b8d0bcd0b5d1802ed180d184222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"пример.рф\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "four-byte rune",
+    "host_hex": "78f09f988079",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a2278f09f988079222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"x😀y\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "replacement character",
+    "host_hex": "efbfbd",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a22efbfbd222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"�\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "invalid utf-8",
+    "host_hex": "fffe6162c328e282eda080",
+    "port": 443,
+    "ack": 0,
+    "request": "7b2261646472223a225c75666666645c756666666461625c7566666664285c75666666645c75666666645c75666666645c75666666645c7566666664222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"\\ufffd\\ufffdab\\ufffd(\\ufffd\\ufffd\\ufffd\\ufffd\\ufffd\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ok"
+   },
+   {
+    "name": "host unreachable",
+    "host_hex": "323030313a6462383a3a32",
+    "port": 443,
+    "ack": 4,
+    "request": "7b2261646472223a22323030313a6462383a3a32222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"2001:db8::2\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ack_error",
+    "error_text": "sid=3: remote not ready (connect ack=0x04)"
+   },
+   {
+    "name": "other ack code",
+    "host_hex": "6578616d706c652e636f6d",
+    "port": 443,
+    "ack": 1,
+    "request": "7b2261646472223a226578616d706c652e636f6d222c22636d64223a22636f6e6e656374222c22706f7274223a3434337d",
+    "request_text": "{\"addr\":\"example.com\",\"cmd\":\"connect\",\"port\":443}",
+    "verdict": "ack_error",
+    "error_text": "sid=3: remote not ready (connect ack=0x01)"
+   }
+  ]
+ }
+}

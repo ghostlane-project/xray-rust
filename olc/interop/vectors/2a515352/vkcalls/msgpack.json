@@ -1,0 +1,1569 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/vkcalls/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/vkcalls/control.go:171-186 (appendMPInt), 123-169 (EncodeLayout), 39-103 (ParseRegistry)",
+  "internal/engine/vkcalls/control.go:188-234 (sortedStreams, cameraKey, layoutEntries, LayoutFor)",
+  "internal/engine/vkcalls/stamp.go:82-121 (encodeChangeSimulcast, layerProfile, encodePerfStatReport)",
+  "internal/engine/vkcalls/vkcalls.go:33, 351-365, 554-561, 599-617 (the sequence counter and its modulus)",
+  "internal/engine/vkcalls/control_test.go (the frames of TestParseRegistry, the two golden layouts)"
+ ],
+ "cases": {
+  "note": "The producer command channel's bytes. A sequence is written as given: the engine sends its counter modulo sequence_modulus in a layout and a perf report, and whole in change-simulcast. A registry is listed in the byte order of its keys.",
+  "sequence_modulus": 1048576,
+  "layer": {
+   "fps": 15,
+   "height": 180,
+   "kbps": 180,
+   "width": 320
+  },
+  "append_mp_int": [
+   {
+    "value": 0,
+    "hex": "00"
+   },
+   {
+    "value": 1,
+    "hex": "01"
+   },
+   {
+    "value": 127,
+    "hex": "7f"
+   },
+   {
+    "value": 128,
+    "hex": "d10080"
+   },
+   {
+    "value": 255,
+    "hex": "d100ff"
+   },
+   {
+    "value": 256,
+    "hex": "d10100"
+   },
+   {
+    "value": 32767,
+    "hex": "d17fff"
+   },
+   {
+    "value": 32768,
+    "hex": "d200008000"
+   },
+   {
+    "value": 65535,
+    "hex": "d20000ffff"
+   },
+   {
+    "value": 65536,
+    "hex": "d200010000"
+   },
+   {
+    "value": 1048575,
+    "hex": "d2000fffff"
+   },
+   {
+    "value": 1048576,
+    "hex": "d200100000"
+   },
+   {
+    "value": 2147483647,
+    "hex": "d27fffffff"
+   },
+   {
+    "value": 2147483648,
+    "hex": "d280000000"
+   },
+   {
+    "value": 4294967295,
+    "hex": "d2ffffffff"
+   },
+   {
+    "value": 4294967296,
+    "hex": "d200000000"
+   },
+   {
+    "value": 4294967301,
+    "hex": "d200000005"
+   },
+   {
+    "value": -1,
+    "hex": "d1ffff"
+   },
+   {
+    "value": -32,
+    "hex": "d1ffe0"
+   },
+   {
+    "value": -33,
+    "hex": "d1ffdf"
+   },
+   {
+    "value": -128,
+    "hex": "d1ff80"
+   },
+   {
+    "value": -32768,
+    "hex": "d18000"
+   },
+   {
+    "value": -32769,
+    "hex": "d2ffff7fff"
+   },
+   {
+    "value": -2147483648,
+    "hex": "d280000000"
+   },
+   {
+    "value": -2147483649,
+    "hex": "d27fffffff"
+   }
+  ],
+  "change_simulcast": [
+   {
+    "name": "the engine's call, the first command of a connection",
+    "sequence": 1,
+    "rid": "l",
+    "width": 320,
+    "height": 180,
+    "fps": 15,
+    "bitrate": 180000,
+    "hex": "0700010101a16cd10140d100b40fd100b4"
+   },
+   {
+    "name": "sequence 300",
+    "sequence": 300,
+    "rid": "l",
+    "width": 320,
+    "height": 180,
+    "fps": 15,
+    "bitrate": 180000,
+    "hex": "0700d1012c0101a16cd10140d100b40fd100b4"
+   },
+   {
+    "name": "a sequence past the other commands' modulus goes out whole",
+    "sequence": 1048577,
+    "rid": "l",
+    "width": 320,
+    "height": 180,
+    "fps": 15,
+    "bitrate": 180000,
+    "hex": "0700d2001000010101a16cd10140d100b40fd100b4"
+   },
+   {
+    "name": "the bit rate is cut to whole kbit/s",
+    "sequence": 2,
+    "rid": "h",
+    "width": 1280,
+    "height": 720,
+    "fps": 20,
+    "bitrate": 1200999,
+    "hex": "0700020101a168d10500d102d014d104b0"
+   },
+   {
+    "name": "a longer rid, a bit rate under one kbit/s",
+    "sequence": 127,
+    "rid": "low",
+    "width": 128,
+    "height": 127,
+    "fps": 0,
+    "bitrate": 999,
+    "hex": "07007f0101a36c6f77d100807f0000"
+   }
+  ],
+  "perf_stat_report": [
+   {
+    "sequence": 1,
+    "frames_decoded": 0,
+    "frames_received": 0,
+    "hex": "0100010000"
+   },
+   {
+    "sequence": 2,
+    "frames_decoded": 127,
+    "frames_received": 127,
+    "hex": "0100027f7f"
+   },
+   {
+    "sequence": 3,
+    "frames_decoded": 128,
+    "frames_received": 128,
+    "hex": "010003d10080d10080"
+   },
+   {
+    "sequence": 4,
+    "frames_decoded": 40000,
+    "frames_received": 40000,
+    "hex": "010004d200009c40d200009c40"
+   },
+   {
+    "sequence": 5,
+    "frames_decoded": 4294967295,
+    "frames_received": 4294967295,
+    "hex": "010005d2ffffffffd2ffffffff"
+   },
+   {
+    "sequence": 6,
+    "frames_decoded": 32767,
+    "frames_received": 32768,
+    "hex": "010006d17fffd200008000"
+   },
+   {
+    "sequence": 1048575,
+    "frames_decoded": 2147483648,
+    "frames_received": 2147483647,
+    "hex": "0100d2000fffffd280000000d27fffffff"
+   },
+   {
+    "sequence": 0,
+    "frames_decoded": 100,
+    "frames_received": 7,
+    "hex": "0100006407"
+   }
+  ],
+  "encode_layout": [
+   {
+    "name": "TestEncodeLayoutGolden",
+    "sequence": 1,
+    "entries": [
+     {
+      "key": "u604532170515:sCAMERA",
+      "key_hex": "753630343533323137303531353a7343414d455241",
+      "compact": 0,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ],
+    "hex": "000001c091c40a000001d10280d1016800c0"
+   },
+   {
+    "name": "TestEncodeLayoutStringKey",
+    "sequence": 2,
+    "entries": [
+     {
+      "key": "42:sCAMERA",
+      "key_hex": "34323a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 0,
+      "width": 0,
+      "height": 0
+     }
+    ],
+    "hex": "000002c091c410aa34323a7343414d4552410000c0c000c0"
+   },
+   {
+    "name": "15 entries: the short array header",
+    "sequence": 3,
+    "entries": [
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 0,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 1,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 2,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 3,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 4,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 5,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 6,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 7,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 8,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 9,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 10,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 11,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 12,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 13,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 14,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ],
+    "hex": "000003c09fc40a000001d10280d1016800c40a010001d10280d1016800c40a020001d10280d1016800c40a030001d10280d1016800c40a040001d10280d1016800c40a050001d10280d1016800c40a060001d10280d1016800c40a070001d10280d1016800c40a080001d10280d1016800c40a090001d10280d1016800c40a0a0001d10280d1016800c40a0b0001d10280d1016800c40a0c0001d10280d1016800c40a0d0001d10280d1016800c40a0e0001d10280d1016800c0"
+   },
+   {
+    "name": "16 entries: the long array header",
+    "sequence": 4,
+    "entries": [
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 0,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 1,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 2,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 3,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 4,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 5,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 6,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 7,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 8,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 9,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 10,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 11,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 12,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 13,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 14,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 15,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ],
+    "hex": "000004c0dc0010c40a000001d10280d1016800c40a010001d10280d1016800c40a020001d10280d1016800c40a030001d10280d1016800c40a040001d10280d1016800c40a050001d10280d1016800c40a060001d10280d1016800c40a070001d10280d1016800c40a080001d10280d1016800c40a090001d10280d1016800c40a0a0001d10280d1016800c40a0b0001d10280d1016800c40a0c0001d10280d1016800c40a0d0001d10280d1016800c40a0e0001d10280d1016800c40a0f0001d10280d1016800c0"
+   },
+   {
+    "name": "17 entries",
+    "sequence": 5,
+    "entries": [
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 0,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 1,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 2,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 3,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 4,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 5,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 6,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 7,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 8,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 9,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 10,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 11,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 12,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 13,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 14,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 15,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 16,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ],
+    "hex": "000005c0dc0011c40a000001d10280d1016800c40a010001d10280d1016800c40a020001d10280d1016800c40a030001d10280d1016800c40a040001d10280d1016800c40a050001d10280d1016800c40a060001d10280d1016800c40a070001d10280d1016800c40a080001d10280d1016800c40a090001d10280d1016800c40a0a0001d10280d1016800c40a0b0001d10280d1016800c40a0c0001d10280d1016800c40a0d0001d10280d1016800c40a0e0001d10280d1016800c40a0f0001d10280d1016800c40a100001d10280d1016800c0"
+   },
+   {
+    "name": "compact and string keys together",
+    "sequence": 6,
+    "entries": [
+     {
+      "key": "u1:sCAMERA",
+      "key_hex": "75313a7343414d455241",
+      "compact": 3,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u2:sCAMERA",
+      "key_hex": "75323a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ],
+    "hex": "000006c092c40a030001d10280d1016800c414aa75323a7343414d4552410001d10280d1016800c0"
+   },
+   {
+    "name": "a compact id from 128 on is one raw byte",
+    "sequence": 7,
+    "entries": [
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 127,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 128,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 255,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ],
+    "hex": "000007c093c40a7f0001d10280d1016800c40a800001d10280d1016800c40aff0001d10280d1016800c0"
+   },
+   {
+    "name": "a size with one side zero is no size",
+    "sequence": 8,
+    "entries": [
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 1,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 0
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 2,
+      "by_compact": true,
+      "priority": 1,
+      "width": 0,
+      "height": 360
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 3,
+      "by_compact": true,
+      "priority": 1,
+      "width": -1,
+      "height": 360
+     }
+    ],
+    "hex": "000008c093c406010001c0c000c406020001c0c000c406030001c0c000c0"
+   },
+   {
+    "name": "sizes and priorities on every side of the integer rule",
+    "sequence": 1048576,
+    "entries": [
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 1,
+      "by_compact": true,
+      "priority": 127,
+      "width": 127,
+      "height": 128
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 2,
+      "by_compact": true,
+      "priority": 128,
+      "width": 32767,
+      "height": 32768
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 3,
+      "by_compact": true,
+      "priority": -1,
+      "width": 1920,
+      "height": 1080
+     }
+    ],
+    "hex": "0000d200100000c093c40801007f7fd1008000c40e0200d10080d17fffd20000800000c40c0300d1ffffd10780d1043800c0"
+   },
+   {
+    "name": "a key of 31 bytes",
+    "sequence": 9,
+    "entries": [
+     {
+      "key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "key_hex": "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ],
+    "hex": "000009c091c429bf6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b0001d10280d1016800c0"
+   },
+   {
+    "name": "a key that is not UTF-8",
+    "sequence": 10,
+    "entries": [
+     {
+      "key": null,
+      "key_hex": "75ff3a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ],
+    "hex": "00000ac091c414aa75ff3a7343414d4552410001d10280d1016800c0"
+   },
+   {
+    "name": "65535 entries",
+    "sequence": 11,
+    "repeat": 65535,
+    "len": 786428,
+    "sha256": "4a7599483c9fc3e9d3587c3dcd93dc617380b1be3372d231fc893a6e6acccb83"
+   },
+   {
+    "name": "no entry",
+    "sequence": 1,
+    "is": "ErrLayoutNoStream",
+    "error": "vkcalls: layout update without any registry stream"
+   },
+   {
+    "name": "a key of 32 bytes",
+    "sequence": 1,
+    "entries": [
+     {
+      "key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "key_hex": "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 0,
+      "height": 0
+     }
+    ],
+    "is": "ErrLayoutKeyLong",
+    "error": "vkcalls: registry stream key exceeds the fixstr bound: 32 bytes"
+   },
+   {
+    "name": "an entry with neither a compact id nor a key",
+    "sequence": 1,
+    "entries": [
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ],
+    "is": "ErrLayoutNoStream",
+    "error": "vkcalls: layout update without any registry stream"
+   },
+   {
+    "name": "a refused entry behind a good one",
+    "sequence": 1,
+    "entries": [
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 1,
+      "by_compact": true,
+      "priority": 1,
+      "width": 0,
+      "height": 0
+     },
+     {
+      "key": "",
+      "key_hex": "",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 0,
+      "height": 0
+     }
+    ],
+    "is": "ErrLayoutNoStream",
+    "error": "vkcalls: layout update without any registry stream"
+   },
+   {
+    "name": "65536 entries",
+    "sequence": 1,
+    "repeat": 65536,
+    "is": "ErrLayoutTooMany",
+    "error": "vkcalls: layout update exceeds the array16 bound: 65536 entries"
+   }
+  ],
+  "layout_entries": [
+   {
+    "name": "TestLayoutEntriesAskUnknownCamerasByKey",
+    "registry": [
+     {
+      "key": "u1:sCAMERA",
+      "key_hex": "75313a7343414d455241",
+      "id": 0
+     },
+     {
+      "key": "u3",
+      "key_hex": "7533",
+      "id": 2
+     }
+    ],
+    "participants": [
+     "3",
+     "1",
+     "2"
+    ],
+    "entries": [
+     {
+      "key": "u1:sCAMERA",
+      "key_hex": "75313a7343414d455241",
+      "compact": 0,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u3",
+      "key_hex": "7533",
+      "compact": 2,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u2:sCAMERA",
+      "key_hex": "75323a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u3:sCAMERA",
+      "key_hex": "75333a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ]
+   },
+   {
+    "name": "TestRegistryLayoutFor",
+    "registry": [
+     {
+      "key": "a:sCAMERA",
+      "key_hex": "613a7343414d455241",
+      "id": 0
+     },
+     {
+      "key": "b:sCAMERA",
+      "key_hex": "623a7343414d455241",
+      "id": 1
+     }
+    ],
+    "participants": [],
+    "entries": [
+     {
+      "key": "a:sCAMERA",
+      "key_hex": "613a7343414d455241",
+      "compact": 0,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "b:sCAMERA",
+      "key_hex": "623a7343414d455241",
+      "compact": 1,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ]
+   },
+   {
+    "name": "an empty registry and no participant",
+    "registry": [],
+    "participants": [],
+    "entries": []
+   },
+   {
+    "name": "an empty registry: every participant by key, in byte order",
+    "registry": [],
+    "participants": [
+     "9",
+     "10",
+     "100",
+     "1"
+    ],
+    "entries": [
+     {
+      "key": "u100:sCAMERA",
+      "key_hex": "753130303a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u10:sCAMERA",
+      "key_hex": "7531303a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u1:sCAMERA",
+      "key_hex": "75313a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u9:sCAMERA",
+      "key_hex": "75393a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ]
+   },
+   {
+    "name": "registry keys in byte order: upper case first",
+    "registry": [
+     {
+      "key": "U2:sCAMERA",
+      "key_hex": "55323a7343414d455241",
+      "id": 6
+     },
+     {
+      "key": "u1",
+      "key_hex": "7531",
+      "id": 8
+     },
+     {
+      "key": "u10:sCAMERA",
+      "key_hex": "7531303a7343414d455241",
+      "id": 7
+     },
+     {
+      "key": "u1:sSCREEN",
+      "key_hex": "75313a7353435245454e",
+      "id": 200
+     },
+     {
+      "key": "u2:sCAMERA",
+      "key_hex": "75323a7343414d455241",
+      "id": 5
+     }
+    ],
+    "participants": [
+     "2",
+     "10"
+    ],
+    "entries": [
+     {
+      "key": "U2:sCAMERA",
+      "key_hex": "55323a7343414d455241",
+      "compact": 6,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u1",
+      "key_hex": "7531",
+      "compact": 8,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u10:sCAMERA",
+      "key_hex": "7531303a7343414d455241",
+      "compact": 7,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u1:sSCREEN",
+      "key_hex": "75313a7353435245454e",
+      "compact": 200,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u2:sCAMERA",
+      "key_hex": "75323a7343414d455241",
+      "compact": 5,
+      "by_compact": true,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ]
+   },
+   {
+    "name": "a participant named twice is asked twice",
+    "registry": [],
+    "participants": [
+     "7",
+     "7"
+    ],
+    "entries": [
+     {
+      "key": "u7:sCAMERA",
+      "key_hex": "75373a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     },
+     {
+      "key": "u7:sCAMERA",
+      "key_hex": "75373a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ]
+   },
+   {
+    "name": "a participant whose key would not fit is still listed",
+    "registry": [],
+    "participants": [
+     "9999999999999999999999999999999999999999"
+    ],
+    "entries": [
+     {
+      "key": "u9999999999999999999999999999999999999999:sCAMERA",
+      "key_hex": "75393939393939393939393939393939393939393939393939393939393939393939393939393939393a7343414d455241",
+      "compact": 0,
+      "by_compact": false,
+      "priority": 1,
+      "width": 640,
+      "height": 360
+     }
+    ]
+   }
+  ],
+  "parse_registry": [
+   {
+    "name": "camera stream compact 1 (a live capture)",
+    "frame_hex": "0181b5753538383030333933303538393a7343414d45524101",
+    "registry": [
+     {
+      "key": "u588003930589:sCAMERA",
+      "key_hex": "753538383030333933303538393a7343414d455241",
+      "id": 1
+     }
+    ]
+   },
+   {
+    "name": "three cameras in one frame",
+    "frame_hex": "0183b5753130303030303030303030313a7343414d45524100b5753130303030303030303030323a7343414d45524101ad7531303030303030303030303302",
+    "registry": [
+     {
+      "key": "u100000000001:sCAMERA",
+      "key_hex": "753130303030303030303030313a7343414d455241",
+      "id": 0
+     },
+     {
+      "key": "u100000000002:sCAMERA",
+      "key_hex": "753130303030303030303030323a7343414d455241",
+      "id": 1
+     },
+     {
+      "key": "u100000000003",
+      "key_hex": "75313030303030303030303033",
+      "id": 2
+     }
+    ]
+   },
+   {
+    "name": "map16 with a uint8 compact id",
+    "frame_hex": "01de0002aa75313a7343414d45524105aa75323a7343414d455241cc80",
+    "registry": [
+     {
+      "key": "u1:sCAMERA",
+      "key_hex": "75313a7343414d455241",
+      "id": 5
+     },
+     {
+      "key": "u2:sCAMERA",
+      "key_hex": "75323a7343414d455241",
+      "id": 128
+     }
+    ]
+   },
+   {
+    "name": "second entry truncated",
+    "frame_hex": "0182aa75313a7343414d45524100",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "empty frame",
+    "frame_hex": "",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "truncated",
+    "frame_hex": "0101",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "not a map",
+    "frame_hex": "019000",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "another kind",
+    "frame_hex": "029100",
+    "is": "ErrNotRegistry",
+    "error": "vkcalls: frame is not a registry update"
+   },
+   {
+    "name": "another kind in one byte",
+    "frame_hex": "06",
+    "is": "ErrNotRegistry",
+    "error": "vkcalls: frame is not a registry update"
+   },
+   {
+    "name": "kind 0",
+    "frame_hex": "0081a16101",
+    "is": "ErrNotRegistry",
+    "error": "vkcalls: frame is not a registry update"
+   },
+   {
+    "name": "kind 1 in one byte",
+    "frame_hex": "01",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "an empty map in three bytes is short",
+    "frame_hex": "018000",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "an empty map in four bytes",
+    "frame_hex": "01800000"
+   },
+   {
+    "name": "not a map, four bytes",
+    "frame_hex": "01900000",
+    "is": "ErrRegistryShape",
+    "error": "vkcalls: producerNotification registry is not a one-entry map"
+   },
+   {
+    "name": "a 32-bit map header",
+    "frame_hex": "01df00000000",
+    "is": "ErrRegistryShape",
+    "error": "vkcalls: producerNotification registry is not a one-entry map"
+   },
+   {
+    "name": "an empty map16",
+    "frame_hex": "01de0000"
+   },
+   {
+    "name": "bytes behind the last entry are not read",
+    "frame_hex": "0181a2753107ffff",
+    "registry": [
+     {
+      "key": "u1",
+      "key_hex": "7531",
+      "id": 7
+     }
+    ]
+   },
+   {
+    "name": "a key given twice keeps the later id",
+    "frame_hex": "0182a2753101a2753102",
+    "registry": [
+     {
+      "key": "u1",
+      "key_hex": "7531",
+      "id": 2
+     }
+    ]
+   },
+   {
+    "name": "an empty key",
+    "frame_hex": "0181a009",
+    "registry": [
+     {
+      "key": "",
+      "key_hex": "",
+      "id": 9
+     }
+    ]
+   },
+   {
+    "name": "a key of 31 bytes",
+    "frame_hex": "0181bf6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b7f",
+    "registry": [
+     {
+      "key": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "key_hex": "6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b",
+      "id": 127
+     }
+    ]
+   },
+   {
+    "name": "a key that is not UTF-8",
+    "frame_hex": "0181a375fffe03",
+    "registry": [
+     {
+      "key": null,
+      "key_hex": "75fffe",
+      "id": 3
+     }
+    ]
+   },
+   {
+    "name": "the id 255 in the uint8 form",
+    "frame_hex": "0181a27531ccff",
+    "registry": [
+     {
+      "key": "u1",
+      "key_hex": "7531",
+      "id": 255
+     }
+    ]
+   },
+   {
+    "name": "a small id in the uint8 form",
+    "frame_hex": "0181a27531cc05",
+    "registry": [
+     {
+      "key": "u1",
+      "key_hex": "7531",
+      "id": 5
+     }
+    ]
+   },
+   {
+    "name": "a key in the str8 form",
+    "frame_hex": "0181d902753101",
+    "is": "ErrRegistryShape",
+    "error": "vkcalls: producerNotification registry is not a one-entry map"
+   },
+   {
+    "name": "a key that is a number",
+    "frame_hex": "01810501",
+    "is": "ErrRegistryShape",
+    "error": "vkcalls: producerNotification registry is not a one-entry map"
+   },
+   {
+    "name": "a key cut short",
+    "frame_hex": "0181a57531",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "no id behind the key",
+    "frame_hex": "0181a375313a",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "the uint8 form cut short",
+    "frame_hex": "0181a375313acc",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "an id in the uint16 form",
+    "frame_hex": "0181a27531cd0001",
+    "is": "ErrRegistryShape",
+    "error": "vkcalls: producerNotification registry is not a one-entry map"
+   },
+   {
+    "name": "a negative id",
+    "frame_hex": "0181a27531ff",
+    "is": "ErrRegistryShape",
+    "error": "vkcalls: producerNotification registry is not a one-entry map"
+   },
+   {
+    "name": "a nil id",
+    "frame_hex": "0181a27531c0",
+    "is": "ErrRegistryShape",
+    "error": "vkcalls: producerNotification registry is not a one-entry map"
+   },
+   {
+    "name": "a map16 that names more entries than it holds",
+    "frame_hex": "01de0100a2753101",
+    "is": "ErrRegistryShort",
+    "error": "vkcalls: producerNotification shorter than its header"
+   },
+   {
+    "name": "sixteen entries in a map16",
+    "frame_hex": "01de0010ac753130303a7343414d45524100ac753130313a7343414d45524101ac753130323a7343414d45524102ac753130333a7343414d45524103ac753130343a7343414d45524104ac753130353a7343414d45524105ac753130363a7343414d45524106ac753130373a7343414d45524107ac753130383a7343414d45524108ac753130393a7343414d45524109ac753131303a7343414d4552410aac753131313a7343414d4552410bac753131323a7343414d4552410cac753131333a7343414d4552410dac753131343a7343414d4552410eac753131353a7343414d4552410f",
+    "registry": [
+     {
+      "key": "u100:sCAMERA",
+      "key_hex": "753130303a7343414d455241",
+      "id": 0
+     },
+     {
+      "key": "u101:sCAMERA",
+      "key_hex": "753130313a7343414d455241",
+      "id": 1
+     },
+     {
+      "key": "u102:sCAMERA",
+      "key_hex": "753130323a7343414d455241",
+      "id": 2
+     },
+     {
+      "key": "u103:sCAMERA",
+      "key_hex": "753130333a7343414d455241",
+      "id": 3
+     },
+     {
+      "key": "u104:sCAMERA",
+      "key_hex": "753130343a7343414d455241",
+      "id": 4
+     },
+     {
+      "key": "u105:sCAMERA",
+      "key_hex": "753130353a7343414d455241",
+      "id": 5
+     },
+     {
+      "key": "u106:sCAMERA",
+      "key_hex": "753130363a7343414d455241",
+      "id": 6
+     },
+     {
+      "key": "u107:sCAMERA",
+      "key_hex": "753130373a7343414d455241",
+      "id": 7
+     },
+     {
+      "key": "u108:sCAMERA",
+      "key_hex": "753130383a7343414d455241",
+      "id": 8
+     },
+     {
+      "key": "u109:sCAMERA",
+      "key_hex": "753130393a7343414d455241",
+      "id": 9
+     },
+     {
+      "key": "u110:sCAMERA",
+      "key_hex": "753131303a7343414d455241",
+      "id": 10
+     },
+     {
+      "key": "u111:sCAMERA",
+      "key_hex": "753131313a7343414d455241",
+      "id": 11
+     },
+     {
+      "key": "u112:sCAMERA",
+      "key_hex": "753131323a7343414d455241",
+      "id": 12
+     },
+     {
+      "key": "u113:sCAMERA",
+      "key_hex": "753131333a7343414d455241",
+      "id": 13
+     },
+     {
+      "key": "u114:sCAMERA",
+      "key_hex": "753131343a7343414d455241",
+      "id": 14
+     },
+     {
+      "key": "u115:sCAMERA",
+      "key_hex": "753131353a7343414d455241",
+      "id": 15
+     }
+    ]
+   }
+  ]
+ }
+}

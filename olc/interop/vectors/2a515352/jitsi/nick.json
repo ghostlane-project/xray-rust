@@ -1,0 +1,250 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/jitsi/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/jitsi/nick.go",
+  "internal/engine/jitsi/keepalive.go:124-136 (xmppDomain)"
+ ],
+ "cases": {
+  "sanitise_nick": [
+   {
+    "raw": "alice",
+    "want": "alice"
+   },
+   {
+    "raw": "Alice Smith",
+    "want": "Alice-Smith"
+   },
+   {
+    "raw": "Конрад Олег",
+    "want": "Konrad-Oleg"
+   },
+   {
+    "raw": "olcrtc-bot42",
+    "want": "olcrtc-bot42"
+   },
+   {
+    "raw": "  bob  ",
+    "want": "bob"
+   },
+   {
+    "raw": "$$$ %%%",
+    "want": ""
+   },
+   {
+    "raw": "verylongnicknamethatexceedslimit",
+    "want": "verylongnickname"
+   },
+   {
+    "raw": "Щщщщщщщщщщ",
+    "want": "Shchshchshchshch"
+   },
+   {
+    "raw": "a!!!b",
+    "want": "a-b"
+   },
+   {
+    "raw": "日本語",
+    "want": ""
+   },
+   {
+    "raw": "--a--",
+    "want": "a"
+   },
+   {
+    "raw": "Ёж ъь",
+    "want": "Yozh"
+   },
+   {
+    "raw": "user_1",
+    "want": "user_1"
+   },
+   {
+    "raw": "a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a-a",
+    "want": "a-a-a-a-a-a-a-a"
+   },
+   {
+    "raw": "",
+    "want": ""
+   },
+   {
+    "raw": " ",
+    "want": ""
+   },
+   {
+    "raw": "-",
+    "want": ""
+   },
+   {
+    "raw": "_",
+    "want": "_"
+   },
+   {
+    "raw": "Привет, мир!",
+    "want": "Privet-mir"
+   },
+   {
+    "raw": "Ъъ",
+    "want": ""
+   },
+   {
+    "raw": "ЩЩЩЩЩ",
+    "want": "ShchShchShchShch"
+   },
+   {
+    "raw": "abécd",
+    "want": "ab-cd"
+   },
+   {
+    "raw": "ÀÉ",
+    "want": ""
+   },
+   {
+    "raw": "Юлия Яковлева",
+    "want": "Yuliya-Yakovleva"
+   },
+   {
+    "raw": "x\ty\nz",
+    "want": "x-y-z"
+   },
+   {
+    "raw": "a--b",
+    "want": "a--b"
+   },
+   {
+    "raw": "-a",
+    "want": "a"
+   },
+   {
+    "raw": "a-",
+    "want": "a"
+   },
+   {
+    "raw": "1234567890123456789",
+    "want": "1234567890123456"
+   }
+  ],
+  "normalise_host": [
+   {
+    "raw": "meet.example.com",
+    "want": "meet.example.com"
+   },
+   {
+    "raw": "https://meet.example.com",
+    "want": "meet.example.com"
+   },
+   {
+    "raw": "https://meet.example.com/",
+    "want": "meet.example.com"
+   },
+   {
+    "raw": "https://meet.example.com/path",
+    "want": "meet.example.com"
+   },
+   {
+    "raw": "//meet.example.com",
+    "want": "meet.example.com"
+   },
+   {
+    "raw": "  https://meet.example.com  ",
+    "want": "meet.example.com"
+   },
+   {
+    "raw": "",
+    "want": ""
+   },
+   {
+    "raw": "h/a/b",
+    "want": "h"
+   },
+   {
+    "raw": "http://h:8443/x",
+    "want": "h:8443"
+   },
+   {
+    "raw": "://h",
+    "want": "h"
+   },
+   {
+    "raw": "https://",
+    "want": ""
+   },
+   {
+    "raw": "//",
+    "want": ""
+   },
+   {
+    "raw": "/",
+    "want": ""
+   },
+   {
+    "raw": "meet.example.com/",
+    "want": "meet.example.com"
+   },
+   {
+    "raw": "https://h//",
+    "want": "h"
+   },
+   {
+    "raw": "a://b://c",
+    "want": "b:"
+   },
+   {
+    "raw": "\thost\n",
+    "want": "host"
+   }
+  ],
+  "xmpp_domain": [
+   {
+    "jid": "8307a4f4@meet.jitsi/T4i4s0jt",
+    "fallback": "meet.mamba.group",
+    "want": "meet.jitsi"
+   },
+   {
+    "jid": "uuid@meet.jitsi",
+    "fallback": "meet.mamba.group",
+    "want": "meet.jitsi"
+   },
+   {
+    "jid": "",
+    "fallback": "meet.mamba.group",
+    "want": "meet.mamba.group"
+   },
+   {
+    "jid": "node-only",
+    "fallback": "meet.handyweb.org",
+    "want": "meet.handyweb.org"
+   },
+   {
+    "jid": "node@/resource",
+    "fallback": "meet.small-dm.ru",
+    "want": "meet.small-dm.ru"
+   },
+   {
+    "jid": "node@meet.jitsi/",
+    "fallback": "fallback.host",
+    "want": "meet.jitsi"
+   },
+   {
+    "jid": "a@b@c/d",
+    "fallback": "f",
+    "want": "b@c"
+   },
+   {
+    "jid": "@d/r",
+    "fallback": "f",
+    "want": "d"
+   },
+   {
+    "jid": "@",
+    "fallback": "f",
+    "want": "f"
+   },
+   {
+    "jid": "a@b/c/d",
+    "fallback": "f",
+    "want": "b"
+   }
+  ]
+ }
+}

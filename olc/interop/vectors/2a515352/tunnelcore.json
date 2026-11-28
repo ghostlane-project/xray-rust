@@ -1,0 +1,12 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/tunnelcore/zz_vectors_test.go TestZZVectors",
+ "sources": [
+  "internal/tunnelcore/core.go:17-26"
+ ],
+ "cases": {
+  "connect_ack_host_unreachable": 4,
+  "connect_ack_ok": 0,
+  "udp_record_aad": "olcrtc/udp/v1"
+ }
+}

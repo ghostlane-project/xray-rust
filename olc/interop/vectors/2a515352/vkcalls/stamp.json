@@ -1,0 +1,412 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/vkcalls/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/vkcalls/stamp.go:26-66 (sdesStamper: BindLocalStream and its writer)",
+  "internal/engine/vkcalls/negotiate.go:490-499 (where the stamper joins the interceptors: mid of the offer's publish slot, rid l)",
+  "internal/engine/vkcalls/negotiate_test.go:251-308 (liveShapeOffer: the publish slot's extmap lines)",
+  "github.com/pion/rtp v1.10.2 Header.SetExtension, Header.Marshal"
+ ],
+ "cases": {
+  "note": "The engine's stamper bound to one stream (BindLocalStream) in front of a writer that keeps the header it is handed, then one packet written through it. The header is pion's (version 2, marker, payload type 100, sequence 0x1234, timestamp 0x01020304, SSRC 0x0a0b0c0d), marshalled before and after. Only the mid and rid elements are the engine's; their place in the header and the header's other bytes are pion's. abs-send-time is read to decide whether to install and never written.",
+  "cases": [
+   {
+    "name": "the live publish slot, a header with no extension",
+    "mime": "video/VP8",
+    "negotiated": [
+     {
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+      "id": 4
+     },
+     {
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+      "id": 3
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+      "id": 14
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+      "id": 10
+     }
+    ],
+    "mid": "3",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": true,
+    "header_out_hex": "90e41234010203040a0b0c0dbede0001e033a06c",
+    "after": [
+     {
+      "id": 14,
+      "hex": "33"
+     },
+     {
+      "id": 10,
+      "hex": "6c"
+     }
+    ],
+    "mid_element_hex": "33",
+    "rid_element_hex": "6c"
+   },
+   {
+    "name": "the live publish slot, a header that came with an extension",
+    "mime": "video/VP8",
+    "negotiated": [
+     {
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+      "id": 4
+     },
+     {
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+      "id": 3
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+      "id": 14
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+      "id": 10
+     }
+    ],
+    "mid": "3",
+    "rid": "l",
+    "before": [
+     {
+      "id": 4,
+      "hex": "002a"
+     }
+    ],
+    "header_in_hex": "90e41234010203040a0b0c0dbede000141002a00",
+    "installed": true,
+    "header_out_hex": "90e41234010203040a0b0c0dbede000241002ae033a06c00",
+    "after": [
+     {
+      "id": 4,
+      "hex": "002a"
+     },
+     {
+      "id": 14,
+      "hex": "33"
+     },
+     {
+      "id": 10,
+      "hex": "6c"
+     }
+    ],
+    "mid_element_hex": "33",
+    "rid_element_hex": "6c"
+   },
+   {
+    "name": "a header that came with a mid and a rid: both are replaced where they stand",
+    "mime": "video/VP8",
+    "negotiated": [
+     {
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+      "id": 4
+     },
+     {
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+      "id": 3
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+      "id": 14
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+      "id": 10
+     }
+    ],
+    "mid": "3",
+    "rid": "l",
+    "before": [
+     {
+      "id": 10,
+      "hex": "68"
+     },
+     {
+      "id": 4,
+      "hex": "002a"
+     },
+     {
+      "id": 14,
+      "hex": "3939"
+     }
+    ],
+    "header_in_hex": "90e41234010203040a0b0c0dbede0002a06841002ae13939",
+    "installed": true,
+    "header_out_hex": "90e41234010203040a0b0c0dbede0002a06c41002ae03300",
+    "after": [
+     {
+      "id": 10,
+      "hex": "6c"
+     },
+     {
+      "id": 4,
+      "hex": "002a"
+     },
+     {
+      "id": 14,
+      "hex": "33"
+     }
+    ],
+    "mid_element_hex": "33",
+    "rid_element_hex": "6c"
+   },
+   {
+    "name": "the mime type in another case",
+    "mime": "VIDEO/vp8",
+    "negotiated": [
+     {
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+      "id": 4
+     },
+     {
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+      "id": 3
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+      "id": 14
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+      "id": 10
+     }
+    ],
+    "mid": "3",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": true,
+    "header_out_hex": "90e41234010203040a0b0c0dbede0001e033a06c",
+    "after": [
+     {
+      "id": 14,
+      "hex": "33"
+     },
+     {
+      "id": 10,
+      "hex": "6c"
+     }
+    ],
+    "mid_element_hex": "33",
+    "rid_element_hex": "6c"
+   },
+   {
+    "name": "only the mid was negotiated",
+    "mime": "video/VP8",
+    "negotiated": [
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+      "id": 14
+     },
+     {
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+      "id": 4
+     }
+    ],
+    "mid": "3",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": true,
+    "header_out_hex": "90e41234010203040a0b0c0dbede0001e0330000",
+    "after": [
+     {
+      "id": 14,
+      "hex": "33"
+     }
+    ],
+    "mid_element_hex": "33",
+    "rid_element_hex": null
+   },
+   {
+    "name": "only the rid was negotiated",
+    "mime": "video/VP8",
+    "negotiated": [
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+      "id": 10
+     }
+    ],
+    "mid": "3",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": true,
+    "header_out_hex": "90e41234010203040a0b0c0dbede0001a06c0000",
+    "after": [
+     {
+      "id": 10,
+      "hex": "6c"
+     }
+    ],
+    "mid_element_hex": null,
+    "rid_element_hex": "6c"
+   },
+   {
+    "name": "only abs-send-time was negotiated: installed, nothing written",
+    "mime": "video/VP8",
+    "negotiated": [
+     {
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+      "id": 3
+     }
+    ],
+    "mid": "3",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": true,
+    "header_out_hex": "80e41234010203040a0b0c0d",
+    "after": [],
+    "mid_element_hex": null,
+    "rid_element_hex": null
+   },
+   {
+    "name": "none of the three was negotiated",
+    "mime": "video/VP8",
+    "negotiated": [
+     {
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+      "id": 4
+     }
+    ],
+    "mid": "3",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": false,
+    "header_out_hex": "80e41234010203040a0b0c0d",
+    "after": [],
+    "mid_element_hex": null,
+    "rid_element_hex": null
+   },
+   {
+    "name": "no extension was negotiated",
+    "mime": "video/VP8",
+    "negotiated": [],
+    "mid": "3",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": false,
+    "header_out_hex": "80e41234010203040a0b0c0d",
+    "after": [],
+    "mid_element_hex": null,
+    "rid_element_hex": null
+   },
+   {
+    "name": "an audio stream is left alone",
+    "mime": "audio/opus",
+    "negotiated": [
+     {
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+      "id": 4
+     },
+     {
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+      "id": 3
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+      "id": 14
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+      "id": 10
+     }
+    ],
+    "mid": "3",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": false,
+    "header_out_hex": "80e41234010203040a0b0c0d",
+    "after": [],
+    "mid_element_hex": null,
+    "rid_element_hex": null
+   },
+   {
+    "name": "an offer with no publish slot: no mid, the rid alone",
+    "mime": "video/VP8",
+    "negotiated": [
+     {
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+      "id": 4
+     },
+     {
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+      "id": 3
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+      "id": 14
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+      "id": 10
+     }
+    ],
+    "mid": "",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": true,
+    "header_out_hex": "90e41234010203040a0b0c0dbede0001a06c0000",
+    "after": [
+     {
+      "id": 10,
+      "hex": "6c"
+     }
+    ],
+    "mid_element_hex": null,
+    "rid_element_hex": "6c"
+   },
+   {
+    "name": "a longer mid",
+    "mime": "video/VP8",
+    "negotiated": [
+     {
+      "uri": "http://www.ietf.org/id/draft-holmer-rmcat-transport-wide-cc-extensions-01",
+      "id": 4
+     },
+     {
+      "uri": "http://www.webrtc.org/experiments/rtp-hdrext/abs-send-time",
+      "id": 3
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:mid",
+      "id": 14
+     },
+     {
+      "uri": "urn:ietf:params:rtp-hdrext:sdes:rtp-stream-id",
+      "id": 10
+     }
+    ],
+    "mid": "video-12",
+    "rid": "l",
+    "before": [],
+    "header_in_hex": "80e41234010203040a0b0c0d",
+    "installed": true,
+    "header_out_hex": "90e41234010203040a0b0c0dbede0003e7766964656f2d3132a06c00",
+    "after": [
+     {
+      "id": 14,
+      "hex": "766964656f2d3132"
+     },
+     {
+      "id": 10,
+      "hex": "6c"
+     }
+    ],
+    "mid_element_hex": "766964656f2d3132",
+    "rid_element_hex": "6c"
+   }
+  ]
+ }
+}

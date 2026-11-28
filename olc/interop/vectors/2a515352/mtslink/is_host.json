@@ -1,0 +1,141 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/auth/mtslink/zz_vectors_test.go",
+ "sources": [
+  "internal/auth/mtslink/api.go:105-119 (isHost)"
+ ],
+ "cases": [
+  {
+   "name": "the measured SFU",
+   "input_hex": "7366752e6d74732d6c696e6b2e7275",
+   "input": "sfu.mts-link.ru",
+   "ok": true
+  },
+  {
+   "name": "empty",
+   "input_hex": "",
+   "input": "",
+   "ok": false
+  },
+  {
+   "name": "one letter",
+   "input_hex": "61",
+   "input": "a",
+   "ok": true
+  },
+  {
+   "name": "upper case",
+   "input_hex": "5346552e4d54532d4c696e6b2e5255",
+   "input": "SFU.MTS-Link.RU",
+   "ok": true
+  },
+  {
+   "name": "a port",
+   "input_hex": "7366752e6d74732d6c696e6b2e72753a343433",
+   "input": "sfu.mts-link.ru:443",
+   "ok": true
+  },
+  {
+   "name": "an IPv4 address and a port",
+   "input_hex": "3132372e302e302e313a38343433",
+   "input": "127.0.0.1:8443",
+   "ok": true
+  },
+  {
+   "name": "an IPv6 address without brackets",
+   "input_hex": "3a3a31",
+   "input": "::1",
+   "ok": true
+  },
+  {
+   "name": "an IPv6 address in brackets",
+   "input_hex": "5b3a3a315d3a343433",
+   "input": "[::1]:443",
+   "ok": false
+  },
+  {
+   "name": "an underscore",
+   "input_hex": "7366755f312e6d74732d6c696e6b2e7275",
+   "input": "sfu_1.mts-link.ru",
+   "ok": false
+  },
+  {
+   "name": "a slash",
+   "input_hex": "7366752e6d74732d6c696e6b2e72752f78",
+   "input": "sfu.mts-link.ru/x",
+   "ok": false
+  },
+  {
+   "name": "a path and a query",
+   "input_hex": "7366752e6d74732d6c696e6b2e72752f7274633f783d31",
+   "input": "sfu.mts-link.ru/rtc?x=1",
+   "ok": false
+  },
+  {
+   "name": "userinfo",
+   "input_hex": "75736572407366752e6d74732d6c696e6b2e7275",
+   "input": "user@sfu.mts-link.ru",
+   "ok": false
+  },
+  {
+   "name": "a space",
+   "input_hex": "7366752e6d74732d6c696e6b2e727520",
+   "input": "sfu.mts-link.ru ",
+   "ok": false
+  },
+  {
+   "name": "a question mark",
+   "input_hex": "7366752e6d74732d6c696e6b2e72753f",
+   "input": "sfu.mts-link.ru?",
+   "ok": false
+  },
+  {
+   "name": "a hash",
+   "input_hex": "7366752e6d74732d6c696e6b2e727523",
+   "input": "sfu.mts-link.ru#",
+   "ok": false
+  },
+  {
+   "name": "a percent",
+   "input_hex": "7366752532656d74732d6c696e6b2e7275",
+   "input": "sfu%2emts-link.ru",
+   "ok": false
+  },
+  {
+   "name": "a Cyrillic name",
+   "input_hex": "d181d184d1832ed180d184",
+   "input": "сфу.рф",
+   "ok": false
+  },
+  {
+   "name": "a byte that is not UTF-8",
+   "input_hex": "736675ff",
+   "input": null,
+   "ok": false
+  },
+  {
+   "name": "a line end",
+   "input_hex": "7366752e6d74732d6c696e6b2e72750a",
+   "input": "sfu.mts-link.ru\n",
+   "ok": false
+  },
+  {
+   "name": "only dots and dashes",
+   "input_hex": "2e2d2e3a",
+   "input": ".-.:",
+   "ok": true
+  },
+  {
+   "name": "253 bytes",
+   "input_hex": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161612e6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161612e6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161612e62626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262",
+   "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "ok": true
+  },
+  {
+   "name": "254 bytes",
+   "input_hex": "6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161612e6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161612e6161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161612e6262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262",
+   "input": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+   "ok": false
+  }
+ ]
+}

@@ -1,0 +1,1845 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/auth/vkcalls/zz_vectors_test.go",
+ "sources": [
+  "internal/auth/vkcalls/vkcalls.go:515-536 (canonicalLink, linkID)",
+  "internal/auth/vkcalls/vkcalls.go:387-431 (credentialsFromJoin), 433-513 (iceServersJSON, urlsOf, credsOf, decimalOf)",
+  "internal/auth/vkcalls/vkcalls.go:125-256 (Issue, sdkLogin), 338-385 (raw, decodeAPI), 550-562 (redact)",
+  "internal/auth/vkcalls/vkcalls_test.go:75-219 (the answers of the provider's tests; TestIssueHappyPath, TestIssueValidations, TestIssueAPIErrors)"
+ ],
+ "cases": {
+  "note": "canonical_link: the room link as the chain uses it. credentials_from_join: Provider.Issue for room with the nickname Test against the answers of the provider's tests, the join step answered with join; the credentials' participant_id is the user id of step 2 (100200300400) and ice_servers is JSON text as Go's encoding/json writes it (keys in byte order; \u003c, \u003e and \u0026 escaped). issue: Provider.Issue with the answers named in replies; an error is the engine's error by its Go name (is), a GuestAPIError's fields (api), or only its text.",
+  "room": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+  "canonical_link": [
+   {
+    "name": "the test's room",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "canonical": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "join_link": "0FakeCallLinkForVectors012"
+   },
+   {
+    "name": "vk.com",
+    "link": "https://vk.com/call/join/0FakeCallLinkForVectors012",
+    "canonical": "https://vk.com/call/join/0FakeCallLinkForVectors012",
+    "join_link": "0FakeCallLinkForVectors012"
+   },
+   {
+    "name": "a trailing slash",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012/",
+    "canonical": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "join_link": "0FakeCallLinkForVectors012"
+   },
+   {
+    "name": "spaces and a line end around it",
+    "link": "  https://vk.ru/call/join/0FakeCallLinkForVectors012\r\n",
+    "canonical": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "join_link": "0FakeCallLinkForVectors012"
+   },
+   {
+    "name": "an upper-case scheme is lowered",
+    "link": "HTTPS://vk.ru/call/join/abc",
+    "canonical": "https://vk.ru/call/join/abc",
+    "join_link": "abc"
+   },
+   {
+    "name": "an empty query and an empty fragment are no query and no fragment",
+    "link": "https://vk.ru/call/join/abc?#",
+    "canonical": "https://vk.ru/call/join/abc",
+    "join_link": "abc"
+   },
+   {
+    "name": "an id written with an escape comes back unescaped",
+    "link": "https://vk.ru/call/join/a%41b",
+    "canonical": "https://vk.ru/call/join/aAb",
+    "join_link": "aAb"
+   },
+   {
+    "name": "an id with a space inside",
+    "link": "https://vk.ru/call/join/a b",
+    "canonical": "https://vk.ru/call/join/a b",
+    "join_link": "a b"
+   },
+   {
+    "name": "an id that is not ASCII",
+    "link": "https://vk.ru/call/join/комната",
+    "canonical": "https://vk.ru/call/join/комната",
+    "join_link": "комната"
+   },
+   {
+    "name": "two slashes ahead of the path",
+    "link": "https://vk.ru//call/join/abc",
+    "canonical": "https://vk.ru/call/join/abc",
+    "join_link": "abc"
+   },
+   {
+    "name": "a question mark with nothing behind it",
+    "link": "https://vk.ru/call/join/abc?",
+    "canonical": "https://vk.ru/call/join/abc",
+    "join_link": "abc"
+   },
+   {
+    "name": "spaces that are not ASCII around it",
+    "link": " https://vk.ru/call/join/0FakeCallLinkForVectors012 ",
+    "canonical": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "join_link": "0FakeCallLinkForVectors012"
+   },
+   {
+    "name": "another host",
+    "link": "https://evil.example/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "a segment behind the id",
+    "link": "https://vk.ru/call/join/x/extra",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "userinfo",
+    "link": "https://user@vk.ru/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must not carry userinfo, port, query or fragment",
+     "is": "ErrRoomURLExtra"
+    }
+   },
+   {
+    "name": "a port",
+    "link": "https://vk.ru:8443/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "a query",
+    "link": "https://vk.ru/call/join/x?token=1",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must not carry userinfo, port, query or fragment",
+     "is": "ErrRoomURLExtra"
+    }
+   },
+   {
+    "name": "another path",
+    "link": "https://vk.ru/other/path",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "a fragment",
+    "link": "https://vk.ru/call/join/x#frag",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must not carry userinfo, port, query or fragment",
+     "is": "ErrRoomURLExtra"
+    }
+   },
+   {
+    "name": "http",
+    "link": "http://vk.ru/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "no scheme",
+    "link": "vk.ru/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "a host in upper case",
+    "link": "https://VK.RU/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "a host under vk.ru",
+    "link": "https://www.vk.ru/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "vk.me",
+    "link": "https://vk.me/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "no id",
+    "link": "https://vk.ru/call/join/",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "no path",
+    "link": "https://vk.ru",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "an empty segment inside",
+    "link": "https://vk.ru/call//join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "Call in another case",
+    "link": "https://vk.ru/Call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "a slash written as an escape",
+    "link": "https://vk.ru/call/join/a%2Fb",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "userinfo is said before another path",
+    "link": "https://user@vk.ru/other",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must not carry userinfo, port, query or fragment",
+     "is": "ErrRoomURLExtra"
+    }
+   },
+   {
+    "name": "another host is said before a port",
+    "link": "https://evil.example:8443/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "a bad escape",
+    "link": "https://vk.ru/call/join/x%zz",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: invalid room url: parse \"https://vk.ru/call/join/x%zz\": invalid URL escape \"%zz\"",
+     "is": "ErrInvalidRoomURL"
+    }
+   },
+   {
+    "name": "a control byte",
+    "link": "https://vk.ru/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: invalid room url: parse \"https://vk.ru/call/join/x\\x7f\": net/url: invalid control character in URL",
+     "is": "ErrInvalidRoomURL"
+    }
+   },
+   {
+    "name": "empty",
+    "link": "",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "spaces alone",
+    "link": "  ",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "an at sign with no user before it",
+    "link": "https://@vk.ru/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must not carry userinfo, port, query or fragment",
+     "is": "ErrRoomURLExtra"
+    }
+   },
+   {
+    "name": "no slashes behind the scheme",
+    "link": "https:vk.ru/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "an escape in the host",
+    "link": "https://vk%2Eru/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: invalid room url: parse \"https://vk%2Eru/call/join/x\": invalid URL escape \"%2E\"",
+     "is": "ErrInvalidRoomURL"
+    }
+   },
+   {
+    "name": "a bad escape in the fragment",
+    "link": "https://vk.ru/call/join/x#%zz",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: invalid room url: parse \"https://vk.ru/call/join/x#%zz\": invalid URL escape \"%zz\"",
+     "is": "ErrInvalidRoomURL"
+    }
+   },
+   {
+    "name": "a control byte in the fragment",
+    "link": "https://vk.ru/call/join/x#",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must not carry userinfo, port, query or fragment",
+     "is": "ErrRoomURLExtra"
+    }
+   },
+   {
+    "name": "a host in brackets",
+    "link": "https://[::1]/call/join/x",
+    "canonical": "",
+    "join_link": "",
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   }
+  ],
+  "credentials_from_join": [
+   {
+    "name": "the test's own answer",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "no STUN server",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "no TURN server",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "neither",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"token\":\"join-token\",\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "both null",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":null,\"token\":\"join-token\",\"turn_server\":null,\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "STUN urls as a list, TURN urls as one string",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":[\"stun:a.example:3478\",\"stun:b.example:3478\"]},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":\"turn:t.example:3478\",\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:a.example:3478\",\"stun:b.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:t.example:3478\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "urls that are empty or no strings are left out",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":[\"\",5,null,\"stun:a.example:3478\",{\"x\":1}]},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:a.example:3478\"]},{\"credential\":\"c\",\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "an empty STUN url string is kept",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "a STUN server with a user name: only its urls are taken",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"credential\":\"y\",\"urls\":\"stun:a.example\",\"username\":\"x\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:a.example\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "a TURN server with no user name: its credential is left out",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":\"turn:t.example:3478\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"urls\":[\"turn:t.example:3478\"]}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "a TURN server with a user name and no credential",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"urls\":\"turn:t.example:3478\",\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"\",\"urls\":[\"turn:t.example:3478\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "a TURN server with a user name and no urls",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "an empty TURN server is no server",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "servers that are no objects are no servers",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":\"stun:a.example\",\"token\":\"join-token\",\"turn_server\":[\"turn:t.example\"],\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "a user name that is no string is no user name",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":\"turn:t.example:3478\",\"username\":5},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"urls\":[\"turn:t.example:3478\"]}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "what Go's JSON escapes in a url",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\\\"d\\\\e é\\u2028\",\"urls\":\"turn:t.example:3478?transport=tcp\\u0026x=\\u003c1\\u003e\",\"username\":\"u\\u0026v\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\\\"d\\\\e é\\u2028\",\"urls\":[\"turn:t.example:3478?transport=tcp\\u0026x=\\u003c1\\u003e\"],\"username\":\"u\\u0026v\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "device_idx as a string",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":\"12\",\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "12",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "device_idx absent",
+    "join": "{\"client_type\":\"VK\",\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "device_idx null",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":null,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "device_idx an empty string",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":\"\",\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "device_idx zero",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":0,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "0",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "device_idx with leading zeros is kept as written",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":\"007\",\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "007",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "device_idx of twenty digits is kept as written",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":12345678901234567890,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "12345678901234567890",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "device_idx negative",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":-1,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid device_idx",
+     "is": "ErrInvalidDeviceIdx"
+    }
+   },
+   {
+    "name": "device_idx with a fraction",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7.0,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid device_idx",
+     "is": "ErrInvalidDeviceIdx"
+    }
+   },
+   {
+    "name": "device_idx with an exponent",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":1e3,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid device_idx",
+     "is": "ErrInvalidDeviceIdx"
+    }
+   },
+   {
+    "name": "device_idx a string that is no number",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":\"x7\",\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid device_idx",
+     "is": "ErrInvalidDeviceIdx"
+    }
+   },
+   {
+    "name": "device_idx true",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":true,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid device_idx",
+     "is": "ErrInvalidDeviceIdx"
+    }
+   },
+   {
+    "name": "device_idx a list",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":[7],\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid device_idx",
+     "is": "ErrInvalidDeviceIdx"
+    }
+   },
+   {
+    "name": "another client type is passed on",
+    "join": "{\"client_type\":\"OK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "OK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "no client type",
+    "join": "{\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: missing client_type",
+     "is": "ErrMissingClientType"
+    }
+   },
+   {
+    "name": "an empty client type",
+    "join": "{\"client_type\":\"\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: missing client_type",
+     "is": "ErrMissingClientType"
+    }
+   },
+   {
+    "name": "p2p_forbidden true",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":true,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "true",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "p2p_forbidden absent is true",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "true",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "p2p_forbidden null is true",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":null,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "true",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "p2p_forbidden that is no boolean",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":\"false\",\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: invalid_response",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 0,
+      "kind": "invalid_response"
+     }
+    }
+   },
+   {
+    "name": "an endpoint with no peerId: no hint",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026token=join-token\\u0026userId=100200300400\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026token=join-token\u0026userId=100200300400",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "an endpoint with no token of its own",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?userId=100200300400\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?userId=100200300400",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "an endpoint with an empty token of its own",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?token=\\u0026userId=1\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?token=\u0026userId=1",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "an endpoint with no query",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://a.b.okcdn.ru/ws2\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "credentials": {
+     "url": "wss://a.b.okcdn.ru/ws2",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "the endpoint's token differs",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"different-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: endpoint token mismatch",
+     "is": "ErrEndpointToken"
+    }
+   },
+   {
+    "name": "of two tokens in the endpoint the first is compared",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?token=other\\u0026token=join-token\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: endpoint token mismatch",
+     "is": "ErrEndpointToken"
+    }
+   },
+   {
+    "name": "no endpoint",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: missing_endpoint_or_token",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 0,
+      "kind": "missing_endpoint_or_token"
+     }
+    }
+   },
+   {
+    "name": "no token",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: missing_endpoint_or_token",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 0,
+      "kind": "missing_endpoint_or_token"
+     }
+    }
+   },
+   {
+    "name": "an empty token",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: missing_endpoint_or_token",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 0,
+      "kind": "missing_endpoint_or_token"
+     }
+    }
+   },
+   {
+    "name": "an endpoint over ws",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"ws://videowebrtc.okcdn.ru/ws2?token=join-token\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid signaling endpoint",
+     "is": "ErrInvalidEndpoint"
+    }
+   },
+   {
+    "name": "an endpoint over https",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"https://videowebrtc.okcdn.ru/ws2?token=join-token\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid signaling endpoint",
+     "is": "ErrInvalidEndpoint"
+    }
+   },
+   {
+    "name": "an endpoint at another host",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru.example/ws2?token=join-token\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid signaling endpoint",
+     "is": "ErrInvalidEndpoint"
+    }
+   },
+   {
+    "name": "an endpoint at okcdn.ru itself",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://okcdn.ru/ws2?token=join-token\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid signaling endpoint",
+     "is": "ErrInvalidEndpoint"
+    }
+   },
+   {
+    "name": "an endpoint at a host in upper case",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://VIDEOWEBRTC.OKCDN.RU/ws2?token=join-token\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid signaling endpoint",
+     "is": "ErrInvalidEndpoint"
+    }
+   },
+   {
+    "name": "an endpoint with a port",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru:443/ws2?token=join-token\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid signaling endpoint",
+     "is": "ErrInvalidEndpoint"
+    }
+   },
+   {
+    "name": "an endpoint with userinfo",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://u@videowebrtc.okcdn.ru/ws2?token=join-token\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: signaling endpoint must not carry userinfo or port",
+     "is": "ErrEndpointUserInfo"
+    }
+   },
+   {
+    "name": "an endpoint that is no URL",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid signaling endpoint",
+     "is": "ErrInvalidEndpoint"
+    }
+   },
+   {
+    "name": "a wrong endpoint is said before a missing client type",
+    "join": "{\"device_idx\":7,\"endpoint\":\"https://x.example/\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: invalid signaling endpoint",
+     "is": "ErrInvalidEndpoint"
+    }
+   },
+   {
+    "name": "a missing client type is said before a wrong device_idx",
+    "join": "{\"device_idx\":-1,\"endpoint\":\"wss://videowebrtc.okcdn.ru/ws2?conversationId=c\\u0026peerId=10020030040\\u0026token=join-token\\u0026userId=100200300400\\u0026entityType=USER\",\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: missing client_type",
+     "is": "ErrMissingClientType"
+    }
+   },
+   {
+    "name": "an error answer",
+    "join": "{\"error\":{\"error_code\":1004,\"error_msg\":\"call.not.found\"}}",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: api error 1004 (call.not.found)",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 1004,
+      "kind": "call.not.found"
+     }
+    }
+   },
+   {
+    "name": "an error answer with no code",
+    "join": "{\"error\":{\"error_msg\":\"no code\"}}",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: no code",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 0,
+      "kind": "no code"
+     }
+    }
+   },
+   {
+    "name": "an empty object",
+    "join": "{}",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: missing_endpoint_or_token",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 0,
+      "kind": "missing_endpoint_or_token"
+     }
+    }
+   },
+   {
+    "name": "a list",
+    "join": "[]",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: invalid_json",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 0,
+      "kind": "invalid_json"
+     }
+    }
+   },
+   {
+    "name": "not JSON",
+    "join": "\u003chtml\u003e",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: invalid_json",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 0,
+      "kind": "invalid_json"
+     }
+    }
+   },
+   {
+    "name": "an endpoint that is no string",
+    "join": "{\"client_type\":\"VK\",\"device_idx\":7,\"endpoint\":5,\"id\":\"call-id\",\"p2p_forbidden\":false,\"stun_server\":{\"urls\":\"stun:stun.example:3478\"},\"token\":\"join-token\",\"turn_server\":{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"},\"wt_endpoint\":\"wss://videowebrtc.okcdn.ru/wt\"}",
+    "error": {
+     "text": "vkcalls: vchat.joinConversationByLink: invalid_response",
+     "api": {
+      "stage": "vchat.joinConversationByLink",
+      "code": 0,
+      "kind": "invalid_response"
+     }
+    }
+   }
+  ],
+  "issue": [
+   {
+    "name": "TestIssueHappyPath",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "Test",
+    "token": "",
+    "replies": {},
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin",
+     "vchat.joinConversationByLink"
+    ],
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "no nickname",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {},
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin",
+     "vchat.joinConversationByLink"
+    ],
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "a vk.com link with a trailing slash",
+    "link": "https://vk.com/call/join/abc/",
+    "nickname": "Мария",
+    "token": "",
+    "replies": {},
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin",
+     "vchat.joinConversationByLink"
+    ],
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "100200300400",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.com/call/join/abc",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "no room link",
+    "link": "",
+    "nickname": "Test",
+    "token": "",
+    "replies": {},
+    "steps": [],
+    "error": {
+     "text": "vkcalls: room url required",
+     "is": "ErrRoomURLRequired"
+    }
+   },
+   {
+    "name": "an account token",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "acc",
+    "replies": {},
+    "steps": [],
+    "error": {
+     "text": "vkcalls: account token is not supported for guest issue",
+     "is": "ErrTokenUnsupported"
+    }
+   },
+   {
+    "name": "no room link is said before an account token",
+    "link": "",
+    "nickname": "",
+    "token": "acc",
+    "replies": {},
+    "steps": [],
+    "error": {
+     "text": "vkcalls: room url required",
+     "is": "ErrRoomURLRequired"
+    }
+   },
+   {
+    "name": "a link of another shape",
+    "link": "https://vk.ru/other/path",
+    "nickname": "",
+    "token": "",
+    "replies": {},
+    "steps": [],
+    "error": {
+     "text": "vkcalls: room url must be https://vk.ru/call/join/\u003cid\u003e",
+     "is": "ErrRoomURLShape"
+    }
+   },
+   {
+    "name": "step 1: an error answer (TestIssueAPIErrors' shape)",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.getAnonymToken": {
+      "status": 200,
+      "body": "{\"error\":{\"error_code\":14,\"error_msg\":\"Captcha needed\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken"
+    ],
+    "error": {
+     "text": "vkcalls: auth.getAnonymToken: api error 14 (Captcha needed)",
+     "api": {
+      "stage": "auth.getAnonymToken",
+      "code": 14,
+      "kind": "Captcha needed"
+     }
+    }
+   },
+   {
+    "name": "step 1: no token",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.getAnonymToken": {
+      "status": 200,
+      "body": "{\"response\":{\"expired_at\":1}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken"
+    ],
+    "error": {
+     "text": "vkcalls: auth.getAnonymToken: missing_token",
+     "api": {
+      "stage": "auth.getAnonymToken",
+      "code": 0,
+      "kind": "missing_token"
+     }
+    }
+   },
+   {
+    "name": "step 1: not JSON",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.getAnonymToken": {
+      "status": 200,
+      "body": "\u003chtml\u003e"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken"
+    ],
+    "error": {
+     "text": "vkcalls: auth.getAnonymToken: invalid_json",
+     "api": {
+      "stage": "auth.getAnonymToken",
+      "code": 0,
+      "kind": "invalid_json"
+     }
+    }
+   },
+   {
+    "name": "step 1: a JSON string",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.getAnonymToken": {
+      "status": 200,
+      "body": "\"\u003chtml\u003e\""
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken"
+    ],
+    "error": {
+     "text": "vkcalls: auth.getAnonymToken: invalid_json",
+     "api": {
+      "stage": "auth.getAnonymToken",
+      "code": 0,
+      "kind": "invalid_json"
+     }
+    }
+   },
+   {
+    "name": "step 1: a token that is no string",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.getAnonymToken": {
+      "status": 200,
+      "body": "{\"response\":{\"token\":5}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken"
+    ],
+    "error": {
+     "text": "vkcalls: auth.getAnonymToken: invalid_response",
+     "api": {
+      "stage": "auth.getAnonymToken",
+      "code": 0,
+      "kind": "invalid_response"
+     }
+    }
+   },
+   {
+    "name": "step 1: status 500, its body's line ends made spaces",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.getAnonymToken": {
+      "status": 500,
+      "body": "upstream\r\nfailed\n"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken"
+    ],
+    "error": {
+     "text": "vkcalls: http 500: upstream  failed "
+    }
+   },
+   {
+    "name": "step 1: status 403 with a long body, cut to 200 bytes",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.getAnonymToken": {
+      "status": 403,
+      "body": "012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken"
+    ],
+    "error": {
+     "text": "vkcalls: http 403: 01234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+    }
+   },
+   {
+    "name": "step 1: status 502 with a body cut inside a letter",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.getAnonymToken": {
+      "status": 502,
+      "body": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxé tail"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken"
+    ],
+    "error": {
+     "text": null,
+     "text_hex": "766b63616c6c733a2068747470203530323a2078787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878c3"
+    }
+   },
+   {
+    "name": "step 1: status 201 is no success",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.getAnonymToken": {
+      "status": 201,
+      "body": "{\"response\":{\"token\":\"t\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken"
+    ],
+    "error": {
+     "text": "vkcalls: http 201: {\"response\":{\"token\":\"t\"}}"
+    }
+   },
+   {
+    "name": "step 2: a captcha (TestIssueAPIErrors)",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "messages.getCallPreview": {
+      "status": 200,
+      "body": "{\"error\":{\"error_code\":14,\"error_msg\":\"Captcha needed\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview"
+    ],
+    "error": {
+     "text": "vkcalls: messages.getCallPreview: api error 14 (Captcha needed)",
+     "api": {
+      "stage": "messages.getCallPreview",
+      "code": 14,
+      "kind": "Captcha needed"
+     }
+    }
+   },
+   {
+    "name": "step 2: no secret",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "messages.getCallPreview": {
+      "status": 200,
+      "body": "{\"response\":{\"user_id\":5}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview"
+    ],
+    "error": {
+     "text": "vkcalls: messages.getCallPreview: missing_secret",
+     "api": {
+      "stage": "messages.getCallPreview",
+      "code": 0,
+      "kind": "missing_secret"
+     }
+    }
+   },
+   {
+    "name": "step 2: no user id",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "messages.getCallPreview": {
+      "status": 200,
+      "body": "{\"response\":{\"secret\":\"s\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview"
+    ],
+    "error": {
+     "text": "vkcalls: messages.getCallPreview: invalid_user_id",
+     "api": {
+      "stage": "messages.getCallPreview",
+      "code": 0,
+      "kind": "invalid_user_id"
+     }
+    }
+   },
+   {
+    "name": "step 2: a negative user id is taken",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "messages.getCallPreview": {
+      "status": 200,
+      "body": "{\"response\":{\"user_id\":-5,\"secret\":\"s\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin",
+     "vchat.joinConversationByLink"
+    ],
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "-5",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "step 2: a user id with a fraction",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "messages.getCallPreview": {
+      "status": 200,
+      "body": "{\"response\":{\"user_id\":5.5,\"secret\":\"s\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview"
+    ],
+    "error": {
+     "text": "vkcalls: messages.getCallPreview: invalid_user_id",
+     "api": {
+      "stage": "messages.getCallPreview",
+      "code": 0,
+      "kind": "invalid_user_id"
+     }
+    }
+   },
+   {
+    "name": "step 2: a user id as a string of digits is taken",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "messages.getCallPreview": {
+      "status": 200,
+      "body": "{\"response\":{\"user_id\":\"77\",\"secret\":\"s\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin",
+     "vchat.joinConversationByLink"
+    ],
+    "credentials": {
+     "url": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+     "token": "join-token",
+     "extra": {
+      "client_type": "VK",
+      "device_idx": "7",
+      "ice_servers": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+      "p2p_forbidden": "false",
+      "participant_id": "77",
+      "peer_id_hint": "10020030040",
+      "room_url": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+      "vkcalls_schema": "1"
+     }
+    }
+   },
+   {
+    "name": "step 2: a user id as a string that is no number",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "messages.getCallPreview": {
+      "status": 200,
+      "body": "{\"response\":{\"user_id\":\"abc\",\"secret\":\"s\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview"
+    ],
+    "error": {
+     "text": "vkcalls: messages.getCallPreview: invalid_response",
+     "api": {
+      "stage": "messages.getCallPreview",
+      "code": 0,
+      "kind": "invalid_response"
+     }
+    }
+   },
+   {
+    "name": "step 3: no token",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "messages.getAnonymCallToken": {
+      "status": 200,
+      "body": "{\"response\":{}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken"
+    ],
+    "error": {
+     "text": "vkcalls: messages.getAnonymCallToken: missing_token",
+     "api": {
+      "stage": "messages.getAnonymCallToken",
+      "code": 0,
+      "kind": "missing_token"
+     }
+    }
+   },
+   {
+    "name": "step 3: an error answer",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "messages.getAnonymCallToken": {
+      "status": 200,
+      "body": "{\"error\":{\"error_code\":5,\"error_msg\":\"anonym_token.expired\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken"
+    ],
+    "error": {
+     "text": "vkcalls: messages.getAnonymCallToken: api error 5 (anonym_token.expired)",
+     "api": {
+      "stage": "messages.getAnonymCallToken",
+      "code": 5,
+      "kind": "anonym_token.expired"
+     }
+    }
+   },
+   {
+    "name": "step 4: no session key",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.anonymLogin": {
+      "status": 200,
+      "body": "{\"session_secret_key\":\"ssk\"}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin"
+    ],
+    "error": {
+     "text": "vkcalls: auth.anonymLogin: missing_session_key",
+     "api": {
+      "stage": "auth.anonymLogin",
+      "code": 0,
+      "kind": "missing_session_key"
+     }
+    }
+   },
+   {
+    "name": "step 4: an error answer",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.anonymLogin": {
+      "status": 200,
+      "body": "{\"error\":{\"error_code\":10,\"error_msg\":\"internal\"}}"
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin"
+    ],
+    "error": {
+     "text": "vkcalls: auth.anonymLogin: api error 10 (internal)",
+     "api": {
+      "stage": "auth.anonymLogin",
+      "code": 10,
+      "kind": "internal"
+     }
+    }
+   },
+   {
+    "name": "step 4: status 500",
+    "link": "https://vk.ru/call/join/0FakeCallLinkForVectors012",
+    "nickname": "",
+    "token": "",
+    "replies": {
+     "auth.anonymLogin": {
+      "status": 500,
+      "body": ""
+     }
+    },
+    "steps": [
+     "auth.getAnonymToken",
+     "messages.getCallPreview",
+     "messages.getAnonymCallToken",
+     "auth.anonymLogin"
+    ],
+    "error": {
+     "text": "vkcalls: http 500: "
+    }
+   }
+  ]
+ }
+}

@@ -1,0 +1,227 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/control/zz_vectors_test.go TestZZVectors",
+ "sources": [
+  "internal/control/control.go:23-113",
+  "internal/control/control.go:295-307",
+  "internal/control/control.go:470-498"
+ ],
+ "cases": {
+  "constants": {
+   "proto_version": 1,
+   "max_message_size": 16384,
+   "default_interval_ms": 10000,
+   "default_timeout_ms": 15000,
+   "default_failures": 4,
+   "max_stalled_probes": 3,
+   "type_ping": "CONTROL_PING",
+   "type_pong": "CONTROL_PONG",
+   "type_close": "CONTROL_CLOSE"
+  },
+  "encode": [
+   {
+    "name": "first ping",
+    "type": "CONTROL_PING",
+    "seq": 1,
+    "sent_unix_nano": 1762726967123456789,
+    "frame": "000000507b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a312c2273656e745f756e69785f6e616e6f223a313736323732363936373132333435363738397d",
+    "body": "{\"version\":1,\"type\":\"CONTROL_PING\",\"seq\":1,\"sent_unix_nano\":1762726967123456789}"
+   },
+   {
+    "name": "its pong",
+    "type": "CONTROL_PONG",
+    "seq": 1,
+    "sent_unix_nano": 1762726967123456789,
+    "frame": "000000507b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f504f4e47222c22736571223a312c2273656e745f756e69785f6e616e6f223a313736323732363936373132333435363738397d",
+    "body": "{\"version\":1,\"type\":\"CONTROL_PONG\",\"seq\":1,\"sent_unix_nano\":1762726967123456789}"
+   },
+   {
+    "name": "largest seq",
+    "type": "CONTROL_PING",
+    "seq": 18446744073709551615,
+    "sent_unix_nano": 9223372036854775807,
+    "frame": "000000637b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a31383434363734343037333730393535313631352c2273656e745f756e69785f6e616e6f223a393232333337323033363835343737353830377d",
+    "body": "{\"version\":1,\"type\":\"CONTROL_PING\",\"seq\":18446744073709551615,\"sent_unix_nano\":9223372036854775807}"
+   },
+   {
+    "name": "negative clock",
+    "type": "CONTROL_PONG",
+    "seq": 7,
+    "sent_unix_nano": -9223372036854775808,
+    "frame": "000000517b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f504f4e47222c22736571223a372c2273656e745f756e69785f6e616e6f223a2d393232333337323033363835343737353830387d",
+    "body": "{\"version\":1,\"type\":\"CONTROL_PONG\",\"seq\":7,\"sent_unix_nano\":-9223372036854775808}"
+   },
+   {
+    "name": "zero fields are omitted",
+    "type": "CONTROL_PONG",
+    "seq": 0,
+    "sent_unix_nano": 0,
+    "frame": "000000237b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f504f4e47227d",
+    "body": "{\"version\":1,\"type\":\"CONTROL_PONG\"}"
+   },
+   {
+    "name": "close",
+    "type": "CONTROL_CLOSE",
+    "seq": 0,
+    "sent_unix_nano": 0,
+    "frame": "000000247b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f434c4f5345227d",
+    "body": "{\"version\":1,\"type\":\"CONTROL_CLOSE\"}"
+   }
+  ],
+  "parse": [
+   {
+    "name": "ping",
+    "input": "0000003f7b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a332c2273656e745f756e69785f6e616e6f223a34327d",
+    "verdict": "ok",
+    "version": 1,
+    "type": "CONTROL_PING",
+    "seq": 3,
+    "sent_unix_nano": 42
+   },
+   {
+    "name": "pong without fields",
+    "input": "000000237b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f504f4e47227d",
+    "verdict": "ok",
+    "version": 1,
+    "type": "CONTROL_PONG",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "close",
+    "input": "000000247b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f434c4f5345227d",
+    "verdict": "ok",
+    "version": 1,
+    "type": "CONTROL_CLOSE",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "negative clock",
+    "input": "000000647b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f504f4e47222c22736571223a31383434363734343037333730393535313631352c2273656e745f756e69785f6e616e6f223a2d393232333337323033363835343737353830387d",
+    "verdict": "ok",
+    "version": 1,
+    "type": "CONTROL_PONG",
+    "seq": 18446744073709551615,
+    "sent_unix_nano": -9223372036854775808
+   },
+   {
+    "name": "version 2",
+    "input": "0000002b7b2276657273696f6e223a322c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a317d",
+    "verdict": "protocol_version",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "no version",
+    "input": "0000001f7b2274797065223a22434f4e54524f4c5f50494e47222c22736571223a317d",
+    "verdict": "protocol_version",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "an unknown type",
+    "input": "000000247b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f5245534554227d",
+    "verdict": "unexpected_message",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "no type",
+    "input": "000000157b2276657273696f6e223a312c22736571223a317d",
+    "verdict": "unexpected_message",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "extra fields",
+    "input": "0000003f7b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a392c226578747261223a7b2278223a5b312c325d7d7d",
+    "verdict": "ok",
+    "version": 1,
+    "type": "CONTROL_PING",
+    "seq": 9,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "null fields read as zero",
+    "input": "000000447b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a6e756c6c2c2273656e745f756e69785f6e616e6f223a6e756c6c7d",
+    "verdict": "ok",
+    "version": 1,
+    "type": "CONTROL_PING",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "a negative seq",
+    "input": "0000002c7b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a2d317d",
+    "verdict": "parse",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "seq above uint64",
+    "input": "0000003e7b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a31383434363734343037333730393535313631367d",
+    "verdict": "parse",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "a fractional clock",
+    "input": "000000407b2276657273696f6e223a312c2274797065223a22434f4e54524f4c5f50494e47222c22736571223a312c2273656e745f756e69785f6e616e6f223a312e357d",
+    "verdict": "parse",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "malformed json",
+    "input": "0000000d7b2276657273696f6e223a312c",
+    "verdict": "parse",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "a frame of the limit's length is read",
+    "input": "00004000",
+    "verdict": "read",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "a frame above the limit",
+    "input": "00004001",
+    "verdict": "frame_too_large",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   },
+   {
+    "name": "the stream ends",
+    "input": "",
+    "verdict": "read",
+    "version": 0,
+    "type": "",
+    "seq": 0,
+    "sent_unix_nano": 0
+   }
+  ]
+ }
+}

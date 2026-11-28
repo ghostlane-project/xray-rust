@@ -1,0 +1,79 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/jitsifake/zz_vectors_test.go",
+ "sources": [
+  "j/internal/xmpp/conn.go"
+ ],
+ "cases": {
+  "config_js": {
+   "path": "/config.js",
+   "header": {
+    "Accept": [
+     "*/*"
+    ],
+    "Accept-Encoding": [
+     "gzip"
+    ],
+    "Accept-Language": [
+     "en-US,en;q=0.9"
+    ],
+    "Referer": [
+     "https://HOST/"
+    ],
+    "User-Agent": [
+     "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
+    ]
+   }
+  },
+  "upgrade": {
+   "path": "/xmpp-websocket?room=secret-room",
+   "header": {
+    "Accept": [
+     "*/*"
+    ],
+    "Accept-Encoding": [
+     "gzip"
+    ],
+    "Accept-Language": [
+     "en-US,en;q=0.9"
+    ],
+    "Cache-Control": [
+     "no-cache"
+    ],
+    "Connection": [
+     "Upgrade"
+    ],
+    "Origin": [
+     "https://HOST"
+    ],
+    "Pragma": [
+     "no-cache"
+    ],
+    "Sec-Fetch-Dest": [
+     "empty"
+    ],
+    "Sec-Fetch-Mode": [
+     "websocket"
+    ],
+    "Sec-Fetch-Site": [
+     "same-origin"
+    ],
+    "Sec-Websocket-Extensions": [
+     "permessage-deflate"
+    ],
+    "Sec-Websocket-Protocol": [
+     "xmpp"
+    ],
+    "Sec-Websocket-Version": [
+     "13"
+    ],
+    "Upgrade": [
+     "websocket"
+    ],
+    "User-Agent": [
+     "Mozilla/5.0 (X11; Linux x86_64; rv:150.0) Gecko/20100101 Firefox/150.0"
+    ]
+   }
+  }
+ }
+}

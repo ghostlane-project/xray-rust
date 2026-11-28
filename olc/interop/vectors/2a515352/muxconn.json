@@ -1,0 +1,624 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/muxconn/zz_vectors_test.go TestZZVectors",
+ "sources": [
+  "internal/muxconn/conn.go:72-117",
+  "internal/muxconn/conn.go:557-593",
+  "internal/muxconn/batch.go:51-213"
+ ],
+ "cases": {
+  "constants": {
+   "data_aad": "olcrtc/muxconn/v2/data",
+   "control_aad": "olcrtc/muxconn/v2/control",
+   "inbound_queue": 128,
+   "pooled_frame_cap": 65536,
+   "write_ready_timeout_ms": 30000,
+   "decrypt_log_interval_ms": 30000,
+   "smux_header_size": 8,
+   "smux_cmd_syn": 0,
+   "smux_cmd_psh": 2,
+   "smux_first_stream": 3
+  },
+  "scan": [
+   {
+    "name": "empty",
+    "record": "",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "shorter than a header",
+    "record": "02020500030000",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "psh on stream 3",
+    "record": "020205000300000068656c6c6f",
+    "payload_len": 5,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "psh on stream 0",
+    "record": "020205000000000068656c6c6f",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "psh, version 1",
+    "record": "010205000700000068656c6c6f",
+    "payload_len": 5,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "psh, version 0",
+    "record": "000205000700000068656c6c6f",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "psh, version 3",
+    "record": "030205000700000068656c6c6f",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "psh with an empty body",
+    "record": "0202000003000000",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "psh on the largest stream id",
+    "record": "02020500ffffffff68656c6c6f",
+    "payload_len": 5,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "syn of the first stream",
+    "record": "0200000003000000",
+    "payload_len": 0,
+    "first": true,
+    "opens": true
+   },
+   {
+    "name": "syn of stream 5",
+    "record": "0200000005000000",
+    "payload_len": 0,
+    "first": false,
+    "opens": true
+   },
+   {
+    "name": "syn of stream 1",
+    "record": "0200000001000000",
+    "payload_len": 0,
+    "first": false,
+    "opens": true
+   },
+   {
+    "name": "syn of stream 0",
+    "record": "0200000000000000",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "fin",
+    "record": "0201000003000000",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "nop",
+    "record": "0203000000000000",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "upd",
+    "record": "020408000300000004234261809fbedd",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "unknown command with a body",
+    "record": "020904000300000009284766",
+    "payload_len": 0,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "length beyond the record",
+    "record": "020264000300000068656c6c6f",
+    "payload_len": 5,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "largest length beyond the record",
+    "record": "0202ffff0300000001203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea0e2d4c6b8aa9c8e70b2a496887a6c5e40827466584a3c2e10524436281a0bfde0221405f7e9dbcdbfa1e3d5c7b9ab9d8f71b3a597897b6d5f41837567594b3d2f11534537291b0cfee1231506f8eadcceb0f2e4d6c8baac9e80c2b4a6988a7c6e50928476685a4c3e20625446382a1c0df032241607f9ebddc001f3e5d7c9bbad9f81c3b5a7998b7d6f51938577695b4d3f21635547392b1d0ef133251708faecdec102f4e6d8cabcae90d2c4b6a89a8c7e60a29486786a5c4e30726456483a2c1e004234261809fbedd01203f5e7d9cbbdaf91d3c5b7a99b8d7f61a39587796b5d4f31736557493b2d1f01433527190afceed11304f6e8daccbea",
+    "payload_len": 300,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "a batch: syn, psh, psh, upd",
+    "record": "0200000003000000020205000300000068656c6c6f0202030005000000616263020408000300000001203f5e7d9cbbda",
+    "payload_len": 8,
+    "first": true,
+    "opens": true
+   },
+   {
+    "name": "a batch with syns of streams 5 and 3",
+    "record": "02000000050000000200000003000000",
+    "payload_len": 0,
+    "first": true,
+    "opens": true
+   },
+   {
+    "name": "a batch whose second frame has a bad version",
+    "record": "020205000300000068656c6c6f070205000300000068656c6c6f020205000300000068656c6c6f",
+    "payload_len": 5,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "a frame then seven stray bytes",
+    "record": "020205000300000068656c6c6f02020100030000",
+    "payload_len": 5,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "a frame then a syn hidden in the first's body",
+    "record": "02020800090000000200000003000000",
+    "payload_len": 8,
+    "first": false,
+    "opens": false
+   },
+   {
+    "name": "a frame whose length swallows the next",
+    "record": "02020d000300000068656c6c6f0200000003000000",
+    "payload_len": 13,
+    "first": false,
+    "opens": false
+   }
+  ],
+  "batch_limits": [
+   {
+    "max_payload": 12288,
+    "write_interval_us": 5000,
+    "batches": true,
+    "limit": 12244
+   },
+   {
+    "max_payload": 12288,
+    "write_interval_us": 0,
+    "batches": false,
+    "limit": 0
+   },
+   {
+    "max_payload": 61440,
+    "write_interval_us": 0,
+    "batches": false,
+    "limit": 0
+   },
+   {
+    "max_payload": 61440,
+    "write_interval_us": 1000,
+    "batches": true,
+    "limit": 61396
+   },
+   {
+    "max_payload": 44,
+    "write_interval_us": 5000,
+    "batches": false,
+    "limit": 0
+   },
+   {
+    "max_payload": 45,
+    "write_interval_us": 5000,
+    "batches": true,
+    "limit": 1
+   },
+   {
+    "max_payload": 46,
+    "write_interval_us": 5000,
+    "batches": true,
+    "limit": 2
+   },
+   {
+    "max_payload": 0,
+    "write_interval_us": 5000,
+    "batches": false,
+    "limit": 0
+   },
+   {
+    "max_payload": -1,
+    "write_interval_us": 5000,
+    "batches": false,
+    "limit": 0
+   },
+   {
+    "max_payload": 12288,
+    "write_interval_us": -1000,
+    "batches": false,
+    "limit": 0
+   }
+  ],
+  "batch_sequences": [
+   {
+    "name": "small frames gather until half a record",
+    "max_payload": 12288,
+    "limit": 12244,
+    "steps": [
+     {
+      "op": "append",
+      "len": 8,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 8
+     },
+     {
+      "op": "append",
+      "len": 40,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 48
+     },
+     {
+      "op": "append",
+      "len": 1000,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 1048
+     },
+     {
+      "op": "append",
+      "len": 5000,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 6048
+     },
+     {
+      "op": "append",
+      "len": 73,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 6121
+     },
+     {
+      "op": "append",
+      "len": 1,
+      "queued": true,
+      "batch": 1,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 6122
+     },
+     {
+      "op": "take",
+      "queued": false,
+      "batch": 0,
+      "taken": 6122,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "done",
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "append",
+      "len": 8,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 8
+     }
+    ]
+   },
+   {
+    "name": "a frame that does not fit waits for the take",
+    "max_payload": 12288,
+    "limit": 12244,
+    "steps": [
+     {
+      "op": "append",
+      "len": 6000,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 6000
+     },
+     {
+      "op": "append",
+      "len": 6000,
+      "queued": true,
+      "batch": 1,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 12000
+     },
+     {
+      "op": "append",
+      "len": 300,
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 12000
+     },
+     {
+      "op": "take",
+      "queued": false,
+      "batch": 0,
+      "taken": 12000,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "append",
+      "len": 300,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 300
+     },
+     {
+      "op": "done",
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 300
+     },
+     {
+      "op": "append",
+      "len": 12244,
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 300
+     }
+    ]
+   },
+   {
+    "name": "a frame alone may exceed the limit",
+    "max_payload": 12288,
+    "limit": 12244,
+    "steps": [
+     {
+      "op": "append",
+      "len": 12300,
+      "queued": true,
+      "batch": 1,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 12300
+     },
+     {
+      "op": "append",
+      "len": 1,
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 12300
+     },
+     {
+      "op": "take",
+      "queued": false,
+      "batch": 0,
+      "taken": 12300,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "append",
+      "len": 1,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 1
+     },
+     {
+      "op": "done",
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 1
+     }
+    ]
+   },
+   {
+    "name": "exactly the limit fits",
+    "max_payload": 12288,
+    "limit": 12244,
+    "steps": [
+     {
+      "op": "append",
+      "len": 6121,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 6121
+     },
+     {
+      "op": "append",
+      "len": 6123,
+      "queued": true,
+      "batch": 1,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 12244
+     },
+     {
+      "op": "append",
+      "len": 1,
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 12244
+     },
+     {
+      "op": "take",
+      "queued": false,
+      "batch": 0,
+      "taken": 12244,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "done",
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "take",
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 0
+     }
+    ]
+   },
+   {
+    "name": "a take with nothing pending",
+    "max_payload": 12288,
+    "limit": 12244,
+    "steps": [
+     {
+      "op": "take",
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "append",
+      "len": 10,
+      "queued": true,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 10
+     },
+     {
+      "op": "take",
+      "queued": false,
+      "batch": 0,
+      "taken": 10,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "done",
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "take",
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 0
+     }
+    ]
+   },
+   {
+    "name": "the smallest batching link",
+    "max_payload": 46,
+    "limit": 2,
+    "steps": [
+     {
+      "op": "append",
+      "len": 1,
+      "queued": true,
+      "batch": 1,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 1
+     },
+     {
+      "op": "append",
+      "len": 1,
+      "queued": true,
+      "batch": 1,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 2
+     },
+     {
+      "op": "append",
+      "len": 1,
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": true,
+      "pending_len": 2
+     },
+     {
+      "op": "take",
+      "queued": false,
+      "batch": 0,
+      "taken": 2,
+      "due_after": false,
+      "pending_len": 0
+     },
+     {
+      "op": "done",
+      "queued": false,
+      "batch": 0,
+      "taken": 0,
+      "due_after": false,
+      "pending_len": 0
+     }
+    ]
+   }
+  ]
+ }
+}

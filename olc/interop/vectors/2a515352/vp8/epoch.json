@@ -1,0 +1,295 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/transport/vp8channel/zz_vectors_wire_test.go TestZZVectors",
+ "sources": [
+  "internal/transport/vp8channel/wire.go:10-44",
+  "internal/transport/vp8channel/epoch.go:17-53,89-127",
+  "internal/transport/vp8channel/peers.go:330-341",
+  "internal/transport/vp8channel/transport.go:438-457"
+ ],
+ "cases": {
+  "binding": {
+   "channel": "vectors",
+   "token": 1729685987
+  },
+  "confirm_peer": [
+   {
+    "confirmed": true,
+    "data_header": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd4",
+    "id": "00000200",
+    "ok": true,
+    "peer_epoch": 512
+   },
+   {
+    "confirmed": true,
+    "data_header": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd4",
+    "id": "200",
+    "ok": true,
+    "peer_epoch": 512
+   },
+   {
+    "confirmed": true,
+    "data_header": "3001009d012a10001000004708858588998488fc6718e9e3000001007fffffff03d8b88e",
+    "id": "7fffffff",
+    "ok": true,
+    "peer_epoch": 2147483647
+   },
+   {
+    "confirmed": false,
+    "error": "vp8channel: invalid peer id: data epoch 0x00000000",
+    "id": "0",
+    "ok": false
+   },
+   {
+    "confirmed": false,
+    "error": "vp8channel: invalid peer id: data epoch 0x00000000",
+    "id": "00000000",
+    "ok": false
+   },
+   {
+    "confirmed": false,
+    "error": "vp8channel: invalid peer id: data epoch 0x80000200",
+    "id": "80000200",
+    "ok": false
+   },
+   {
+    "confirmed": false,
+    "error": "vp8channel: invalid peer id: data epoch 0xffffffff",
+    "id": "ffffffff",
+    "ok": false
+   },
+   {
+    "confirmed": false,
+    "id": "xyz",
+    "ok": false
+   },
+   {
+    "confirmed": false,
+    "id": "",
+    "ok": false
+   }
+  ],
+  "format_peer": [
+   {
+    "epoch": 0,
+    "id": "00000000"
+   },
+   {
+    "epoch": 1,
+    "id": "00000001"
+   },
+   {
+    "epoch": 256,
+    "id": "00000100"
+   },
+   {
+    "epoch": 2147483647,
+    "id": "7fffffff"
+   },
+   {
+    "epoch": 2147483904,
+    "id": "80000100"
+   },
+   {
+    "epoch": 4294967295,
+    "id": "ffffffff"
+   }
+  ],
+  "headers": [
+   {
+    "crc": 376340812,
+    "dst": 0,
+    "hex": "3001009d012a10001000004708858588998488fc000000010000000200000000166e814c",
+    "src": 2,
+    "token": 1
+   },
+   {
+    "crc": 809119318,
+    "dst": 0,
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000000303a2e56",
+    "src": 256,
+    "token": 1729685987
+   },
+   {
+    "crc": 1661053836,
+    "dst": 0,
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e380000100000000006301ab8c",
+    "src": 2147483904,
+    "token": 1729685987
+   },
+   {
+    "crc": 34360532,
+    "dst": 512,
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd4",
+    "src": 256,
+    "token": 1729685987
+   },
+   {
+    "crc": 3161358133,
+    "dst": 2147484160,
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e38000010080000200bc6e7f35",
+    "src": 2147483904,
+    "token": 1729685987
+   },
+   {
+    "crc": 3678465160,
+    "dst": 2147483648,
+    "hex": "3001009d012a10001000004708858588998488fcffffffff7fffffff80000000db40ec88",
+    "src": 2147483647,
+    "token": 4294967295
+   },
+   {
+    "crc": 2077607535,
+    "dst": 0,
+    "hex": "3001009d012a10001000004708858588998488fc0000000000000000000000007bd5c66f",
+    "src": 0,
+    "token": 0
+   }
+  ],
+  "keepalive": "3001009d012a10001000004708858588998488fc",
+  "local_epoch": 256,
+  "parse": [
+   {
+    "dst": 512,
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd4",
+    "name": "header",
+    "ok": true,
+    "src": 256,
+    "token": 1729685987
+   },
+   {
+    "dst": 512,
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4cd401020304",
+    "name": "header_and_payload",
+    "ok": true,
+    "src": 256,
+    "token": 1729685987
+   },
+   {
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200020c4c",
+    "name": "one_byte_short",
+    "ok": false
+   },
+   {
+    "hex": "",
+    "name": "empty",
+    "ok": false
+   },
+   {
+    "hex": "3001009d012a10001000004708858588998488fc6618e9e30000010000000200020c4cd4",
+    "name": "token_bit_flipped",
+    "ok": false
+   },
+   {
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010100000200020c4cd4",
+    "name": "src_bit_flipped",
+    "ok": false
+   },
+   {
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000210020c4cd4",
+    "name": "dst_bit_flipped",
+    "ok": false
+   },
+   {
+    "hex": "3001009d012a10001000004708858588998488fc6718e9e30000010000000200820c4cd4",
+    "name": "crc_bit_flipped",
+    "ok": false
+   },
+   {
+    "dst": 512,
+    "hex": "00000000000000000000000000000000000000006718e9e30000010000000200020c4cd4",
+    "name": "vp8_bytes_zeroed",
+    "ok": true,
+    "src": 256,
+    "token": 1729685987
+   }
+  ],
+  "parse_peer": [
+   {
+    "epoch": 512,
+    "id": "00000200",
+    "ok": true
+   },
+   {
+    "epoch": 512,
+    "id": "200",
+    "ok": true
+   },
+   {
+    "epoch": 2882400001,
+    "id": "ABCDEF01",
+    "ok": true
+   },
+   {
+    "epoch": 2882400001,
+    "id": "abcdef01",
+    "ok": true
+   },
+   {
+    "epoch": 2882400001,
+    "id": "AbCdEf01",
+    "ok": true
+   },
+   {
+    "epoch": 0,
+    "id": "0",
+    "ok": true
+   },
+   {
+    "epoch": 0,
+    "id": "00000000",
+    "ok": true
+   },
+   {
+    "epoch": 4294967295,
+    "id": "ffffffff",
+    "ok": true
+   },
+   {
+    "epoch": 255,
+    "id": "0000000000ff",
+    "ok": true
+   },
+   {
+    "id": "100000000",
+    "ok": false
+   },
+   {
+    "id": "0x200",
+    "ok": false
+   },
+   {
+    "id": "",
+    "ok": false
+   },
+   {
+    "id": "+200",
+    "ok": false
+   },
+   {
+    "id": "-1",
+    "ok": false
+   },
+   {
+    "id": "2_00",
+    "ok": false
+   },
+   {
+    "id": " 200",
+    "ok": false
+   },
+   {
+    "id": "200 ",
+    "ok": false
+   },
+   {
+    "id": "g",
+    "ok": false
+   },
+   {
+    "id": "८",
+    "ok": false
+   }
+  ]
+ }
+}

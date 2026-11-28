@@ -1,0 +1,262 @@
+{
+ "pin": "2d4266af3947f4d9940efafb0d5aabb6207f6659",
+ "generator": "internal/engine/vkcalls/zz_vectors_test.go",
+ "sources": [
+  "internal/engine/vkcalls/signaling.go:148-165 (signalingURL), 167-173 (selfParticipant), 58-62 (the capabilities value)",
+  "internal/engine/vkcalls/vkcalls.go:837-856 (iceServersOf)",
+  "internal/engine/vkcalls/signaling_test.go:168-181 (TestSignalingURL)",
+  "the link and the credentials of a join are in vkcalls/url_auth.json (the auth provider's package)"
+ ],
+ "cases": {
+  "note": "signaling_url: the URL the socket is dialled at for a join endpoint; the query is written again, its keys in byte order, and a peerId in the endpoint stays. ice_servers_of: the servers the engine reads from the provider's ice_servers text; a text it cannot read gives none.",
+  "signaling_url": [
+   {
+    "name": "the endpoint a join answers with",
+    "endpoint": "wss://videowebrtc.okcdn.ru/ws2?conversationId=c\u0026peerId=10020030040\u0026token=join-token\u0026userId=100200300400\u0026entityType=USER",
+    "url": "wss://videowebrtc.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026conversationId=c\u0026device=browser\u0026entityType=USER\u0026peerId=10020030040\u0026platform=WEB\u0026tgt=join\u0026token=join-token\u0026userId=100200300400\u0026version=5",
+    "self": "100200300400"
+   },
+   {
+    "name": "TestSignalingURL's endpoint",
+    "endpoint": "wss://videowebrtc.okcdn.ru/ws2?userId=1\u0026entityType=USER\u0026conversationId=c\u0026token=t",
+    "url": "wss://videowebrtc.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026conversationId=c\u0026device=browser\u0026entityType=USER\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026userId=1\u0026version=5",
+    "self": "1"
+   },
+   {
+    "name": "a test endpoint: ws and a port",
+    "endpoint": "ws://127.0.0.1:8443/ws2?token=t\u0026userId=42",
+    "url": "ws://127.0.0.1:8443/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026userId=42\u0026version=5",
+    "self": "42"
+   },
+   {
+    "name": "no query",
+    "endpoint": "wss://videowebrtc.okcdn.ru/ws2",
+    "url": "wss://videowebrtc.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026version=5",
+    "self": ""
+   },
+   {
+    "name": "an empty query",
+    "endpoint": "wss://videowebrtc.okcdn.ru/ws2?",
+    "url": "wss://videowebrtc.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026version=5",
+    "self": ""
+   },
+   {
+    "name": "no path",
+    "endpoint": "wss://videowebrtc.okcdn.ru?token=t",
+    "url": "wss://videowebrtc.okcdn.ru?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026version=5",
+    "self": ""
+   },
+   {
+    "name": "the seven values already there are replaced",
+    "endpoint": "wss://h.okcdn.ru/ws2?platform=ANDROID\u0026appVersion=9\u0026version=1\u0026device=phone\u0026capabilities=FFFF\u0026clientType=OK\u0026tgt=start\u0026token=t",
+    "url": "wss://h.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026version=5",
+    "self": ""
+   },
+   {
+    "name": "a value given twice is replaced by one",
+    "endpoint": "wss://h.okcdn.ru/ws2?tgt=a\u0026tgt=b\u0026token=t",
+    "url": "wss://h.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026version=5",
+    "self": ""
+   },
+   {
+    "name": "a key given twice keeps both, in their order",
+    "endpoint": "wss://h.okcdn.ru/ws2?userId=2\u0026userId=1\u0026token=t",
+    "url": "wss://h.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026userId=2\u0026userId=1\u0026version=5",
+    "self": "2"
+   },
+   {
+    "name": "what a query escapes",
+    "endpoint": "wss://h.okcdn.ru/ws2?token=a%2Bb%2Fc%3Dd~e*f%20g+h\u0026userId=%D0%9C",
+    "url": "wss://h.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=a%2Bb%2Fc%3Dd~e%2Af+g+h\u0026userId=%D0%9C\u0026version=5",
+    "self": "М"
+   },
+   {
+    "name": "raw punctuation in a value",
+    "endpoint": "wss://h.okcdn.ru/ws2?token=!'()*,:@$/?\u0026userId=1",
+    "url": "wss://h.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=%21%27%28%29%2A%2C%3A%40%24%2F%3F\u0026userId=1\u0026version=5",
+    "self": "1"
+   },
+   {
+    "name": "a key with no value and a key with an empty one",
+    "endpoint": "wss://h.okcdn.ru/ws2?a\u0026b=\u0026userId=1",
+    "url": "wss://h.okcdn.ru/ws2?a=\u0026appVersion=1.1\u0026b=\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026userId=1\u0026version=5",
+    "self": "1"
+   },
+   {
+    "name": "a pair with a semicolon is dropped",
+    "endpoint": "wss://h.okcdn.ru/ws2?a=1;b=2\u0026userId=1",
+    "url": "wss://h.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026userId=1\u0026version=5",
+    "self": "1"
+   },
+   {
+    "name": "a pair with a bad escape is dropped",
+    "endpoint": "wss://h.okcdn.ru/ws2?a=%zz\u0026userId=1",
+    "url": "wss://h.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026userId=1\u0026version=5",
+    "self": "1"
+   },
+   {
+    "name": "keys in upper case sort first",
+    "endpoint": "wss://h.okcdn.ru/ws2?Zeta=1\u0026alpha=2\u0026Version=3",
+    "url": "wss://h.okcdn.ru/ws2?Version=3\u0026Zeta=1\u0026alpha=2\u0026appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026version=5",
+    "self": ""
+   },
+   {
+    "name": "a fragment stays behind the query",
+    "endpoint": "wss://h.okcdn.ru/ws2?token=t#frag",
+    "url": "wss://h.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026version=5#frag",
+    "self": ""
+   },
+   {
+    "name": "userinfo and an upper-case host stay",
+    "endpoint": "wss://u:p@H.OKCDN.RU/ws2?token=t",
+    "url": "wss://u:p@H.OKCDN.RU/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026version=5",
+    "self": ""
+   },
+   {
+    "name": "an upper-case scheme is lowered",
+    "endpoint": "WSS://h.okcdn.ru/ws2?token=t\u0026userId=7",
+    "url": "wss://h.okcdn.ru/ws2?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026userId=7\u0026version=5",
+    "self": "7"
+   },
+   {
+    "name": "an escaped path stays as written",
+    "endpoint": "wss://h.okcdn.ru/a%20b%2Fc?token=t",
+    "url": "wss://h.okcdn.ru/a%20b%2Fc?appVersion=1.1\u0026capabilities=2F7F\u0026clientType=VK\u0026device=browser\u0026platform=WEB\u0026tgt=join\u0026token=t\u0026version=5",
+    "self": ""
+   },
+   {
+    "name": "https",
+    "endpoint": "https://videowebrtc.okcdn.ru/ws2?token=t\u0026userId=5",
+    "url": "",
+    "error": "vkcalls: invalid signaling endpoint: %!w(\u003cnil\u003e)",
+    "self": "5"
+   },
+   {
+    "name": "http",
+    "endpoint": "http://127.0.0.1/ws2?userId=5",
+    "url": "",
+    "error": "vkcalls: invalid signaling endpoint: %!w(\u003cnil\u003e)",
+    "self": "5"
+   },
+   {
+    "name": "no scheme",
+    "endpoint": "videowebrtc.okcdn.ru/ws2?token=t\u0026userId=5",
+    "url": "",
+    "error": "vkcalls: invalid signaling endpoint: %!w(\u003cnil\u003e)",
+    "self": "5"
+   },
+   {
+    "name": "scheme-relative",
+    "endpoint": "//videowebrtc.okcdn.ru/ws2?userId=5",
+    "url": "",
+    "error": "vkcalls: invalid signaling endpoint: %!w(\u003cnil\u003e)",
+    "self": "5"
+   },
+   {
+    "name": "empty",
+    "endpoint": "",
+    "url": "",
+    "error": "vkcalls: invalid signaling endpoint: %!w(\u003cnil\u003e)",
+    "self": ""
+   },
+   {
+    "name": "a control byte",
+    "endpoint": "wss://h.okcdn.ru/ws2?userId=5",
+    "url": "",
+    "error": "vkcalls: invalid signaling endpoint: parse \"wss://h.okcdn.ru/ws2?userId=5\\x7f\": net/url: invalid control character in URL",
+    "self": ""
+   },
+   {
+    "name": "a scheme with nothing in front",
+    "endpoint": "://nothing",
+    "url": "",
+    "error": "vkcalls: invalid signaling endpoint: parse \"://nothing\": missing protocol scheme",
+    "self": ""
+   }
+  ],
+  "ice_servers_of": [
+   {
+    "name": "what the provider writes for the join of its own test",
+    "raw": "[{\"urls\":[\"stun:stun.example:3478\"]},{\"credential\":\"c\",\"urls\":[\"turn:91.231.135.155:19302\",\"turn:91.231.135.179:19302\"],\"username\":\"u\"}]",
+    "servers": [
+     {
+      "urls": [
+       "stun:stun.example:3478"
+      ],
+      "username": "",
+      "credential": ""
+     },
+     {
+      "urls": [
+       "turn:91.231.135.155:19302",
+       "turn:91.231.135.179:19302"
+      ],
+      "username": "u",
+      "credential": "c"
+     }
+    ]
+   },
+   {
+    "name": "no server",
+    "raw": "[]",
+    "servers": []
+   },
+   {
+    "name": "an entry with no urls is skipped",
+    "raw": "[{\"username\":\"u\",\"credential\":\"c\"},{\"urls\":[]},{\"urls\":[\"turns:t.example:443?transport=tcp\"],\"username\":\"u2\",\"credential\":\"c2\"}]",
+    "servers": [
+     {
+      "urls": [
+       "turns:t.example:443?transport=tcp"
+      ],
+      "username": "u2",
+      "credential": "c2"
+     }
+    ]
+   },
+   {
+    "name": "unknown keys are passed over",
+    "raw": "[{\"urls\":[\"turn:t.example:3478?transport=udp\"],\"username\":\"u\",\"credential\":\"c\",\"ttl\":600}]",
+    "servers": [
+     {
+      "urls": [
+       "turn:t.example:3478?transport=udp"
+      ],
+      "username": "u",
+      "credential": "c"
+     }
+    ]
+   },
+   {
+    "name": "urls as one string: the whole text is refused",
+    "raw": "[{\"urls\":[\"stun:a.example\"]},{\"urls\":\"turn:b.example\"}]",
+    "servers": []
+   },
+   {
+    "name": "a credential that is no string: the whole text is refused",
+    "raw": "[{\"urls\":[\"turn:b.example\"],\"username\":\"u\",\"credential\":5}]",
+    "servers": []
+   },
+   {
+    "name": "an object, not a list",
+    "raw": "{\"urls\":[\"stun:a.example\"]}",
+    "servers": []
+   },
+   {
+    "name": "null",
+    "raw": "null",
+    "servers": []
+   },
+   {
+    "name": "empty",
+    "raw": "",
+    "servers": []
+   },
+   {
+    "name": "not JSON",
+    "raw": "stun:a.example",
+    "servers": []
+   }
+  ]
+ }
+}
