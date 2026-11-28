@@ -73,25 +73,30 @@ mod tests {
         }
     }
 
-    /// An interface that exists on every Windows host: the loopback pseudo
-    /// interface, whose index is read back from the system, never assumed.
+    #[link(name = "iphlpapi")]
+    extern "system" {
+        fn ConvertInterfaceIndexToLuid(index: u32, luid: *mut u64) -> u32;
+        fn ConvertInterfaceLuidToAlias(luid: *const u64, alias: *mut u16, length: usize) -> u32;
+    }
+
+    /// The first interface the system lists, by alias and index, found by
+    /// asking for each index in turn.
     fn an_interface() -> (String, u32) {
-        let output = std::process::Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                "(Get-NetAdapter -IncludeHidden | Select-Object -First 1 | ForEach-Object { $_.Name + '|' + $_.ifIndex })",
-            ])
-            .output()
-            .expect("run powershell");
-        let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let (name, index) = text.rsplit_once('|').unwrap_or_else(|| {
-            panic!(
-                "no adapter listed: {text:?} {}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-        });
-        (name.to_owned(), index.parse().expect("an index"))
+        for index in 1..=2000_u32 {
+            let mut luid = 0_u64;
+            // SAFETY: `luid` is valid for a write of a NET_LUID.
+            if unsafe { ConvertInterfaceIndexToLuid(index, &mut luid) } != 0 {
+                continue;
+            }
+            let mut alias = [0_u16; 257];
+            // SAFETY: `alias` holds the 257 units the call is told.
+            if unsafe { ConvertInterfaceLuidToAlias(&luid, alias.as_mut_ptr(), alias.len()) } != 0 {
+                continue;
+            }
+            let end = alias.iter().position(|&unit| unit == 0).unwrap_or(0);
+            return (String::from_utf16_lossy(&alias[..end]), index);
+        }
+        panic!("the system lists no interface");
     }
 
     #[test]

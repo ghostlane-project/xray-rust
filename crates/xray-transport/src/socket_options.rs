@@ -341,8 +341,8 @@ pub mod windows {
         }
     }
 
-    /// The interface index `socket` is set to leave by, as the system holds
-    /// it (host order); `0` when none is set. `v6` picks the option of the
+    /// The interface index `socket` is set to leave by, as `getsockopt` reads
+    /// it back; `0` when none is set. `v6` picks the option of the
     /// IPv6 family.
     ///
     /// # Errors
@@ -366,7 +366,8 @@ pub mod windows {
         if status != 0 {
             return Err(last_socket_error());
         }
-        Ok(if v6 { value } else { u32::from_be(value) })
+        // Windows hands back the number as the program set it.
+        Ok(value)
     }
 }
 
