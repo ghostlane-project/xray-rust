@@ -54,6 +54,7 @@ sysctl -qw net.ipv4.conf.vh0.route_localnet=1 net.ipv4.conf.vh0.rp_filter=0 net.
 iptables -t nat -A PREROUTING -i vh0 -d 10.231.0.1 -p tcp -j DNAT --to-destination 127.0.0.1
 
 in_ns() { ip netns exec "$ns" "$@"; }
+in_ns sysctl -qw net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1
 in_ns ip link set lo up
 in_ns ip addr add 10.231.0.2/24 dev out0
 in_ns ip link set out0 up
@@ -96,6 +97,8 @@ if [ "$rc" -ne 0 ]; then
 	echo "netns: S5 (UDP associate, a relay on the namespace's loopback) is out of this leg"
 fi
 
+in_ns iptables -nvxL OUTPUT >&2
+in_ns ip -s link show >&2
 tun=$(($(tx tun0) - base_tun))
 udp=$(($(rule_pkts udp) - base_udp))
 tcp=$(($(rule_pkts tcp) - base_tcp))
