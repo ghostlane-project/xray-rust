@@ -17,8 +17,10 @@
 #                   Every step runs; one that fails fails the script.
 #   windows-report  `cargo check`s the engine without rooms, which is what a
 #                   Windows build gets first, and says in the job summary
-#                   whether it builds. It never fails: the crates under it do
-#                   not all compile for Windows yet.
+#                   whether it builds. It exits with cargo's status, so the
+#                   drop-in fails (p6-ci.sh says "drop-in failed", and the
+#                   leg fails once it is required) while the engine does not
+#                   compile for Windows.
 set -uo pipefail
 mode="${1:?usage: ghostlane-engine.sh host|windows-report}"
 cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
@@ -43,7 +45,8 @@ if [ "$mode" = windows-report ]; then
             echo '```'
         fi
     } >> "$summary"
-    exit 0
+    [ "$status" = 0 ] || echo "::error::ghostlane-engine without rooms does not build for Windows"
+    exit "$status"
 fi
 [ "$mode" = host ] || exit 0
 
