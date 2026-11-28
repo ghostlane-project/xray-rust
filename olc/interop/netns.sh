@@ -79,7 +79,7 @@ in_ns ping -c 1 -W 1 192.0.2.99 >/dev/null 2>&1 || true
 [ "$(tx tun0)" -gt "$t0" ] || { echo "netns: the control failed: an unbound packet did not move tun0" >&2; exit 1; }
 
 # What lands in tun0 is kept, to name it if it is not nothing.
-in_ns tcpdump -nn -l -i tun0 -w "$PWD/netns-tun0.pcap" >/dev/null 2>&1 &
+in_ns tcpdump -Z root -nn -l -i tun0 -w "$PWD/netns-tun0.pcap" >/dev/null 2>&1 &
 sleep 1
 base_tun=$(tx tun0)
 base_udp=$(rule_pkts udp)
