@@ -256,7 +256,7 @@ fn is_fatal_tun_error(err: &io::Error) -> bool {
         return true;
     }
 
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "tun"))]
     {
         const ERROR_HANDLE_EOF: i32 = windows_sys::Win32::Foundation::ERROR_HANDLE_EOF as i32;
 
