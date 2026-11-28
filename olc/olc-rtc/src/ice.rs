@@ -5,7 +5,6 @@
 
 use std::io;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
-use std::os::fd::AsRawFd;
 
 use rand::Rng;
 use str0m::IceCreds;
@@ -35,6 +34,20 @@ fn ice_chars(n: usize) -> String {
         .collect()
 }
 
+/// The handle of a socket as the protector is handed it: the file descriptor
+/// on Unix, the `SOCKET` on Windows (`olc_net::net::RawFd` is `i64` there,
+/// as the C ABI's protector field is).
+#[cfg(unix)]
+pub(crate) fn raw_handle(socket: &impl std::os::fd::AsRawFd) -> olc_net::net::RawFd {
+    std::os::fd::AsRawFd::as_raw_fd(socket)
+}
+
+/// The handle of a socket as the protector is handed it.
+#[cfg(windows)]
+pub(crate) fn raw_handle(socket: &impl std::os::windows::io::AsRawSocket) -> olc_net::net::RawFd {
+    std::os::windows::io::AsRawSocket::as_raw_socket(socket) as olc_net::net::RawFd
+}
+
 /// The address the host's default IPv4 route leaves from, as a browser's
 /// host candidate names it. The probe socket is protected first, so under a
 /// VPN the answer is the physical interface's address, not the tunnel's; it
@@ -44,7 +57,7 @@ fn ice_chars(n: usize) -> String {
 /// No IPv4 route, or the protector refused the probe socket.
 pub fn default_ipv4() -> io::Result<IpAddr> {
     let s = UdpSocket::bind("0.0.0.0:0")?;
-    olc_net::net::protect(s.as_raw_fd())?;
+    olc_net::net::protect(raw_handle(&s))?;
     // TEST-NET-1 (RFC 5737): routed like the internet, never answered.
     s.connect(SocketAddr::from(([192, 0, 2, 1], 9)))?;
     let ip = s.local_addr()?.ip();

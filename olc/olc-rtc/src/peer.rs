@@ -47,7 +47,6 @@
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -358,7 +357,7 @@ impl Peer {
         tune: impl FnOnce(RtcConfig) -> RtcConfig,
     ) -> Result<(Peer, mpsc::Receiver<PeerEvent>), PeerError> {
         let std_sock = std::net::UdpSocket::bind(SocketAddr::new(cfg.host_ip, 0))?;
-        olc_net::net::protect(std_sock.as_raw_fd())?;
+        olc_net::net::protect(crate::ice::raw_handle(&std_sock))?;
         std_sock.set_nonblocking(true)?;
         let local = std_sock.local_addr()?;
         let sock = UdpSocket::from_std(std_sock)?;

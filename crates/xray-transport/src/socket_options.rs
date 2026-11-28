@@ -210,11 +210,163 @@ impl SocketOptions {
             }
             Ok(())
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        {
+            // Xray-core sets only the interface on Windows: a socket leaves
+            // by it (`IP_UNICAST_IF`), and one that cannot fails the dial.
+            let _ = report;
+            if self.interface.is_empty() {
+                return Ok(());
+            }
+            let bound = windows::interface_index(&self.interface)
+                .and_then(|index| windows::set_unicast_if(socket.raw(), index));
+            bound.map_err(|error| {
+                io::Error::new(
+                    error.kind(),
+                    format!("failed to bind to interface: failed to set Interface: {error}"),
+                )
+            })
+        }
+        #[cfg(not(any(unix, windows)))]
         {
             let _ = (socket, report);
             Ok(())
         }
+    }
+}
+
+/// The way out of a socket on Windows: the interface's index, and
+/// `IP_UNICAST_IF` / `IPV6_UNICAST_IF` set from it. Shared with the engine's
+/// escape (`ghostlane-engine`), which binds every socket it opens the same
+/// way.
+#[cfg(windows)]
+pub mod windows {
+    use std::io;
+
+    const IPPROTO_IP: i32 = 0;
+    const IPPROTO_IPV6: i32 = 41;
+    /// `IP_UNICAST_IF` and `IPV6_UNICAST_IF` (ws2ipdef.h) are both 31.
+    const UNICAST_IF: i32 = 31;
+    const NO_ERROR: u32 = 0;
+
+    #[link(name = "ws2_32")]
+    extern "system" {
+        fn setsockopt(socket: usize, level: i32, name: i32, value: *const u8, length: i32) -> i32;
+        fn getsockopt(
+            socket: usize,
+            level: i32,
+            name: i32,
+            value: *mut u8,
+            length: *mut i32,
+        ) -> i32;
+        fn WSAGetLastError() -> i32;
+    }
+
+    #[link(name = "iphlpapi")]
+    extern "system" {
+        fn ConvertInterfaceAliasToLuid(alias: *const u16, luid: *mut u64) -> u32;
+        fn ConvertInterfaceLuidToIndex(luid: *const u64, index: *mut u32) -> u32;
+    }
+
+    fn last_socket_error() -> io::Error {
+        // SAFETY: no arguments; reads the calling thread's last Winsock error.
+        io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
+    }
+
+    /// The index of the interface named `name`: its alias as the adapter
+    /// list shows it (`Ethernet`, `Wi-Fi`), or its index written as a number.
+    ///
+    /// # Errors
+    /// `NotFound` when no interface has that name.
+    pub fn interface_index(name: &str) -> io::Result<u32> {
+        let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut luid = 0_u64;
+        // SAFETY: `wide` is NUL-terminated and outlives the call; `luid` is
+        // valid for a write of a NET_LUID (a u64).
+        let status = unsafe { ConvertInterfaceAliasToLuid(wide.as_ptr(), &mut luid) };
+        if status != NO_ERROR {
+            return match name.parse::<u32>() {
+                Ok(index) if index != 0 => Ok(index),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("interface `{name}` does not exist"),
+                )),
+            };
+        }
+        let mut index = 0_u32;
+        // SAFETY: both pointers are valid for the sizes the call reads and writes.
+        let status = unsafe { ConvertInterfaceLuidToIndex(&luid, &mut index) };
+        if status != NO_ERROR || index == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("interface `{name}` has no index"),
+            ));
+        }
+        Ok(index)
+    }
+
+    fn set_u32(socket: usize, level: i32, value: u32) -> io::Result<()> {
+        // SAFETY: `value` is a live u32 whose size is passed with it.
+        let status = unsafe {
+            setsockopt(
+                socket,
+                level,
+                UNICAST_IF,
+                std::ptr::from_ref(&value).cast(),
+                4,
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(last_socket_error())
+        }
+    }
+
+    /// Makes `socket` (a `SOCKET`, not yet connected) leave by the interface
+    /// `index`: `IP_UNICAST_IF` (the index in network byte order) for an IPv4
+    /// socket, `IPV6_UNICAST_IF` for an IPv6 one. A socket takes the option
+    /// of its own family; the other is refused, so one of the two must stand.
+    ///
+    /// # Errors
+    /// The error of the option of the socket's family.
+    pub fn set_unicast_if(socket: i64, index: u32) -> io::Result<()> {
+        let socket = usize::try_from(socket)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "not a socket"))?;
+        let v4 = set_u32(socket, IPPROTO_IP, index.to_be());
+        let v6 = set_u32(socket, IPPROTO_IPV6, index);
+        match (v4, v6) {
+            (Err(error), Err(_)) => Err(error),
+            _ => Ok(()),
+        }
+    }
+
+    /// The interface index `socket` is set to leave by, as the system holds
+    /// it (host order); `0` when none is set. `v6` picks the option of the
+    /// IPv6 family.
+    ///
+    /// # Errors
+    /// The system's refusal.
+    pub fn unicast_if_of(socket: i64, v6: bool) -> io::Result<u32> {
+        let socket = usize::try_from(socket)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "not a socket"))?;
+        let mut value = 0_u32;
+        let mut length = 4_i32;
+        let level = if v6 { IPPROTO_IPV6 } else { IPPROTO_IP };
+        // SAFETY: `value` and `length` are valid for the 4 bytes asked.
+        let status = unsafe {
+            getsockopt(
+                socket,
+                level,
+                UNICAST_IF,
+                std::ptr::from_mut(&mut value).cast(),
+                &mut length,
+            )
+        };
+        if status != 0 {
+            return Err(last_socket_error());
+        }
+        Ok(if v6 { value } else { u32::from_be(value) })
     }
 }
 
