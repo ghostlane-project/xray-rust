@@ -6569,7 +6569,7 @@ fn sorted_header_names(headers: &[(String, String)]) -> Vec<&str> {
 
 #[test]
 fn removed_transports_say_they_were_removed() {
-    for network in ["h2", "h3", "http", "quic"] {
+    for network in ["h3", "quic"] {
         let error = parse_xray_json(&raw_with_stream_settings(&format!(
             r#""network": "{network}", "security": "none""#
         )))

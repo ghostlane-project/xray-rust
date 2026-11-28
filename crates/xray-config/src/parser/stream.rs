@@ -8,6 +8,13 @@ impl Parser<'_> {
         outbound: &Value,
         index: usize,
     ) -> Option<StreamSettings> {
+        // `http` is a transport Xray-core deleted: it is read as the XHTTP
+        // stream-one request it is on the wire, before anything else looks.
+        let rewritten = match self.http_network_as_xhttp(outbound, index) {
+            Ok(rewritten) => rewritten,
+            Err(()) => return None,
+        };
+        let outbound = rewritten.as_ref().unwrap_or(outbound);
         let stream = outbound.get("streamSettings");
         let stream_network = self.parse_network(stream, index)?;
         let mut security = self.parse_security(stream, index)?;
@@ -1443,6 +1450,129 @@ impl Parser<'_> {
         })
     }
 
+    /// `network: "http"` (or its old name `h2`) is the HTTP/2 transport of
+    /// v2fly and sing-box: one HTTP/2 request per connection whose body is the
+    /// uplink and whose answer is the downlink, the shape of XHTTP's
+    /// `stream-one` mode. Xray-core removed it, so this rewrites the outbound's
+    /// stream settings to that XHTTP: `httpSettings.host` (a string, or a list
+    /// of which the first is sent) and `path` become the XHTTP ones, TLS offers
+    /// h2 unless the config names its protocols. `Ok(None)` is any other network.
+    fn http_network_as_xhttp(
+        &mut self,
+        outbound: &Value,
+        index: usize,
+    ) -> Result<Option<Value>, ()> {
+        let Some(stream) = outbound.get("streamSettings").and_then(Value::as_object) else {
+            return Ok(None);
+        };
+        // `method` has priority over `network`, as in `parse_network`.
+        let key = if matches!(stream.get("method"), Some(Value::String(_))) {
+            "method"
+        } else {
+            "network"
+        };
+        let Some(Value::String(name)) = stream.get(key) else {
+            return Ok(None);
+        };
+        if !matches!(name.to_ascii_lowercase().as_str(), "http" | "h2") {
+            return Ok(None);
+        }
+        let stream_path = format!("$.outbounds[{index}].streamSettings");
+        let settings_path = format!("{stream_path}.httpSettings");
+        for other in ["xhttpSettings", "splithttpSettings"] {
+            if stream.get(other).is_some_and(|value| !value.is_null()) {
+                self.error(
+                    format!("{stream_path}.{other}"),
+                    "network `http` is configured by `httpSettings`; it cannot carry xhttp settings",
+                );
+                return Err(());
+            }
+        }
+        let settings = match stream.get("httpSettings") {
+            None | Some(Value::Null) => serde_json::Map::new(),
+            Some(Value::Object(settings)) => settings.clone(),
+            Some(_) => {
+                self.error(settings_path, "httpSettings must be an object");
+                return Err(());
+            }
+        };
+        let mut xhttp = serde_json::Map::new();
+        xhttp.insert("mode".to_owned(), Value::String("stream-one".to_owned()));
+        for (field, value) in &settings {
+            let field_path = format!("{settings_path}.{field}");
+            match (field.as_str(), value) {
+                ("host", Value::Null) | ("path", Value::Null) => {}
+                ("host", Value::String(host)) => {
+                    xhttp.insert("host".to_owned(), Value::String(host.clone()));
+                }
+                ("host", Value::Array(hosts)) => {
+                    let mut names = Vec::with_capacity(hosts.len());
+                    for host in hosts {
+                        let Value::String(host) = host else {
+                            self.error(field_path, "httpSettings.host must hold strings");
+                            return Err(());
+                        };
+                        names.push(host.clone());
+                    }
+                    // The request names one authority; a list is the names a
+                    // server accepts, and the first is the one to send.
+                    if let Some(first) = names.into_iter().next() {
+                        xhttp.insert("host".to_owned(), Value::String(first));
+                    }
+                }
+                ("host", _) => {
+                    self.error(
+                        field_path,
+                        "httpSettings.host must be a string or a list of strings",
+                    );
+                    return Err(());
+                }
+                ("path", Value::String(path)) => {
+                    xhttp.insert("path".to_owned(), Value::String(path.clone()));
+                }
+                ("path", _) => {
+                    self.error(field_path, "httpSettings.path must be a string");
+                    return Err(());
+                }
+                ("method" | "headers" | "read_idle_timeout" | "health_check_timeout", _) => {
+                    self.warning(
+                        field_path,
+                        format!("httpSettings.{field} is ignored: the request is XHTTP's own"),
+                    );
+                }
+                _ => {
+                    self.error(field_path, format!("unknown httpSettings field `{field}`"));
+                    return Err(());
+                }
+            }
+        }
+        self.warning(
+            format!("{stream_path}.{key}"),
+            "network `http` runs as xhttp in stream-one mode: one HTTP/2 request carries both directions",
+        );
+        let mut stream = stream.clone();
+        stream.insert(key.to_owned(), Value::String("xhttp".to_owned()));
+        stream.remove("httpSettings");
+        stream.insert("xhttpSettings".to_owned(), Value::Object(xhttp));
+        let tls = stream
+            .get("security")
+            .and_then(Value::as_str)
+            .is_some_and(|security| security.eq_ignore_ascii_case("tls"));
+        if tls {
+            let tls_settings = stream
+                .entry("tlsSettings".to_owned())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Value::Object(tls_settings) = tls_settings {
+                if tls_settings.get("alpn").is_none_or(Value::is_null) {
+                    tls_settings.insert("alpn".to_owned(), serde_json::json!(["h2"]));
+                }
+            }
+        }
+        let mut outbound = outbound.clone();
+        outbound["streamSettings"] = Value::Object(stream);
+        Ok(Some(outbound))
+    }
+
     pub(super) fn parse_network(
         &mut self,
         stream: Option<&Value>,
@@ -1502,7 +1632,7 @@ impl Parser<'_> {
             "xhttp" | "splithttp" => Some(StreamNetwork::Xhttp),
             // Xray deleted these outright, so `unsupported` would send someone
             // hunting for a flag to turn them on.
-            network @ ("h2" | "h3" | "http" | "quic") => {
+            network @ ("h3" | "quic") => {
                 self.error(
                     network_path,
                     format!(

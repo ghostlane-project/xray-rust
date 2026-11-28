@@ -165,6 +165,8 @@ pub(super) fn stream_settings(
             "xhttpSettings",
             &[("host", "host"), ("path", "path"), ("mode", "mode")],
         ),
+        // v2fly's and sing-box's HTTP/2 transport; `h2` is its old name.
+        "http" | "h2" => ("httpSettings", &[("host", "host"), ("path", "path")]),
         _ => return Err(ImportError::Unsupported),
     };
     if !block.is_empty() {
@@ -176,6 +178,14 @@ pub(super) fn stream_settings(
         }
     }
     match network.as_str() {
+        "http" | "h2" => {
+            stream.0["network"] = json!("http");
+            // The link's host is the list of names the server accepts.
+            if let Some(hosts) = stream.0[block]["host"].as_str().map(str::to_owned) {
+                let hosts: Vec<&str> = hosts.split(',').filter(|h| !h.is_empty()).collect();
+                stream.0[block]["host"] = json!(hosts);
+            }
+        }
         // The core sends no RAW header obfuscation, so only its absence imports.
         "raw" | "tcp" => {
             if params

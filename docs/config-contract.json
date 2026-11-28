@@ -1004,6 +1004,19 @@
       "notes": "acceptProxyProtocol is ignored on the client. headers must not contain Host. REALITY is unsupported."
     },
     {
+      "context": "streamSettings.httpSettings (network http or h2)",
+      "fields": [
+        "host",
+        "path",
+        "method",
+        "headers",
+        "read_idle_timeout",
+        "health_check_timeout"
+      ],
+      "id": "HTTP_STREAM",
+      "notes": "The HTTP/2 transport of v2fly and sing-box, which Xray-core removed. It runs as XHTTP in stream-one mode: host (a string or a list of strings, the first is sent) and path become XHTTP's, and TLS offers h2 unless alpn is set. method, headers and the two timeouts are accepted and ignored with a warning; other fields are refused, and so is xhttpSettings beside it."
+    },
+    {
       "context": "$.inbounds[].settings.accounts[] (http)",
       "fields": [
         "user",
@@ -1443,6 +1456,7 @@
         "rawSettings",
         "wsSettings",
         "httpupgradeSettings",
+        "httpSettings",
         "grpcSettings",
         "xhttpSettings",
         "splithttpSettings",
@@ -1454,7 +1468,7 @@
         "sockopt"
       ],
       "id": "STREAM",
-      "notes": "method takes priority over network. raw/tcp, ws/websocket, httpupgrade, grpc, xhttp/splithttp, kcp/mkcp, hysteria, masque, xdrive; security none/tls/reality. address and port are XDRIVE's: where its storage connections go instead of the URL's host, the port only when nonzero; other transports refuse them. Carrier/security combinations and inactive block handling require the validator."
+      "notes": "method takes priority over network. raw/tcp, ws/websocket, httpupgrade, http/h2, grpc, xhttp/splithttp, kcp/mkcp, hysteria, masque, xdrive; security none/tls/reality. address and port are XDRIVE's: where its storage connections go instead of the URL's host, the port only when nonzero; other transports refuse them. Carrier/security combinations and inactive block handling require the validator."
     },
     {
       "context": "streamSettings.tlsSettings",
