@@ -159,11 +159,21 @@ fn main() -> ExitCode {
         {
             let stop = stop.clone();
             tokio::spawn(async move {
-                let mut term =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                // SIGTERM where there is one; Windows has Ctrl-C alone.
+                let term = async {
+                    #[cfg(unix)]
+                    {
+                        let mut term = tokio::signal::unix::signal(
+                            tokio::signal::unix::SignalKind::terminate(),
+                        )
                         .expect("SIGTERM handler");
+                        term.recv().await;
+                    }
+                    #[cfg(not(unix))]
+                    std::future::pending::<()>().await;
+                };
                 tokio::select! {
-                    _ = term.recv() => {}
+                    () = term => {}
                     _ = tokio::signal::ctrl_c() => {}
                 }
                 stop.cancel();
