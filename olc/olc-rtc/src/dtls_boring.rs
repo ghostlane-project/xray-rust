@@ -343,9 +343,13 @@ impl BoringDtls {
 
     fn refresh_deadline(&mut self) {
         // SAFETY: a zeroed timeval is a valid out-parameter.
-        let mut tv: boring_sys::timeval = unsafe { std::mem::zeroed() };
+        // libc's timeval, not boring_sys's: on Windows bindgen leaves the
+        // sys one without its fields, and the layout is the system's.
+        let mut tv: libc::timeval = unsafe { std::mem::zeroed() };
         // SAFETY: the SSL pointer is live for as long as self.
-        let armed = unsafe { boring_sys::DTLSv1_get_timeout(self.ssl_ptr(), &mut tv) };
+        let armed = unsafe {
+            boring_sys::DTLSv1_get_timeout(self.ssl_ptr(), std::ptr::from_mut(&mut tv).cast())
+        };
         self.deadline = if armed == 1 {
             let secs = u64::try_from(tv.tv_sec).unwrap_or(0);
             let micros = u64::try_from(tv.tv_usec).unwrap_or(0);

@@ -136,12 +136,11 @@ pub(crate) fn ask(
 mod carried {
     use std::collections::{BTreeMap, HashSet};
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-    use std::os::fd::RawFd;
     use std::sync::Arc;
     use std::time::Duration;
 
     use olc_ffi::{LogWriter, OlcrtcError, OlcrtcRuntime, SessionListener};
-    use olc_net::net::{set_peer_protector, PeerProtector};
+    use olc_net::net::{set_peer_protector, PeerProtector, RawFd};
     use serde_json::{Map, Value};
 
     use super::Room;

@@ -156,10 +156,20 @@ fn signals() -> mpsc::Receiver<()> {
     let (tx, rx) = mpsc::channel();
     let rt = ghostlane_runtime::handle().expect("runtime");
     rt.spawn(async move {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler");
+        // SIGTERM where there is one; Windows has Ctrl-C alone.
+        let term = async {
+            #[cfg(unix)]
+            {
+                let mut term =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("SIGTERM handler");
+                term.recv().await;
+            }
+            #[cfg(not(unix))]
+            std::future::pending::<()>().await;
+        };
         tokio::select! {
-            _ = term.recv() => {}
+            () = term => {}
             _ = tokio::signal::ctrl_c() => {}
         }
         let _ = tx.send(());

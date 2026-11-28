@@ -88,6 +88,8 @@ pub use reality_runtime::{
 pub use reality_rustls::extract_server_hello_for_fuzzing;
 pub use reality_rustls::RustlsRealityTlsSessionProvider;
 pub use route_probe::{RouteFamilies, RouteProbe, SystemRouteProbe};
+#[cfg(windows)]
+pub use socket_options::windows as windows_interface;
 pub use socket_options::{
     CustomSocketOption, SocketOptions, SocketOptionsProtector, SocketOptionsReport,
     DEFAULT_TCP_KEEPALIVE_SECS,
