@@ -67,13 +67,20 @@ in_ns iptables -A OUTPUT -o out0 -p udp -j ACCEPT
 in_ns iptables -A OUTPUT -o out0 -p tcp -j ACCEPT
 
 tx() { in_ns cat "/sys/class/net/$1/statistics/tx_packets"; }
-rule_pkts() { in_ns iptables -nvxL OUTPUT | awk -v p="$1" '$4==p {n+=$1} END {print n+0}'; }
+# iptables -n prints the protocol as its number: udp 17, tcp 6.
+rule_pkts() {
+	case "$1" in udp) set -- 17 ;; tcp) set -- 6 ;; esac
+	in_ns iptables -nvxL OUTPUT | awk -v p="$1" '$4==p {n+=$1} END {print n+0}'
+}
 
 # The control: an unbound packet goes into tun0.
 t0=$(tx tun0)
 in_ns ping -c 1 -W 1 192.0.2.99 >/dev/null 2>&1 || true
 [ "$(tx tun0)" -gt "$t0" ] || { echo "netns: the control failed: an unbound packet did not move tun0" >&2; exit 1; }
 
+# What lands in tun0 is kept, to name it if it is not nothing.
+in_ns tcpdump -nn -l -i tun0 -w "$PWD/netns-tun0.pcap" >/dev/null 2>&1 &
+sleep 1
 base_tun=$(tx tun0)
 base_udp=$(rule_pkts udp)
 base_tcp=$(rule_pkts tcp)
@@ -98,7 +105,10 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 in_ns iptables -nvxL OUTPUT >&2
-in_ns ip -s link show >&2
+sleep 1
+pkill -INT tcpdump || true
+sleep 1
+tcpdump -nn -e -r "$PWD/netns-tun0.pcap" >&2 || true
 tun=$(($(tx tun0) - base_tun))
 udp=$(($(rule_pkts udp) - base_udp))
 tcp=$(($(rule_pkts tcp) - base_tcp))
