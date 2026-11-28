@@ -555,6 +555,62 @@
       }
     },
     {
+      "name": "http-runs-as-xhttp",
+      "config": {
+        "inbounds": [
+          {
+            "listen": "127.0.0.1",
+            "port": 1080,
+            "protocol": "socks",
+            "settings": {
+              "auth": "noauth",
+              "udp": true
+            },
+            "tag": "socks-in"
+          }
+        ],
+        "outbounds": [
+          {
+            "protocol": "vless",
+            "settings": {
+              "vnext": [
+                {
+                  "address": "server.example",
+                  "port": 443,
+                  "users": [
+                    {
+                      "encryption": "none",
+                      "id": "00010203-0405-0607-0809-0a0b0c0d0e0f"
+                    }
+                  ]
+                }
+              ]
+            },
+            "streamSettings": {
+              "network": "http",
+              "security": "tls",
+              "tlsSettings": {
+                "fingerprint": "chrome",
+                "serverName": "server.example"
+              },
+              "httpSettings": {
+                "host": [
+                  "server.example"
+                ],
+                "path": "/h2"
+              }
+            },
+            "tag": "proxy"
+          }
+        ]
+      },
+      "accepted": true,
+      "objects": {
+        "HTTP_STREAM": "/outbounds/0/streamSettings/httpSettings"
+      },
+      "warningPath": "$.outbounds[0].streamSettings.network"
+    },
+    {
       "name": "grpc",
       "config": {
         "inbounds": [

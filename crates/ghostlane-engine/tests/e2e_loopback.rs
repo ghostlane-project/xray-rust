@@ -571,7 +571,7 @@ fn a_session_file_open_to_other_users_is_refused() {
 fn a_core_the_parser_refuses_is_named_by_run_and_by_check_config() {
     let scratch = Scratch::new("refused");
     let mut session = core_line("127.0.0.1:9".parse().unwrap(), &Value::Null);
-    session["core"]["outbounds"][0]["streamSettings"]["network"] = json!("http");
+    session["core"]["outbounds"][0]["streamSettings"]["network"] = json!("h3");
     let path = scratch.session(&session, 0o600);
 
     let (lines, code) = Engine::answer(&["run", "--session", &path]);

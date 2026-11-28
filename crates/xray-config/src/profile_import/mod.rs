@@ -229,6 +229,17 @@ pub fn is_import_advisory(diagnostic: &crate::Diagnostic) -> bool {
     is_reality_fingerprint_advisory(diagnostic)
         || is_wireguard_dns_advisory(diagnostic)
         || is_httpupgrade_early_data_advisory(diagnostic)
+        || is_http_as_xhttp_advisory(diagnostic)
+}
+/// The parser says that `network: "http"` runs as XHTTP's stream-one mode.
+/// That is what a `type=http` link asks for here, not a fault in it.
+fn is_http_as_xhttp_advisory(diagnostic: &crate::Diagnostic) -> bool {
+    diagnostic.severity == crate::DiagnosticSeverity::Warning
+        && diagnostic
+            .path
+            .as_deref()
+            .is_some_and(|path| path.ends_with(".streamSettings.network"))
+        && diagnostic.message.starts_with("network `http` runs as xhttp")
 }
 /// The parser warns on a REALITY fingerprint that v26.10.21 servers refuse.
 /// That describes the server rather than the import: the profile is exactly
