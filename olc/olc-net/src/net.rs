@@ -15,11 +15,34 @@
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::os::fd::{AsRawFd, RawFd};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
+
+/// The raw socket handle a protector is handed. On Unix it is a file
+/// descriptor. Windows has no `std::os::fd`, and the C ABI gives the app an
+/// `i64` (`olc_ffi::SocketProtector`), so the SOCKET value travels in that
+/// field without being narrowed.
+#[cfg(unix)]
+pub type RawFd = std::os::fd::RawFd;
+
+/// The raw socket handle a protector is handed on Windows: the C ABI's
+/// `i64` field carries the SOCKET value without narrowing it.
+#[cfg(windows)]
+pub type RawFd = i64;
+
+/// The handle of a socket, as the protector sees it.
+#[cfg(unix)]
+fn handle(socket: &impl std::os::fd::AsRawFd) -> RawFd {
+    std::os::fd::AsRawFd::as_raw_fd(socket)
+}
+
+/// The handle of a socket, as the protector sees it.
+#[cfg(windows)]
+fn handle(socket: &impl std::os::windows::io::AsRawSocket) -> RawFd {
+    std::os::windows::io::AsRawSocket::as_raw_socket(socket) as RawFd
+}
 
 /// Decides whether a socket may be used; `false` refuses it
 /// (`protect.SetProtector`).
@@ -101,7 +124,7 @@ fn tcp_socket(addr: SocketAddr, send_buffer: Option<u32>) -> io::Result<TcpSocke
     } else {
         TcpSocket::new_v6()?
     };
-    protect_to(socket.as_raw_fd(), addr)?;
+    protect_to(handle(&socket), addr)?;
     if let Some(n) = send_buffer {
         socket.set_send_buffer_size(n)?;
     }
@@ -164,7 +187,7 @@ pub async fn udp_socket(family: IpAddr) -> io::Result<UdpSocket> {
         "[::]:0".parse().expect("literal")
     };
     let socket = UdpSocket::bind(bind).await?;
-    protect(socket.as_raw_fd())?;
+    protect(handle(&socket))?;
     Ok(socket)
 }
 
@@ -186,7 +209,7 @@ pub fn probe_route() -> bool {
         return true;
     }
     ["0.0.0.0:0", "[::]:0"].into_iter().any(|bind| {
-        std::net::UdpSocket::bind(bind).is_ok_and(|socket| protect(socket.as_raw_fd()).is_ok())
+        std::net::UdpSocket::bind(bind).is_ok_and(|socket| protect(handle(&socket)).is_ok())
     })
 }
 
@@ -212,15 +235,41 @@ pub fn split_host_port(s: &str) -> io::Result<(&str, u16)> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+    // The handle a protector sees is the socket's own, on both OSes.
+    #[cfg(unix)]
+    fn test_handle(socket: &impl std::os::fd::AsRawFd) -> RawFd {
+        std::os::fd::AsRawFd::as_raw_fd(socket)
+    }
+    #[cfg(windows)]
+    fn test_handle(socket: &impl std::os::windows::io::AsRawSocket) -> RawFd {
+        std::os::windows::io::AsRawSocket::as_raw_socket(socket) as RawFd
+    }
+
+    #[test]
+    fn a_protector_is_handed_the_sockets_raw_handle() {
+        let seen = Arc::new(Mutex::new(None));
+        let record = Arc::clone(&seen);
+        set_protector(Some(Arc::new(move |handle| {
+            *record.lock().unwrap() = Some(handle);
+            true
+        })));
+        let socket = tcp_socket("127.0.0.1:9".parse().unwrap(), None).unwrap();
+        set_protector(None);
+        assert_eq!(*seen.lock().unwrap(), Some(test_handle(&socket)));
+    }
 
     #[test]
     fn a_send_buffer_bound_is_set_on_the_socket_before_it_dials() {
         let addr: SocketAddr = "127.0.0.1:9".parse().unwrap();
         let bounded = tcp_socket(addr, Some(512 * 1024)).unwrap();
-        // Linux keeps twice what was asked (the kernel's bookkeeping share).
+        // Unix keeps twice what was asked (the kernel's bookkeeping share);
+        // Windows reports the value set. Both are at least the bound.
         let got = bounded.send_buffer_size().unwrap();
-        assert!((512 * 1024..=1024 * 1024).contains(&got), "{got}");
+        assert!(got >= 512 * 1024, "{got}");
         let small = tcp_socket(addr, Some(64 * 1024)).unwrap();
         assert!(small.send_buffer_size().unwrap() < got);
     }
