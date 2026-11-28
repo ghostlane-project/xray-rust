@@ -134,9 +134,9 @@ pub(crate) fn ask(
 
 #[cfg(feature = "rooms")]
 mod carried {
+    use olc_net::net::RawFd;
     use std::collections::HashSet;
     use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-    use std::os::fd::RawFd;
     use std::sync::Arc;
     use std::time::Duration;
 
