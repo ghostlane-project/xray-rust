@@ -9,7 +9,8 @@ The exact source is modified by
 `tools/wireguard-adapter-prototype/patches/gotatun-mobile-memory.patch`, then
 `tools/wireguard-adapter-prototype/patches/gotatun-psk-hygiene.patch`, then
 `tools/wireguard-adapter-prototype/patches/gotatun-mobile-build.patch`, then
-`tools/wireguard-adapter-prototype/patches/gotatun-mobile-progress.patch`.
+`tools/wireguard-adapter-prototype/patches/gotatun-mobile-progress.patch`, then
+`tools/wireguard-adapter-prototype/patches/gotatun-windows-build.patch`.
 It adds opt-in bounded device resources; see that directory's README for the
 changed files and scope. The second patch replaces owned PSK arrays with a
 redacted `PresharedKey(Box<Zeroizing<[u8; 32]>>)` through peer, update and Noise
@@ -27,11 +28,15 @@ The progress patch releases the peer/device locks after authenticated source
 validation and before waiting for inner IP receive capacity. This prevents a
 stalled receiver from blocking outgoing encryption for the same peer. Its
 bounded-queue regression test also runs in the upstream adapter gate.
+The Windows build patch gates one `wintun_bindings` error downcast in
+`src/tun/buffer.rs` on the `tun` feature that makes that crate a dependency.
+Without it the production feature set (`ring,device`) does not compile for
+Windows. Nothing changes where `tun` is on or off elsewhere.
 `tools/wireguard-adapter-prototype/prepare_vendor.py` copies the crate sources,
 README and license notices, expands workspace manifest fields/dependencies and
 removes benchmark declarations. It does not copy upstream's privileged TUN runner.
 
-`scripts/check-wireguard-runtime.sh` verifies the archive, applies all four patches with
+`scripts/check-wireguard-runtime.sh` verifies the archive, applies all five patches with
 zero fuzz, regenerates this crate and compares every file except this note. It
 then runs engine tests, the IP adapter probe and TCP/UDP/core interoperability
 against a freshly built, verified Xray-core v26.7.28 checkout. The

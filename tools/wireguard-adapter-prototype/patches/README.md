@@ -54,7 +54,7 @@ lifetime guarantee. Caller JSON/string buffers also remain caller-owned; the
 runtime guarantees redaction and cleanup for its decoded key owners, not removal
 of every compiler/crypto temporary or memory locking against swap/core dumps.
 
-The shared guard verifies all four patches with zero fuzz, compares the vendor tree,
+The shared guard verifies all five patches with zero fuzz, compares the vendor tree,
 runs all 90 engine tests, and tests PSK TCP/UDP and failed authentication against
 Xray-core v26.7.28. Algorithm code and both upstream reference revisions remain
 unchanged.
@@ -77,3 +77,11 @@ queue can require outgoing TCP ACKs through the same peer. Release the peer and
 device locks after authentication/allowed-IP validation, before awaiting delivery.
 Packet and queue budgets are unchanged. The regression test saturates the bounded
 receive path and verifies that reverse traffic still arrives without draining it.
+
+## Windows build patch
+
+Apply [gotatun-windows-build.patch](gotatun-windows-build.patch) after the progress patch.
+`is_fatal_tun_error` downcasts to `wintun_bindings::Error` on Windows, but that
+crate is a dependency only with the `tun` feature, which production does not
+select (`ring,device`). Gate the downcast on `tun`; the `ERROR_HANDLE_EOF` check
+before it stays. Nothing changes on other platforms or with `tun` on.
