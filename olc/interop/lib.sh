@@ -263,8 +263,12 @@ def main():
             elif event.get("event") == "log":
                 # The gate reads the client's log: the engine's room lines
                 # are its log, as olc-client writes them to stderr.
-                sys.stderr.write(str(event.get("line") or "") + "\n")
-                sys.stderr.flush()
+                # Not the engine's own SOCKS line: the gate takes the first,
+                # and the ready event says the address it can reach.
+                line = str(event.get("line") or "")
+                if "SOCKS5 server listening on " not in line:
+                    sys.stderr.write(line + "\n")
+                    sys.stderr.flush()
             elif event.get("event") in ("error", "ended"):
                 # A code, never a message that could quote a room or a token.
                 sys.stderr.write(
