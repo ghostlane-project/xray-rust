@@ -239,7 +239,9 @@ fn is_http_as_xhttp_advisory(diagnostic: &crate::Diagnostic) -> bool {
             .path
             .as_deref()
             .is_some_and(|path| path.ends_with(".streamSettings.network"))
-        && diagnostic.message.starts_with("network `http` runs as xhttp")
+        && diagnostic
+            .message
+            .starts_with("network `http` runs as xhttp")
 }
 /// The parser warns on a REALITY fingerprint that v26.10.21 servers refuse.
 /// That describes the server rather than the import: the profile is exactly
